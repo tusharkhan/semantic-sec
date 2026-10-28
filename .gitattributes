@@ -7,3 +7,6 @@ docker-compose.yml export-ignore
 phpunit.xml export-ignore
 phpstan.neon export-ignore
 pint.json export-ignore
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/.idea export-ignore
