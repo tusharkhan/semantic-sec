@@ -23,7 +23,7 @@ It works in two stages:
 | Namespace | `TusharKhan\SemanticSec\` → `src/` |
 | Binary | `bin/semantic-sec` (Composer `bin`), `semantic-sec.phar` |
 | Licence | MIT |
-| Tool runtime | **PHP ^8.2** **[changed]** from 8.1: PHP 8.1 reached end of life on 2025-12-31, and 8.2 lets us use PHPUnit 11; PHPUnit 11 (matching `tusharkhan/agentic-php`); Symfony components accept 6.4 or 7 so Laravel 9/10 apps can install it (D12). |
+| Tool runtime | **PHP ^8.2** **[changed]** from 8.1: PHP 8.1 reached end of life on 2025-12-31, and 8.2 lets us use PHPUnit 11 (matching `tusharkhan/agentic-php`); Symfony components accept 6.4 or 7 so Laravel 9/10 apps can install it (D12). |
 | Analysed code | PHP 7.4 – 8.4 syntax |
 | Frameworks v1 | **Laravel 8 – 13 only** **[changed]**. Symfony moves to v1.1, after the accuracy gate (section 15). The `FrameworkContext` interface keeps that slot open. Plain-PHP projects get exit code 2 with "no supported framework detected" until a plain-PHP context exists. |
 | Tool distribution | Composer `require-dev` for PHP 8.2+ projects; PHAR for older projects and standalone CI. |
