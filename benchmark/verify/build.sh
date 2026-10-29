@@ -2,7 +2,7 @@
 # Usage: build.sh <laravel11-app|laravel10-app> <absolute-target-dir>
 set -eu
 
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+ROOT=$(cd "$(dirname "$0")/../.." && pwd -P)
 APP=${1:-}
 TARGET=${2:-}
 
@@ -17,14 +17,33 @@ case "$TARGET" in
 esac
 
 TARGET=$(printf '%s' "$TARGET" | sed 's#/*$##')
-case "$TARGET/" in
-    "$ROOT"/*) echo "target must be outside the repository" >&2; exit 2 ;;
+[ -n "$TARGET" ] || { echo "refusing: target is /" >&2; exit 2; }
+case "/$TARGET/" in
+    */../*) echo "refusing: target contains a .. segment" >&2; exit 2 ;;
 esac
+PARENT=$(dirname "$TARGET")
+[ -d "$PARENT" ] || { echo "refusing: parent directory $PARENT does not exist" >&2; exit 2; }
+CANON="$(cd "$PARENT" && pwd -P)/$(basename "$TARGET")"
+CANON=$(printf '%s' "$CANON" | sed 's#^//*#/#')
+case "$CANON/" in
+    "$ROOT"/* | /) echo "refusing: target is inside the repository or is /" >&2; exit 2 ;;
+esac
+case "$ROOT/" in
+    "$CANON"/*) echo "refusing: target is the repository or an ancestor of it" >&2; exit 2 ;;
+esac
+TARGET=$CANON
 
 SRC="$ROOT/benchmark/$APP"
 VERIFY="$ROOT/benchmark/verify/$APP"
 
-rm -rf "$TARGET"
+if [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
+    if [ -d "$TARGET" ] && [ ! -L "$TARGET" ] && { [ -z "$(ls -A "$TARGET")" ] || [ -f "$TARGET/.semantic-sec-verify" ]; }; then
+        rm -rf "$TARGET"
+    else
+        echo "target exists and is not a previous verification build" >&2
+        exit 2
+    fi
+fi
 mkdir -p "$(dirname "$TARGET")"
 
 if ! composer create-project laravel/laravel:^12.0 "$TARGET" --no-interaction --prefer-dist; then
@@ -58,4 +77,5 @@ if grep -q 'auth:sanctum' routes/api.php 2>/dev/null; then
 fi
 composer dump-autoload --no-interaction
 
+touch "$TARGET/.semantic-sec-verify"
 echo "built $APP at $TARGET"
