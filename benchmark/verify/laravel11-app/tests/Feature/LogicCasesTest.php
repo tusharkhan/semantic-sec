@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Account;
+use App\Models\Cart;
 use App\Models\Member;
 use App\Models\Order;
 use App\Models\Team;
@@ -46,6 +47,7 @@ class LogicCasesTest extends TestCase
     public function testMassAssignGuardedEmptySafe(): void
     {
         $member = MemberFactory::new()->for($this->attacker())->create(['name' => 'Before', 'email' => 'before@example.test']);
+        $this->assertSame(0, Account::count());
 
         $r = $this->actingAs($this->attacker())->putJson('/safe/account', [
             'name' => 'Mallory', 'email' => 'mallory@example.test', 'is_admin' => 1, 'balance' => 999999, 'plan' => 'enterprise',
@@ -55,9 +57,9 @@ class LogicCasesTest extends TestCase
         $fresh = Member::find($member->id);
         $this->assertSame('Mallory', $fresh->name);
         $this->assertSame('mallory@example.test', $fresh->email);
-        $this->assertArrayNotHasKey('is_admin', $fresh->getAttributes());
-        $this->assertArrayNotHasKey('balance', $fresh->getAttributes());
-        $this->assertArrayNotHasKey('plan', $fresh->getAttributes());
+        $this->assertEqualsCanonicalizing(['id', 'user_id', 'name', 'email', 'created_at', 'updated_at'], array_keys($fresh->getAttributes()));
+        $this->assertSame($member->user_id, $fresh->user_id);
+        $this->assertSame($member->id, $fresh->id);
         $this->assertStringNotContainsString('999999', $r->getContent());
     }
 
@@ -93,8 +95,12 @@ class LogicCasesTest extends TestCase
     {
         Sanctum::actingAs($this->attacker());
 
-        $this->withCredentials()->withUnencryptedCookie('cart', serialize(new WakeupProbe()))->putJson('/api/safe/cart');
+        $r = $this->withCredentials()->withUnencryptedCookie('cart', json_encode([['sku' => 'SKU-SAFE-7', 'qty' => 3]]))->putJson('/api/safe/cart');
+        $this->assertOwnerWorks($r);
+        $this->assertStringContainsString('SKU-SAFE-7', $r->getContent());
+        $this->assertSame('SKU-SAFE-7', Cart::where('user_id', $this->attacker()->id)->firstOrFail()->items[0]['sku']);
 
+        $this->withCredentials()->withUnencryptedCookie('cart', serialize(new WakeupProbe()))->putJson('/api/safe/cart');
         $this->assertFalse(WakeupProbe::$woken);
     }
 
