@@ -41,3 +41,27 @@ jobs:
       - run: composer validate --strict
       - run: vendor/bin/pint --test
       - run: vendor/bin/phpstan analyse --memory-limit=512M
+
+  benchmark-verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [laravel11-app, laravel10-app]
+    name: Benchmark verify (${{ matrix.app }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pdo_sqlite, sqlite3
+          coverage: none
+      - uses: ramsey/composer-install@v3
+      - id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-verify-${{ runner.os }}-${{ hashFiles('benchmark/verify/**') }}
+          restore-keys: composer-verify-${{ runner.os }}-
+      - run: sh benchmark/verify/run.sh ${{ matrix.app }}

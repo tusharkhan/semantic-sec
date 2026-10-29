@@ -26,3 +26,7 @@ Fake Laravel apps (source files only, no `vendor/`) that the scanner is scored a
 3. Run `vendor/bin/phpunit tests/Integration/Benchmark`.
 
 Public routes that must produce no findings go under `public_routes` (`app`, `route`, `symbol`).
+
+## Verified by execution
+
+Every case's vulnerable and safe variants and every route key are proven on real Laravel 12 by `benchmark/verify` and the `benchmark-verify` CI job. See [`verify/README.md`](verify/README.md).

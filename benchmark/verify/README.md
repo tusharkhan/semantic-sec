@@ -25,3 +25,9 @@ anything inside). Nothing from the Laravel install is committed.
 - exploited: an authenticated attacker gets 2xx and the effect is asserted.
 - blocked: the authenticated attacker gets exactly the stated status (403, 404 or 422) and no effect.
 - owner works: the legitimate owner gets 2xx on the safe route.
+
+## Findings so far
+
+- Laravel's test client drops cookies on JSON requests unless `withCredentials()` is used.
+- Laravel 12's `route:list` expands `can:` to `Illuminate\Auth\Middleware\Authorize:...` for `bootstrap/app.php` apps, but shows aliases for legacy-Kernel apps.
+- The User models needed `HasFactory` and `HasApiTokens`.
