@@ -35,6 +35,6 @@ final class AstGenerator
             throw new ParseFailure($file->path, $e->getRawMessage(), $line > 0 ? $line : null);
         }
 
-        return new ParsedFile($file, $ast, new SuppressionSet([], []));
+        return new ParsedFile($file, $ast, (new SuppressionCollector())->collect($file->path, $ast));
     }
 }
