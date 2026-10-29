@@ -23,12 +23,12 @@ It works in two stages:
 | Namespace | `TusharKhan\SemanticSec\` → `src/` |
 | Binary | `bin/semantic-sec` (Composer `bin`), `semantic-sec.phar` |
 | Licence | MIT |
-| Tool runtime | **PHP ^8.2** **[changed]** from 8.1: PHP 8.1 reached end of life on 2025-12-31, and 8.2 lets us use `symfony/console` 7 and PHPUnit 11 (matching `tusharkhan/agentic-php`). |
+| Tool runtime | **PHP ^8.2** **[changed]** from 8.1: PHP 8.1 reached end of life on 2025-12-31, and 8.2 lets us use PHPUnit 11; Symfony components accept 6.4 or 7 so Laravel 9/10 apps can install it (matching `tusharkhan/agentic-php`). |
 | Analysed code | PHP 7.4 – 8.4 syntax |
 | Frameworks v1 | **Laravel 8 – 13 only** **[changed]**. Symfony moves to v1.1, after the accuracy gate (section 15). The `FrameworkContext` interface keeps that slot open. Plain-PHP projects get exit code 2 with "no supported framework detected" until a plain-PHP context exists. |
 | Tool distribution | Composer `require-dev` for PHP 8.2+ projects; PHAR for older projects and standalone CI. |
 
-**Runtime dependencies:** `nikic/php-parser ^5`, `phpstan/phpdoc-parser ^2`, `symfony/console ^7`, `symfony/yaml ^7`, `symfony/process ^7` (git, for `--since`), `guzzlehttp/guzzle ^7.9`, `opis/json-schema ^2`.
+**Runtime dependencies:** `nikic/php-parser ^5`, `phpstan/phpdoc-parser ^2`, `symfony/console ^6.4 || ^7`, `symfony/yaml ^6.4 || ^7`, `symfony/process ^7` (git, for `--since`), `guzzlehttp/guzzle ^7.9`, `opis/json-schema ^2`.
 **Dev dependencies:** `phpunit/phpunit ^11`, `phpstan/phpstan ^2` (level 8), `laravel/pint ^1` (PSR-12, same `pint.json` as agentic-php), `humbug/box` (PHAR).
 
 ## 3. Scope of findings (v1)
@@ -299,3 +299,4 @@ Unknown keys are a config error (exit 2), which catches typos.
 | D9 | Benchmark built first, with a competitive check against `claude-code-security-review` | `research/09` recommendations 4–5 |
 | D10 | Malformed LLM JSON retried once, then dropped | Keeps the "never crash on LLM output" promise without loops |
 | D11 | No default model ID hardcoded in docs | Model IDs go stale; kept in `config/defaults.php` and refreshed each release |
+| D12 | Symfony components ^6.4 \|\| ^7 | Laravel 9/10 lock Symfony 6; ^7 blocked composer installs there |
