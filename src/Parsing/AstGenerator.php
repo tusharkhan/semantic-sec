@@ -26,15 +26,14 @@ final class AstGenerator
 
         try {
             $ast = $this->parser->parse($code) ?? [];
+            $traverser = new NodeTraverser(new NameResolver(null, ['replaceNodes' => true]));
+            /** @var array<\PhpParser\Node\Stmt> $ast */
+            $ast = $traverser->traverse($ast);
         } catch (Error $e) {
             $line = $e->getStartLine();
 
             throw new ParseFailure($file->path, $e->getRawMessage(), $line > 0 ? $line : null);
         }
-
-        $traverser = new NodeTraverser(new NameResolver(null, ['replaceNodes' => true]));
-        /** @var array<\PhpParser\Node\Stmt> $ast */
-        $ast = $traverser->traverse($ast);
 
         return new ParsedFile($file, $ast, new SuppressionSet([], []));
     }

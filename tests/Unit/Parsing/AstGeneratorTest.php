@@ -83,6 +83,19 @@ final class AstGeneratorTest extends TestCase
         }
     }
 
+    public function testNameConflictThrowsParseFailure(): void
+    {
+        $this->expectException(ParseFailure::class);
+
+        $this->parse('<?php use A\B; use C\B;');
+    }
+
+    public function testEmptyAndOpenTagOnlyFilesParseToEmptyAst(): void
+    {
+        self::assertSame([], $this->parse('')->ast);
+        self::assertSame([], $this->parse('<?php')->ast);
+    }
+
     private function parse(string $code): \TusharKhan\SemanticSec\Parsing\ParsedFile
     {
         file_put_contents($this->root.'/x.php', $code);

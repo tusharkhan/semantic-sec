@@ -44,6 +44,18 @@ final class ProjectParserTest extends TestCase
         self::assertNotNull($result->failures[0]->sourceLine);
     }
 
+    public function testNameConflictIsCollectedAndOtherFilesStillParse(): void
+    {
+        file_put_contents($this->root.'/app/Good.php', '<?php class Good {}');
+        file_put_contents($this->root.'/app/Conflict.php', '<?php use A\B; use C\B;');
+
+        $result = $this->parser()->parse($this->root);
+
+        self::assertNotNull($result->file('app/Good.php'));
+        self::assertCount(1, $result->failures);
+        self::assertSame('app/Conflict.php', $result->failures[0]->path);
+    }
+
     public function testUnreadableFileIsAFailureWithNullLine(): void
     {
         if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
