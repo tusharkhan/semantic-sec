@@ -30,4 +30,6 @@ anything inside). Nothing from the Laravel install is committed.
 
 - Laravel's test client drops cookies on JSON requests unless `withCredentials()` is used.
 - Laravel 12's `route:list` expands `can:` to `Illuminate\Auth\Middleware\Authorize:...` for `bootstrap/app.php` apps, but shows aliases for legacy-Kernel apps.
-- The User models needed `HasFactory` and `HasApiTokens`.
+- The User models were missing traits needed to run the apps (HasFactory on both, HasApiTokens on laravel11-app).
+- The route check also binds each expected route to its controller action (`route:list` action must equal the `expected.yaml` symbol), so a route cannot silently point at a different method.
+- `CaseCoverageTest` (in both apps) fails if any expected case lacks a `test<Case>Vulnerable`/`test<Case>Safe` method or a public route lacks `testPublicRoute<Method>`; `run.sh` feeds it `expected.yaml` as JSON.
