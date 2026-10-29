@@ -34,11 +34,11 @@ final class FileFinder
 
         $paths = [];
         /** @var \SplFileInfo $file */
-        foreach (new \RecursiveIteratorIterator($filter) as $file) {
+        foreach (new \RecursiveIteratorIterator($filter, \RecursiveIteratorIterator::LEAVES_ONLY, \RecursiveIteratorIterator::CATCH_GET_CHILD) as $file) {
             if (! $file->isFile() || $file->getExtension() !== 'php') {
                 continue;
             }
-            $relative = substr($file->getPathname(), $prefix);
+            $relative = str_replace('\\', '/', substr($file->getPathname(), $prefix));
             if ($this->matchesGlob($relative, $excludeGlobs)) {
                 continue;
             }

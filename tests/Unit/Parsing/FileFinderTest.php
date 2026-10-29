@@ -11,6 +11,8 @@ final class FileFinderTest extends TestCase
 {
     private string $root;
 
+    private ?string $locked = null;
+
     protected function setUp(): void
     {
         $this->root = sys_get_temp_dir().'/ss-ff-'.bin2hex(random_bytes(6));
@@ -19,6 +21,9 @@ final class FileFinderTest extends TestCase
 
     protected function tearDown(): void
     {
+        if ($this->locked !== null && is_dir($this->locked)) {
+            chmod($this->locked, 0755);
+        }
         $this->remove($this->root);
     }
 
@@ -69,6 +74,19 @@ final class FileFinderTest extends TestCase
         $this->expectExceptionMessage('Project root not found: /nope/missing');
 
         (new FileFinder())->find('/nope/missing');
+    }
+
+    public function testUnreadableSubdirectoryIsSkipped(): void
+    {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            self::markTestSkipped('root can read everything');
+        }
+        $this->touch('app/A.php');
+        $this->touch('secret/B.php');
+        $this->locked = $this->root.'/secret';
+        chmod($this->locked, 0000);
+
+        self::assertSame(['app/A.php'], (new FileFinder())->find($this->root));
     }
 
     private function touch(string $rel): void
