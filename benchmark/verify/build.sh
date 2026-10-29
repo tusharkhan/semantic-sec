@@ -73,7 +73,10 @@ if [ "$APP" = "laravel10-app" ]; then
     php "$ROOT/benchmark/verify/lib/register-legacy-providers.php" "$TARGET"
 fi
 if grep -q 'auth:sanctum' routes/api.php 2>/dev/null; then
-    composer require laravel/sanctum --no-interaction
+    if ! composer require laravel/sanctum --no-interaction; then
+        echo "composer require laravel/sanctum failed — if this is a security-advisory block, do NOT disable blocking; report it" >&2
+        exit 1
+    fi
 fi
 composer dump-autoload --no-interaction
 
