@@ -23,7 +23,7 @@ It works in two stages:
 | Namespace | `TusharKhan\SemanticSec\` → `src/` |
 | Binary | `bin/semantic-sec` (Composer `bin`), `semantic-sec.phar` |
 | Licence | MIT |
-| Tool runtime | **PHP ^8.2** **[changed]** from 8.1: PHP 8.1 reached end of life on 2025-12-31, and 8.2 lets us use PHPUnit 11; Symfony components accept 6.4 or 7 so Laravel 9/10 apps can install it (matching `tusharkhan/agentic-php`). |
+| Tool runtime | **PHP ^8.2** **[changed]** from 8.1: PHP 8.1 reached end of life on 2025-12-31, and 8.2 lets us use PHPUnit 11; PHPUnit 11 (matching `tusharkhan/agentic-php`); Symfony components accept 6.4 or 7 so Laravel 9/10 apps can install it (D12). |
 | Analysed code | PHP 7.4 – 8.4 syntax |
 | Frameworks v1 | **Laravel 8 – 13 only** **[changed]**. Symfony moves to v1.1, after the accuracy gate (section 15). The `FrameworkContext` interface keeps that slot open. Plain-PHP projects get exit code 2 with "no supported framework detected" until a plain-PHP context exists. |
 | Tool distribution | Composer `require-dev` for PHP 8.2+ projects; PHAR for older projects and standalone CI. |
@@ -92,11 +92,11 @@ Built entirely from the AST. The tool never runs `artisan` or the app's own code
 | Policy method whose body is only `return true;` | **None**, flagged in the map |
 | FormRequest parameter whose `authorize()` contains more than `return true;` | Authorization |
 | FormRequest `authorize()` that returns `true` | None |
-| `abort_if` / `abort_unless` / `throw_if` comparing against `auth()->id()` / `$request->user()` / `Auth::id()` | Authorization |
-| Query scoped to the user: `auth()->user()->relation()->find*`, `->where('user_id', auth()->id())`, `->whereBelongsTo($user)`, nested route `->scopeBindings()` | Authorization |
+| `abort_if` / `abort_unless` / `throw_if` comparing against `auth()->id()` / `$request->user()` / `Auth::id()` — a guard on any other condition (e.g. `$order->status === 'paid'`) is **not** an AuthCheck; see `workflow_bypass` in §7. | Authorization |
+| Query scoped to the user: a query that starts from the authenticated user (`auth()->user()`, `$request->user()`, `request()->user()`, `Auth::user()`, `$this->user()` in a FormRequest) and then calls a relation **method** followed by a read (`->invoices()->find*/first*/where*/get`), **or** any query that compares any column to the authenticated id (`->where('<any column>', auth()->id())`, `Auth::id()`, `$request->user()->id`, `->whereBelongsTo($user)`), or a nested route with `->scopeBindings()`. Writes through the user's relations (`->member->update`, `->ownedTeams()->create`) are **not** a query scope. | Authorization |
 | Helper on the user's `auth_helpers` config list | Authorization |
 
-**`RouteEntry`** holds: HTTP methods, URI, name, action (`class`, `method`, or closure), resolved middleware, parameters (name, bound model class, whether scoped), checks, and the file and line it was defined on.
+**`RouteEntry`** holds: HTTP methods, URI, name, action (`class`, `method`, or closure), resolved middleware, parameters (name, bound model class, whether scoped), checks, and the file and line it was defined on. URIs are printed as declared, including binding fields (`/posts/{post:slug}`), with a leading `/`, and with group prefixes and the automatic `/api` prefix applied. `map:` lists are compared as sets.
 
 **`semantic-sec map`** prints this map (console table or `--format=json`). It's free, deterministic, and useful on its own.
 
@@ -112,6 +112,8 @@ A route action becomes a candidate for a category when:
 | `insecure_deserialization` | `unserialize()` is reachable within depth 3 with an argument not provably constant. |
 | `workflow_bypass` | Changes state via `->update(['status' => …])`, `->status = …`, or a method named `cancel|refund|approve|reject|ship|complete|publish|transition*`, with no guard comparing the current status before writing. |
 
+**How exclusions are evaluated.** Unlike the `map` command (which only looks at the route, its middleware, the FormRequest, the controller constructor and the action method itself — depth 0), the selector's "no authorization-strength check covers the route" test also counts authorization-strength checks found anywhere in the action's call graph up to `max_depth`. **Self-scoped writes are exempt** from `missing_authorization`: when every model the action writes is reached only through the authenticated user (one of the expressions in §6's query-scope row, or a relation method/property of it), the route is not a `missing_authorization` candidate. In `benchmark/expected.yaml`, `candidate: false` means the variant must not be selected for **any** category.
+
 `--deep` turns off the "has an authorization check" exclusion. Every routed action then goes to the LLM for `idor` and `missing_authorization`, which trades cost and false positives for recall. Routes with no identifier and no state change are never sent, even with `--deep`.
 
 ## 8. Call graph & pruning
@@ -123,6 +125,7 @@ A route action becomes a candidate for a category when:
   - `X::m()` static calls
   - facades, via `LaravelContext::facadeMap()` (`Auth`, `Gate`, `DB`, `Cache`, …): facades are recorded as calls but never traversed
   - `app(X::class)` / `resolve(X::class)`
+  - the authenticated user: `auth()->user()`, `$request->user()`, `request()->user()`, `Auth::user()` resolve to `App\Models\User` (or the model named in `config/auth.php` `providers.users.model` when that file sets one); a relation property or method on a resolved model (`->account`, `->invoices()`) resolves to the related class named in its `hasOne/hasMany/belongsTo/belongsToMany/morph*(X::class, …)` body, or its `@return`/`@property` generic
 
   Nothing in `vendor/` is traversed. A target it can't resolve is recorded as `unresolved` and isn't guessed.
 - **Pruner:** drops getters and setters that only return or assign a property, empty constructors, `dd/dump/var_dump/print_r/ray/logger/Log::*` statements, and comments (suppressions were already collected). Docblocks lose everything except their `@param`/`@return`/`@var` lines. **Never pruned:** any statement that calls a built-in protected helper (`authorize`, `authorizeResource`, `Gate::*`, `Auth::*`, `auth()`, `abort_if`, `abort_unless`, `throw_if`, `throw_unless`, `can`, `cannot`, `policy`, `->user()`, `denyAccessUnlessGranted`, `isGranted`) or one from the `auth_helpers` config list.
@@ -288,7 +291,7 @@ Unknown keys are a config error (exit 2), which catches typos.
 
 | # | Decision | Reason |
 |---|---|---|
-| D1 | Tool runtime PHP 8.2+ (was 8.1) | 8.1 EOL 2025-12-31; Symfony 7 / PHPUnit 11 |
+| D1 | Tool runtime PHP 8.2+ (was 8.1) | 8.1 EOL 2025-12-31; PHPUnit 11 |
 | D2 | Laravel only in v1; Symfony in v1.1 | Halves context-extraction work; prove accuracy first (`research/09`) |
 | D3 | Deterministic pre-filter plus a `map` command | Cuts cost and false positives; free standalone value (`research/09`) |
 | D4 | Policies and FormRequest `authorize()` parsed | `research/08` finding 1 |

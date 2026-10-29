@@ -12,6 +12,13 @@ Fake Laravel apps (source files only, no `vendor/`) that the scanner is scored a
 - Realistic Laravel only: no hint comments such as `// vulnerable`. Explanations go in the `description` field of `expected.yaml`.
 - Route keys: `"<METHOD> /<full uri>"`, e.g. `GET /vuln/invoices/{id}`.
 
+## Expectation semantics
+
+- `map`: the depth-0 auth checks with strength above none, compared as sets.
+- `candidate: false`: the variant must not be selected for any category.
+- Scoring is at symbol level (file + symbol + category). For IDOR cases, a finding categorised `missing_authorization` on the same symbol also counts.
+- Route keys are printed as declared, including binding fields (`GET /posts/{post:slug}`).
+
 ## Adding a case
 
 1. Write the vulnerable and safe variants and register their routes.
