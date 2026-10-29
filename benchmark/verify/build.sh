@@ -57,12 +57,9 @@ if [ "$APP" = "laravel11-app" ]; then
     cp -R "$SRC/routes/." "$TARGET/routes/"
     cp "$SRC/bootstrap/app.php" "$SRC/bootstrap/providers.php" "$TARGET/bootstrap/"
 else
-    for d in app routes database; do
-        if [ -d "$SRC/$d" ]; then
-            mkdir -p "$TARGET/$d"
-            cp -R "$SRC/$d/." "$TARGET/$d/"
-        fi
-    done
+    rm -rf "$TARGET/app/Http/Controllers" "$TARGET/app/Models" "$TARGET/app/Providers" "$TARGET/routes/web.php"
+    cp -R "$SRC/app/." "$TARGET/app/"
+    cp "$SRC"/routes/*.php "$TARGET/routes/"
 fi
 
 rm -f "$TARGET/tests/Feature/ExampleTest.php" "$TARGET/tests/Unit/ExampleTest.php"
@@ -72,6 +69,9 @@ if [ -d "$VERIFY" ]; then
 fi
 
 cd "$TARGET"
+if [ "$APP" = "laravel10-app" ]; then
+    php "$ROOT/benchmark/verify/lib/register-legacy-providers.php" "$TARGET"
+fi
 if grep -q 'auth:sanctum' routes/api.php 2>/dev/null; then
     composer require laravel/sanctum --no-interaction
 fi
