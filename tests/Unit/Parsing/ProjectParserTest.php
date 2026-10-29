@@ -9,6 +9,7 @@ use TusharKhan\SemanticSec\Parsing\AstGenerator;
 use TusharKhan\SemanticSec\Parsing\FileFinder;
 use TusharKhan\SemanticSec\Parsing\ProjectParser;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkCorpus;
+use TusharKhan\SemanticSec\Tests\Support\ExplodingStream;
 
 final class ProjectParserTest extends TestCase
 {
@@ -68,6 +69,35 @@ final class ProjectParserTest extends TestCase
 
         self::assertSame([], $result->files);
         self::assertSame('app/Locked.php', $result->failures[0]->path);
+        self::assertNull($result->failures[0]->sourceLine);
+    }
+
+    public function testOversizedFileIsSkippedAndOthersStillParse(): void
+    {
+        file_put_contents($this->root.'/app/Good.php', '<?php class Good {}');
+        file_put_contents($this->root.'/app/Big.php', "<?php\n".str_repeat("// padding padding padding padding\n", 36_000));
+
+        $result = $this->parser()->parse($this->root);
+
+        self::assertNotNull($result->file('app/Good.php'));
+        self::assertNull($result->file('app/Big.php'));
+        self::assertCount(1, $result->failures);
+        self::assertSame('app/Big.php', $result->failures[0]->path);
+        self::assertSame('skipped: 1.2 MB exceeds the 1.0 MB limit', $result->failures[0]->getMessage());
+        self::assertNull($result->failures[0]->sourceLine);
+    }
+
+    public function testUnexpectedThrowableIsContainedPerFile(): void
+    {
+        ExplodingStream::register();
+        ExplodingStream::$files = ['proj/app/Good.php' => '<?php class Good {}', 'proj/app/Boom.php' => null];
+
+        $result = $this->parser()->parse('ssboom://proj');
+
+        self::assertNotNull($result->file('app/Good.php'));
+        self::assertCount(1, $result->failures);
+        self::assertSame('app/Boom.php', $result->failures[0]->path);
+        self::assertSame('internal error: LogicException: stream exploded', $result->failures[0]->getMessage());
         self::assertNull($result->failures[0]->sourceLine);
     }
 

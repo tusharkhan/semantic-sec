@@ -49,6 +49,23 @@ final class FileFinderTest extends TestCase
         );
     }
 
+    public function testGeneratedHelperFilesAreSkippedAtAnyDepth(): void
+    {
+        foreach (['_ide_helper.php', '_ide_helper_models.php', '.phpstorm.meta.php', 'app/_ide_helper_x.php', 'app/deep/.phpstorm.meta.php', 'app/Keep.php'] as $f) {
+            $this->touch($f);
+        }
+
+        self::assertSame(['app/Keep.php'], (new FileFinder())->find($this->root));
+    }
+
+    public function testBladeTemplatesAreSkipped(): void
+    {
+        $this->touch('resources/views/home.blade.php');
+        $this->touch('resources/views/plain.php');
+
+        self::assertSame(['resources/views/plain.php'], (new FileFinder())->find($this->root));
+    }
+
     public function testExcludeGlobsApply(): void
     {
         $this->touch('app/Legacy/Old/X.php');

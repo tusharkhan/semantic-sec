@@ -4,10 +4,19 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Tests\Unit\Parsing\Symbols;
 
+use PhpParser\Node\Expr\Variable;
+use PhpParser\Node\Param;
+use PhpParser\Node\Scalar\String_;
+use PhpParser\Node\Stmt\Class_;
+use PhpParser\Node\Stmt\ClassMethod;
 use PHPUnit\Framework\TestCase;
 use TusharKhan\SemanticSec\Parsing\AstGenerator;
 use TusharKhan\SemanticSec\Parsing\FileFinder;
+use TusharKhan\SemanticSec\Parsing\ParsedFile;
+use TusharKhan\SemanticSec\Parsing\ParseResult;
 use TusharKhan\SemanticSec\Parsing\ProjectParser;
+use TusharKhan\SemanticSec\Parsing\SourceFile;
+use TusharKhan\SemanticSec\Parsing\SuppressionSet;
 use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTable;
 use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTableBuilder;
 
@@ -163,6 +172,41 @@ class C {
         self::assertSame('app/A.php', $table->getClass('App\D')?->file);
         self::assertCount(0, $table->classesInFile('app/B.php'));
         self::assertCount(4, $table->all());
+    }
+
+    public function testDuplicateClassesAreReportedInDiscoveryOrder(): void
+    {
+        $table = $this->build([
+            'A.php' => '<?php namespace App; class D {}',
+            'B.php' => '<?php namespace App; class D {}',
+        ]);
+
+        self::assertSame(['App\D declared in app/A.php and app/B.php'], $table->duplicates());
+        self::assertSame('app/A.php', $table->getClass('App\D')?->file);
+    }
+
+    public function testBuildContainsPerFileThrowable(): void
+    {
+        $good = $this->parsedFile('app/Good.php', '<?php namespace App; class Good {}');
+        $wrongType = unserialize(serialize(new String_('not-a-type')));
+        $badMethod = new ClassMethod('m', ['params' => [new Param(new Variable('x'), null, $wrongType)]]);
+        $bad = new ParsedFile(
+            new SourceFile('app/Bad.php', '/abs/app/Bad.php', ''),
+            [new Class_('Bad', ['stmts' => [$badMethod]])],
+            new SuppressionSet([], []),
+        );
+
+        $table = (new SymbolTableBuilder())->build(new ParseResult([$bad, $good], []));
+
+        self::assertNotNull($table->getClass('App\Good'));
+        self::assertNull($table->getClass('Bad'));
+        self::assertCount(1, $table->failures());
+        self::assertStringStartsWith('app/Bad.php: TypeError: ', $table->failures()[0]);
+    }
+
+    private function parsedFile(string $path, string $code): ParsedFile
+    {
+        return (new AstGenerator())->parse(new SourceFile($path, '/abs/'.$path, $code));
     }
 
     /** @param array<string, string> $files */

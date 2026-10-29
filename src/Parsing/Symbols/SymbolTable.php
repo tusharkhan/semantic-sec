@@ -12,16 +12,36 @@ final class SymbolTable
     /** @var array<string, list<ClassSymbol>> */
     private array $byFile = [];
 
-    /** @param list<ClassSymbol> $classes */
-    public function __construct(array $classes)
+    /** @var list<string> */
+    private array $duplicates = [];
+
+    /**
+     * @param  list<ClassSymbol>  $classes
+     * @param  list<string>  $failures
+     */
+    public function __construct(array $classes, private array $failures = [])
     {
         foreach ($classes as $class) {
             if (isset($this->classes[$class->name])) {
+                $this->duplicates[] = sprintf('%s declared in %s and %s', $class->name, $this->classes[$class->name]->file, $class->file);
+
                 continue;
             }
             $this->classes[$class->name] = $class;
             $this->byFile[$class->file][] = $class;
         }
+    }
+
+    /** @return list<string> */
+    public function duplicates(): array
+    {
+        return $this->duplicates;
+    }
+
+    /** @return list<string> */
+    public function failures(): array
+    {
+        return $this->failures;
     }
 
     public function getClass(string $fqn): ?ClassSymbol

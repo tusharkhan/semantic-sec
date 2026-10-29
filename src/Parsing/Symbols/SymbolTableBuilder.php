@@ -36,6 +36,7 @@ use PHPStan\PhpDocParser\Parser\PhpDocParser;
 use PHPStan\PhpDocParser\Parser\TokenIterator;
 use PHPStan\PhpDocParser\Parser\TypeParser;
 use PHPStan\PhpDocParser\ParserConfig;
+use TusharKhan\SemanticSec\Parsing\ParsedFile;
 use TusharKhan\SemanticSec\Parsing\ParseResult;
 
 final class SymbolTableBuilder
@@ -62,33 +63,48 @@ final class SymbolTableBuilder
     public function build(ParseResult $result): SymbolTable
     {
         $classes = [];
+        $failures = [];
         foreach ($result->files as $parsed) {
-            $resolver = new NameResolver(null, ['replaceNodes' => false]);
-            $collector = new class ($this, $resolver, $parsed->file->path) extends NodeVisitorAbstract {
-                /** @var list<ClassSymbol> */
-                public array $found = [];
+            try {
+                $found = $this->symbolsForFile($parsed);
+            } catch (\Throwable $e) {
+                $failures[] = sprintf('%s: %s: %s', $parsed->file->path, $e::class, $e->getMessage());
 
-                public function __construct(
-                    private readonly SymbolTableBuilder $builder,
-                    private readonly NameResolver $resolver,
-                    private readonly string $file,
-                ) {
-                }
-
-                public function enterNode(Node $node): null
-                {
-                    if ($node instanceof ClassLike && $node->name !== null && $node->namespacedName !== null) {
-                        $this->found[] = $this->builder->symbolFor($node, $this->file, $this->resolver);
-                    }
-
-                    return null;
-                }
-            };
-            (new NodeTraverser($resolver, $collector))->traverse($parsed->ast);
-            array_push($classes, ...$collector->found);
+                continue;
+            }
+            array_push($classes, ...$found);
         }
 
-        return new SymbolTable($classes);
+        return new SymbolTable($classes, $failures);
+    }
+
+    /** @return list<ClassSymbol> */
+    private function symbolsForFile(ParsedFile $parsed): array
+    {
+        $resolver = new NameResolver(null, ['replaceNodes' => false]);
+        $collector = new class ($this, $resolver, $parsed->file->path) extends NodeVisitorAbstract {
+            /** @var list<ClassSymbol> */
+            public array $found = [];
+
+            public function __construct(
+                private readonly SymbolTableBuilder $builder,
+                private readonly NameResolver $resolver,
+                private readonly string $file,
+            ) {
+            }
+
+            public function enterNode(Node $node): null
+            {
+                if ($node instanceof ClassLike && $node->name !== null && $node->namespacedName !== null) {
+                    $this->found[] = $this->builder->symbolFor($node, $this->file, $this->resolver);
+                }
+
+                return null;
+            }
+        };
+        (new NodeTraverser($resolver, $collector))->traverse($parsed->ast);
+
+        return $collector->found;
     }
 
     /** @internal Called by the traversal visitor. */

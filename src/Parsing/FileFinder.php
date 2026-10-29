@@ -38,6 +38,9 @@ final class FileFinder
             if (! $file->isFile() || $file->getExtension() !== 'php') {
                 continue;
             }
+            if ($this->isGenerated($file->getFilename())) {
+                continue;
+            }
             $relative = str_replace('\\', '/', substr($file->getPathname(), $prefix));
             if ($this->matchesGlob($relative, $excludeGlobs)) {
                 continue;
@@ -48,6 +51,13 @@ final class FileFinder
         sort($paths, SORT_STRING);
 
         return $paths;
+    }
+
+    private function isGenerated(string $name): bool
+    {
+        return $name === '.phpstorm.meta.php'
+            || str_ends_with($name, '.blade.php')
+            || (str_starts_with($name, '_ide_helper') && str_ends_with($name, '.php'));
     }
 
     private function isAlwaysExcluded(string $relative): bool
