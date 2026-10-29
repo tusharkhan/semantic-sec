@@ -111,6 +111,77 @@ final class SuppressionCollectorTest extends TestCase
         self::assertNull($set->find(9, Category::Idor));
     }
 
+    public function testNamespaceLevelDirectiveIsRejected(): void
+    {
+        $code = "<?php\n// @semantic-sec-ignore all: whole file\nnamespace App;\n\nclass Foo\n{\n    public function show()\n    {\n        return 1;\n    }\n}\n";
+        $set = $this->collect($code);
+
+        self::assertSame([], $set->suppressions);
+        self::assertSame(['app/Foo.php:2: file-level suppression is not supported; put it above the method or statement'], $set->invalid);
+        self::assertNull($set->find(9, Category::Idor));
+    }
+
+    public function testClassLevelDirectiveIsRejected(): void
+    {
+        $code = "<?php\nnamespace App;\n\n/**\n * @semantic-sec-ignore idor: whole class\n */\nclass Foo\n{\n    public function show()\n    {\n        return 1;\n    }\n}\n";
+        $set = $this->collect($code);
+
+        self::assertSame([], $set->suppressions);
+        self::assertSame(['app/Foo.php:4: class-level suppression is not supported; put it above the method or statement'], $set->invalid);
+    }
+
+    public function testTraitInterfaceAndEnumDirectivesAreRejected(): void
+    {
+        $code = "<?php\n// @semantic-sec-ignore idor\ntrait T {}\n// @semantic-sec-ignore idor\ninterface I {}\n// @semantic-sec-ignore idor\nenum E {}\n";
+        $set = $this->collect($code);
+
+        self::assertSame([], $set->suppressions);
+        self::assertCount(3, $set->invalid);
+    }
+
+    public function testMethodLevelStillWorksInsideDocumentedClass(): void
+    {
+        $code = "<?php\n/** Class doc. */\nclass Foo\n{\n    /** @semantic-sec-ignore idor: ok */\n    public function show()\n    {\n        return 1;\n    }\n}\n";
+        $set = $this->collect($code);
+
+        self::assertCount(1, $set->suppressions);
+        self::assertSame([], $set->invalid);
+        self::assertNotNull($set->find(8, Category::Idor));
+    }
+
+    public function testEmptyReasonAfterColonIsValidAndReasonless(): void
+    {
+        $set = $this->collect($this->method('@semantic-sec-ignore idor:'));
+
+        self::assertCount(1, $set->suppressions);
+        self::assertNull($set->suppressions[0]->reason);
+        self::assertCount(1, $set->withoutReason());
+        self::assertSame([], $set->invalid);
+    }
+
+    public function testMalformedDirectivesAreReported(): void
+    {
+        $expected = 'app/Foo.php:4: malformed directive; expected "@semantic-sec-ignore <category>[: reason]"';
+
+        $words = $this->collect($this->method('@semantic-sec-ignore idor because x'));
+        self::assertSame([], $words->suppressions);
+        self::assertSame([$expected], $words->invalid);
+
+        $bare = $this->collect($this->method('@semantic-sec-ignore'));
+        self::assertSame([], $bare->suppressions);
+        self::assertSame([$expected], $bare->invalid);
+    }
+
+    public function testCrlfCommentWithValidDirective(): void
+    {
+        $code = str_replace("\n", "\r\n", "<?php\nclass Foo\n{\n    /**\n     * @semantic-sec-ignore idor: ok\n     */\n    public function show()\n    {\n        return 1;\n    }\n}\n");
+        $set = $this->collect($code);
+
+        self::assertCount(1, $set->suppressions);
+        self::assertSame('ok', $set->suppressions[0]->reason);
+        self::assertSame([], $set->invalid);
+    }
+
     public function testBenchmarkSuppressedCaseIsCollected(): void
     {
         $case = null;

@@ -6,13 +6,17 @@ namespace TusharKhan\SemanticSec\Parsing;
 
 use PhpParser\Node;
 use PhpParser\Node\Stmt;
+use PhpParser\Node\Stmt\ClassLike;
+use PhpParser\Node\Stmt\Namespace_;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
 use TusharKhan\SemanticSec\Analysis\Category;
 
 final class SuppressionCollector
 {
-    public const PATTERN = '/@semantic-sec-ignore\s+([A-Za-z0-9_-]+)(?:\s*:\s*(.+?))?\s*(?:\*\/)?$/m';
+    public const MARKER = '@semantic-sec-ignore';
+
+    public const PATTERN = '/@semantic-sec-ignore[ \t]+([A-Za-z0-9_-]+)(?:[ \t]*:[ \t]*(.*?))?[ \t\r]*(?:\*\/)?[ \t\r]*$/';
 
     /** @param array<\PhpParser\Node\Stmt> $ast */
     public function collect(string $file, array $ast): SuppressionSet
@@ -36,23 +40,38 @@ final class SuppressionCollector
                 }
 
                 foreach ($node->getComments() as $comment) {
-                    if (preg_match_all(SuppressionCollector::PATTERN, $comment->getText(), $matches, PREG_SET_ORDER) === false) {
-                        continue;
-                    }
-                    foreach ($matches as $m) {
-                        $this->record($node, $comment->getStartLine(), $m[1], trim($m[2] ?? ''));
+                    foreach (preg_split('/\R/', $comment->getText()) ?: [] as $line) {
+                        if (! str_contains($line, SuppressionCollector::MARKER)) {
+                            continue;
+                        }
+                        if (preg_match(SuppressionCollector::PATTERN, $line, $m) === 1) {
+                            $this->record($node, $comment->getStartLine(), $m[1], trim($m[2] ?? ''));
+                        } else {
+                            $this->reject(sprintf('%s:%d: malformed directive; expected "@semantic-sec-ignore <category>[: reason]"', $this->file, $comment->getStartLine()));
+                        }
                     }
                 }
 
                 return null;
             }
 
+            private function reject(string $message): void
+            {
+                $this->invalid[$message] = $message;
+            }
+
             private function record(Node $node, int $commentLine, string $token, string $reason): void
             {
+                if ($node instanceof Namespace_ || $node instanceof ClassLike) {
+                    $scope = $node instanceof Namespace_ ? 'file' : 'class';
+                    $this->reject(sprintf('%s:%d: %s-level suppression is not supported; put it above the method or statement', $this->file, $commentLine, $scope));
+
+                    return;
+                }
+
                 $category = strtolower($token) === 'all' ? null : Category::fromToken($token);
                 if ($category === null && strtolower($token) !== 'all') {
-                    $message = sprintf('%s:%d: unknown category "%s"', $this->file, $commentLine, $token);
-                    $this->invalid[$message] = $message;
+                    $this->reject(sprintf('%s:%d: unknown category "%s"', $this->file, $commentLine, $token));
 
                     return;
                 }
