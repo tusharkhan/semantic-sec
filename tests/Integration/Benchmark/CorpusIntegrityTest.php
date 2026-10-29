@@ -9,9 +9,8 @@ use PhpParser\ParserFactory;
 use PHPUnit\Framework\TestCase;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
-use TusharKhan\SemanticSec\Analysis\Category;
-use TusharKhan\SemanticSec\Framework\Laravel\AuthCheckKind;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkCorpus;
+use TusharKhan\SemanticSec\Tests\Support\CorpusValidator;
 
 final class CorpusIntegrityTest extends TestCase
 {
@@ -33,36 +32,39 @@ final class CorpusIntegrityTest extends TestCase
         self::assertSame(count($ids), count(array_unique($ids, SORT_STRING)), 'duplicate case ids: ' . implode(', ', $duplicates));
     }
 
-    public function testEveryCaseHasValidCategoryAndBothVariants(): void
+    public function testEveryCaseIsWellFormed(): void
     {
-        self::assertContainsOnly('array', BenchmarkCorpus::cases());
-
+        $errors = [];
         foreach (BenchmarkCorpus::cases() as $case) {
-            $id = (string) ($case['id'] ?? '?');
-            self::assertNotNull(Category::tryFrom((string) ($case['category'] ?? '')), "bad category in $id");
-
-            foreach (['vulnerable', 'safe'] as $variant) {
-                self::assertIsArray($case[$variant] ?? null, "$id lacks $variant");
-                foreach (['route', 'symbol', 'map'] as $key) {
-                    self::assertArrayHasKey($key, $case[$variant], "$id.$variant lacks $key");
-                }
-            }
+            $errors = [...$errors, ...CorpusValidator::caseErrors($case, BenchmarkCorpus::root())];
         }
+
+        self::assertSame([], $errors, implode("\n", $errors));
     }
 
-    public function testMapKindsAreValid(): void
+    public function testPublicRoutesAreWellFormed(): void
     {
-        self::assertContainsOnly('array', BenchmarkCorpus::cases());
-
-        foreach (BenchmarkCorpus::cases() as $case) {
-            foreach (['vulnerable', 'safe'] as $variant) {
-                $map = $case[$variant]['map'] ?? [];
-                self::assertIsArray($map);
-                foreach ($map as $kind) {
-                    self::assertNotNull(AuthCheckKind::tryFrom((string) $kind), 'bad map kind ' . json_encode($kind));
-                }
-            }
+        $errors = [];
+        foreach (BenchmarkCorpus::publicRoutes() as $index => $route) {
+            $errors = [...$errors, ...$this->publicRouteErrors("public_routes[$index]", $route)];
         }
+
+        self::assertSame([], $errors, implode("\n", $errors));
+    }
+
+    public function testRoutesAreWellFormedAndUnique(): void
+    {
+        $routes = [];
+        foreach ($this->variants() as $label => $variant) {
+            $routes[] = ['owner' => $label, 'app' => $variant['app'], 'route' => $variant['route']];
+        }
+        foreach ($this->publicRoutes() as $label => $route) {
+            $routes[] = ['owner' => $label, 'app' => $route['app'], 'route' => $route['route']];
+        }
+
+        $errors = CorpusValidator::routeErrors($routes);
+
+        self::assertSame([], $errors, implode("\n", $errors));
     }
 
     public function testEveryBenchmarkPhpFileParses(): void
@@ -85,32 +87,40 @@ final class CorpusIntegrityTest extends TestCase
         self::assertGreaterThan(0, $count);
     }
 
-    public function testVulnerableLineIsInsideItsSymbol(): void
+    public function testVulnerableLineStartsAStatementInItsSymbol(): void
     {
-        self::assertContainsOnly('array', BenchmarkCorpus::cases());
-
-        foreach (BenchmarkCorpus::cases() as $case) {
-            $vulnerable = $case['vulnerable'];
-            $method = $this->findMethod((string) $case['app'], (string) $vulnerable['symbol']);
-            $line = (int) $vulnerable['line'];
-
-            self::assertGreaterThanOrEqual($method->getStartLine(), $line, "{$case['id']} line before method");
-            self::assertLessThanOrEqual($method->getEndLine(), $line, "{$case['id']} line after method");
+        $errors = [];
+        foreach ($this->variants() as $label => $variant) {
+            if ($variant['line'] !== null) {
+                $errors = [...$errors, ...CorpusValidator::lineErrors($label, $this->findMethod($label, $variant['app'], $variant['symbol']), $variant['line'])];
+            }
         }
+
+        self::assertSame([], $errors, implode("\n", $errors));
+    }
+
+    public function testSuppressionCommentMatchesTheFlag(): void
+    {
+        $errors = [];
+        foreach ($this->variants() as $label => $variant) {
+            $method = $this->findMethod($label, $variant['app'], $variant['symbol']);
+            $errors = [...$errors, ...CorpusValidator::suppressionErrors($label, $method, $variant['suppressed'])];
+        }
+
+        self::assertSame([], $errors, implode("\n", $errors));
     }
 
     public function testSymbolsExist(): void
     {
-        self::assertContainsOnly('array', BenchmarkCorpus::cases());
-        self::assertContainsOnly('array', BenchmarkCorpus::publicRoutes());
-
-        foreach (BenchmarkCorpus::cases() as $case) {
-            self::assertInstanceOf(ClassMethod::class, $this->findMethod((string) $case['app'], (string) $case['safe']['symbol']));
+        foreach ($this->variants() as $label => $variant) {
+            $this->findMethod($label, $variant['app'], $variant['symbol']);
         }
 
-        foreach (BenchmarkCorpus::publicRoutes() as $route) {
-            self::assertInstanceOf(ClassMethod::class, $this->findMethod((string) $route['app'], (string) $route['symbol']));
+        foreach ($this->publicRoutes() as $label => $route) {
+            $this->findMethod($label, $route['app'], $route['symbol']);
         }
+
+        $this->addToAssertionCount(1);
     }
 
     public function testFindMethodIgnoresSameNamedMethodInAnotherClass(): void
@@ -146,16 +156,83 @@ PHP;
         self::assertNull(BenchmarkCorpus::findMethodInSource($code, 'App\Http\Controllers\First', 'other'));
     }
 
-    private function findMethod(string $app, string $symbol): ClassMethod
+    // Fails on a malformed corpus first, so later tests can index variants safely.
+    /** @return array<string, array{app: string, route: string, symbol: string, line: int|null, suppressed: bool}> */
+    private function variants(): array
     {
-        [$class, $name] = explode('::', $symbol);
-        $method = BenchmarkCorpus::findMethodInSource(
-            (string) file_get_contents(BenchmarkCorpus::fileForSymbol($app, $symbol)),
-            $class,
-            $name,
-        );
+        $variants = [];
+        foreach (BenchmarkCorpus::cases() as $case) {
+            $errors = CorpusValidator::caseErrors($case, BenchmarkCorpus::root());
+            self::assertSame([], $errors, implode("\n", $errors));
 
-        self::assertInstanceOf(ClassMethod::class, $method, "method $symbol not found");
+            foreach (CorpusValidator::VARIANTS as $name) {
+                /** @var array{route: string, symbol: string, line?: int, suppressed?: bool} $variant */
+                $variant = $case[$name];
+                /** @var string $app */
+                $app = $case['app'];
+                $variants[CorpusValidator::caseId($case) . ".$name"] = [
+                    'app' => $app,
+                    'route' => $variant['route'],
+                    'symbol' => $variant['symbol'],
+                    'line' => $variant['line'] ?? null,
+                    'suppressed' => $variant['suppressed'] ?? false,
+                ];
+            }
+        }
+
+        return $variants;
+    }
+
+    /** @return array<string, array{app: string, route: string, symbol: string}> */
+    private function publicRoutes(): array
+    {
+        $routes = [];
+        foreach (BenchmarkCorpus::publicRoutes() as $index => $route) {
+            $label = "public_routes[$index]";
+            $errors = $this->publicRouteErrors($label, $route);
+            self::assertSame([], $errors, implode("\n", $errors));
+
+            /** @var array{app: string, route: string, symbol: string} $route */
+            $routes[$label] = $route;
+        }
+
+        return $routes;
+    }
+
+    /**
+     * @param array<mixed> $route
+     *
+     * @return list<string>
+     */
+    private function publicRouteErrors(string $label, array $route): array
+    {
+        $errors = [];
+        foreach (['app', 'route', 'symbol'] as $key) {
+            if (! is_string($route[$key] ?? null) || $route[$key] === '') {
+                $errors[] = "$label: $key must be a non-empty string";
+            }
+        }
+        foreach (array_keys($route) as $key) {
+            if (! in_array($key, ['app', 'route', 'symbol'], true)) {
+                $errors[] = "$label: unknown key \"$key\"";
+            }
+        }
+        if (is_string($route['app'] ?? null) && ! CorpusValidator::isApp($route['app'], BenchmarkCorpus::root())) {
+            $errors[] = "$label: app \"{$route['app']}\" is not a benchmark app";
+        }
+
+        return $errors;
+    }
+
+    private function findMethod(string $label, string $app, string $symbol): ClassMethod
+    {
+        $file = BenchmarkCorpus::fileForSymbol($app, $symbol);
+        self::assertFileExists($file, "$label: no file for $symbol");
+
+        [$class, $name] = explode('::', $symbol, 2) + [1 => ''];
+        $method = BenchmarkCorpus::findMethodInSource((string) file_get_contents($file), $class, $name);
+
+        self::assertInstanceOf(ClassMethod::class, $method, "$label: method $symbol not found");
 
         return $method;
     }
