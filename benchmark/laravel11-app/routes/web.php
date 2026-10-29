@@ -29,7 +29,7 @@ Route::middleware('auth')->group(function () {
         Route::get('invoices/{invoice}/pdf', [Safe\InvoiceController::class, 'pdf'])
             ->middleware('can:view,invoice');
         Route::patch('projects/{project}', [Safe\ProjectController::class, 'update']);
-        Route::delete('comments/{reply}', [Safe\CommentController::class, 'destroy']);
+        Route::delete('replies/{reply}', [Safe\ReplyController::class, 'destroy']);
         Route::get('documents/{document}', [Safe\DocumentController::class, 'show']);
         Route::get('downloads/{id}', [Safe\DownloadController::class, 'show']);
         Route::put('account', [Safe\MemberController::class, 'update']);

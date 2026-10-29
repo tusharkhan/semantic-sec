@@ -7,7 +7,7 @@ use App\Models\Reply;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\Response;
 
-class CommentController extends Controller
+class ReplyController extends Controller
 {
     use AuthorizesRequests;
 

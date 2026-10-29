@@ -3,12 +3,12 @@
 namespace App\Http\Controllers\Safe;
 
 use App\Http\Controllers\Controller;
-use App\Services\OwnedDownloadService;
+use App\Services\DownloadRepository;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class DownloadController extends Controller
 {
-    public function __construct(private readonly OwnedDownloadService $downloads)
+    public function __construct(private readonly DownloadRepository $downloads)
     {
     }
 

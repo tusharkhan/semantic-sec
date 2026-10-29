@@ -4,7 +4,7 @@ namespace App\Services;
 
 use App\Models\Download;
 
-class OwnedDownloadService
+class DownloadRepository
 {
     public function find(int $id): Download
     {

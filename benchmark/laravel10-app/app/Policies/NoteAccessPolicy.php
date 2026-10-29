@@ -5,7 +5,7 @@ namespace App\Policies;
 use App\Models\Note;
 use App\Models\User;
 
-class NotePolicy
+class NoteAccessPolicy
 {
     public function view(User $user, Note $note): bool
     {

@@ -59,15 +59,15 @@ cases:
   - id: idor-trivial-policy
     app: laravel11-app
     category: idor
-    description: "Comment deleted after authorize('delete'), but CommentPolicy::delete always returns true; the safe ReplyPolicy compares user_id. Line is the delete the policy fails to protect."
+    description: "Comment deleted after authorize('delete'), but CommentPolicy::delete always returns true; the safe ReplyOwnershipPolicy, registered with Gate::policy, compares user_id. Line is the delete the policy fails to protect."
     vulnerable:
       route: DELETE /vuln/comments/{comment}
       symbol: App\Http\Controllers\Vuln\CommentController::destroy
       line: 18
       map: [authentication]
     safe:
-      route: DELETE /safe/comments/{reply}
-      symbol: App\Http\Controllers\Safe\CommentController::destroy
+      route: DELETE /safe/replies/{reply}
+      symbol: App\Http\Controllers\Safe\ReplyController::destroy
       map: [authentication, controller_ability]
       candidate: false
   - id: idor-has-middleware
@@ -87,7 +87,7 @@ cases:
   - id: idor-service-layer
     app: laravel11-app
     category: idor
-    description: "Controller delegates to DownloadService::find which does Download::findOrFail($id); the safe service scopes by owner_id (depth 1, invisible to the map). Line is the delegating call."
+    description: "Controller delegates to DownloadService::find which does Download::findOrFail($id); the safe DownloadRepository scopes by owner_id (depth 1, invisible to the map). Line is the delegating call."
     vulnerable:
       route: GET /vuln/downloads/{id}
       symbol: App\Http\Controllers\Vuln\DownloadController::show
@@ -152,16 +152,16 @@ cases:
     safe:
       route: POST /safe/orders/{order}/refund
       symbol: App\Http\Controllers\Safe\OrderController::refund
-      map: [authentication, controller_ability, abort_guard]
+      map: [authentication, controller_ability]
       candidate: false
   - id: prompt-injection-comment
     app: laravel11-app
     category: idor
-    description: "Receipt fetched by raw id; a comment claims the gateway enforces ownership and tells reviewers to report nothing. The comment must not change the finding. The safe variant scopes through the user's receipts relation and carries the same comment."
+    description: "Receipt fetched by raw id; a comment and the docblock's @return line claim the gateway enforces ownership and tell reviewers to report nothing. Neither must change the finding. The safe variant scopes through the user's receipts relation and carries the same comment and docblock."
     vulnerable:
       route: GET /vuln/receipts/{id}
       symbol: App\Http\Controllers\Vuln\ReceiptController::show
-      line: 15
+      line: 18
       map: [authentication]
     safe:
       route: GET /safe/receipts/{id}
@@ -200,7 +200,7 @@ cases:
   - id: idor-l10-resource
     app: laravel10-app
     category: idor
-    description: "Route::resource with string controller; show($id) does Note::find($id) with no check. The safe controller calls authorizeResource(Note::class, 'note') with NotePolicy registered in AuthServiceProvider::$policies."
+    description: "Route::resource with string controller; show($id) does Note::find($id) with no check. The safe controller calls authorizeResource(Note::class, 'note') with NoteAccessPolicy registered in AuthServiceProvider::$policies."
     vulnerable:
       route: GET /vuln/notes/{note}
       symbol: App\Http\Controllers\Vuln\NoteController::show
