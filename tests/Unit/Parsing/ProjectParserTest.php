@@ -101,6 +101,18 @@ final class ProjectParserTest extends TestCase
         self::assertNull($result->failures[0]->sourceLine);
     }
 
+    public function testFileLookupFindsEveryParsedFileByPath(): void
+    {
+        file_put_contents($this->root.'/app/A.php', '<?php class A {}');
+        file_put_contents($this->root.'/app/B.php', '<?php class B {}');
+
+        $result = $this->parser()->parse($this->root);
+
+        self::assertSame('app/B.php', $result->file('app/B.php')?->file->path);
+        self::assertSame('app/A.php', $result->file('app/A.php')?->file->path);
+        self::assertNull($result->file('app/C.php'));
+    }
+
     public function testParsesWholeBenchmarkAppWithoutFailures(): void
     {
         $result = $this->parser()->parse(BenchmarkCorpus::root().'/laravel11-app');

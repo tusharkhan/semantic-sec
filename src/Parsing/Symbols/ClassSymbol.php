@@ -24,6 +24,7 @@ final readonly class ClassSymbol
         public array $traits,
         public array $properties,
         public array $methods,
+        public \PhpParser\Node\Stmt\ClassLike $node,
     ) {
     }
 }

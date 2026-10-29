@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Tests\Unit\Parsing\Symbols;
 
+use PhpParser\Node\Expr\Array_;
 use PhpParser\Node\Expr\Variable;
 use PhpParser\Node\Param;
 use PhpParser\Node\Scalar\String_;
@@ -183,6 +184,54 @@ class C {
 
         self::assertSame(['App\D declared in app/A.php and app/B.php'], $table->duplicates());
         self::assertSame('app/A.php', $table->getClass('App\D')?->file);
+    }
+
+    public function testLegacyDocblockScalarsMapToBuiltins(): void
+    {
+        $table = $this->build(['C.php' => '<?php
+namespace App;
+class C {
+    /** @var integer */ public $a;
+    /** @var boolean */ public $b;
+    /** @var double */ public $c;
+    /** @var real */ public $d;
+    /** @var long */ public $e;
+    /** @var number */ public $f;
+    /** @var callback */ public $g;
+    /** @var Scalar */ public $h;
+    /** @var resource */ public $i;
+    /** @var numeric */ public $j;
+}']);
+
+        $types = array_map(static fn ($p) => $p->type, $table->getClass('App\C')->properties ?? []);
+        self::assertSame(['a' => 'int', 'b' => 'bool', 'c' => 'float', 'd' => 'float', 'e' => 'int', 'f' => 'float', 'g' => 'callable', 'h' => 'scalar', 'i' => 'resource', 'j' => 'numeric'], $types);
+    }
+
+    public function testNamespaceRelativeDocblockNameResolvesAgainstCurrentNamespace(): void
+    {
+        $table = $this->build(['C.php' => '<?php
+namespace App;
+class C { /** @var namespace\Bar */ public $bar; }']);
+
+        self::assertSame('App\Bar', $table->getClass('App\C')?->properties['bar']->type);
+    }
+
+    public function testExposesClassNodeAndPropertyDefaults(): void
+    {
+        $table = $this->build(['C.php' => '<?php
+namespace App;
+class C {
+    protected $policies = [\'a\' => 1];
+    public $none;
+    public function __construct(private int $promoted = 5) {}
+}']);
+
+        $class = $table->getClass('App\C');
+        self::assertNotNull($class);
+        self::assertInstanceOf(Class_::class, $class->node);
+        self::assertInstanceOf(Array_::class, $class->properties['policies']->default);
+        self::assertNull($class->properties['none']->default);
+        self::assertNull($class->properties['promoted']->default);
     }
 
     public function testBuildContainsPerFileThrowable(): void

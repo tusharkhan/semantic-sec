@@ -46,7 +46,14 @@ final class SymbolTableBuilder
         'object', 'void', 'null', 'false', 'true', 'never',
     ];
 
-    private const PSEUDO = ['list', 'scalar', 'numeric', 'resource', 'class-string', 'int-mask', 'key-of', 'value-of'];
+    private const LEGACY = [
+        'integer' => 'int', 'boolean' => 'bool', 'double' => 'float', 'real' => 'float',
+        'long' => 'int', 'number' => 'float', 'callback' => 'callable',
+    ];
+
+    private const DOC_ONLY_BUILTINS = ['scalar', 'resource', 'numeric'];
+
+    private const PSEUDO = ['list', 'class-string', 'int-mask', 'key-of', 'value-of'];
 
     private PhpDocParser $docParser;
 
@@ -133,7 +140,16 @@ final class SymbolTableBuilder
         $traits = [];
         $properties = [];
         $methods = [];
-        $resolve = fn (string $text): string => $context->getResolvedClassName(new Name($text))->toString();
+        $resolve = static function (string $text) use ($context): string {
+            if (stripos($text, 'namespace\\') === 0) {
+                $namespace = $context->getNamespace()?->toString();
+                $rest = substr($text, 10);
+
+                return $namespace === null ? $rest : $namespace.'\\'.$rest;
+            }
+
+            return $context->getResolvedClassName(new Name($text))->toString();
+        };
 
         foreach ($node->stmts as $stmt) {
             if ($stmt instanceof TraitUse) {
@@ -144,7 +160,7 @@ final class SymbolTableBuilder
                 $native = $this->nativeType($stmt->type, $fqn, $parent);
                 $doc = $native === null ? $this->docVarType($stmt, $fqn, $parent, $resolve, $templates) : null;
                 foreach ($stmt->props as $prop) {
-                    $properties[$prop->name->toString()] = new PropertySymbol($prop->name->toString(), $native ?? $doc, $prop->getStartLine());
+                    $properties[$prop->name->toString()] = new PropertySymbol($prop->name->toString(), $native ?? $doc, $prop->getStartLine(), $prop->default);
                 }
             } elseif ($stmt instanceof ClassMethod) {
                 $method = $this->methodSymbol($stmt, $fqn, $parent, $file, $resolve, $templates);
@@ -152,14 +168,14 @@ final class SymbolTableBuilder
                 if (strtolower($method->name) === '__construct') {
                     foreach ($stmt->params as $param) {
                         if ($param->isPromoted() && $param->var instanceof Node\Expr\Variable && is_string($param->var->name)) {
-                            $properties[$param->var->name] = new PropertySymbol($param->var->name, $method->params[$param->var->name] ?? null, $param->getStartLine());
+                            $properties[$param->var->name] = new PropertySymbol($param->var->name, $method->params[$param->var->name] ?? null, $param->getStartLine(), null);
                         }
                     }
                 }
             }
         }
 
-        return new ClassSymbol($fqn, $kind, $file, $node->getStartLine(), $node->getEndLine(), $parent, $interfaces, $traits, $properties, $methods);
+        return new ClassSymbol($fqn, $kind, $file, $node->getStartLine(), $node->getEndLine(), $parent, $interfaces, $traits, $properties, $methods, $node);
     }
 
     /**
@@ -285,7 +301,10 @@ final class SymbolTableBuilder
         if ($lower === 'parent') {
             return $parent;
         }
-        if (in_array($lower, self::BUILTINS, true)) {
+        if (isset(self::LEGACY[$lower])) {
+            return self::LEGACY[$lower];
+        }
+        if (in_array($lower, self::BUILTINS, true) || in_array($lower, self::DOC_ONLY_BUILTINS, true)) {
             return $lower;
         }
         if (str_contains($text, '-') || in_array($lower, self::PSEUDO, true) || in_array($text, $templates, true)) {
