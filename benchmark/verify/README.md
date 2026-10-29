@@ -1,0 +1,27 @@
+# Benchmark verification (real Laravel 12)
+
+Proves the answers in `benchmark/expected.yaml` by running them. Each vulnerable
+variant must be exploitable; each safe variant must block the attacker yet still
+work for its owner. A throwaway Laravel 12 project is built on demand, the
+benchmark app is overlaid on it, and `php artisan test` runs the feature tests
+kept here.
+
+## Run
+
+    docker compose run --rm php sh benchmark/verify/run.sh laravel11-app
+
+`build.sh <app> <target>` builds into an absolute path outside the repo (it refuses
+anything inside). Nothing from the Laravel install is committed.
+
+## Rules
+
+- Laravel 12 only. Never install Laravel 10 or 11, and never disable Composer's
+  security-advisory blocking. If create-project fails on an advisory, raise the
+  skeleton version instead.
+- Corpus apps are edited only to fix a real bug that verification exposes.
+
+## Vocabulary
+
+- exploited: an authenticated attacker gets 2xx and the effect is asserted.
+- blocked: the authenticated attacker gets exactly the stated status (403, 404 or 422) and no effect.
+- owner works: the legitimate owner gets 2xx on the safe route.
