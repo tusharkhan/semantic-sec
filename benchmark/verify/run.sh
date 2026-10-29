@@ -11,4 +11,6 @@ sh "$HERE/build.sh" "$APP" "$TARGET/project"
 cd "$TARGET/project"
 status=0
 php artisan test || status=$?
+php artisan route:list --json > "$TARGET/routes.json" || status=$?
+php "$HERE/lib/check-routes.php" "$HERE/../expected.yaml" "$APP" "$TARGET/routes.json" || status=$?
 exit "$status"
