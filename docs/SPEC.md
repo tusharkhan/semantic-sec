@@ -59,12 +59,12 @@ The whole project is always parsed, because the context lives in routes, middlew
 
 ## 5. Parsing layer
 
-- **FileFinder:** every `*.php` file under the project root, minus `vendor/`, `node_modules/`, `storage/`, `bootstrap/cache/`, `.git/` and the configured `exclude` globs. Don't follow symlinks. Paths are stored relative to the project root, with `/` separators.
+- **FileFinder:** every `*.php` file under the project root, minus `vendor/`, `node_modules/`, `storage/`, `bootstrap/cache/`, `.git/` and the configured `exclude` globs. Don't follow symlinks. Paths are stored relative to the project root, with `/` separators. Also skipped: files over 1 MB (reported as skipped), `_ide_helper*.php`, `.phpstorm.meta.php` and `*.blade.php`.
 - **AstGenerator:** `ParserFactory::createForNewestSupportedVersion()`, keeping the `startLine`, `endLine` and comments attributes. Run `NameResolver` so every name is fully qualified. A file that fails to parse becomes a `ParseFailure` warning and is skipped; it must never be fatal. Strip a UTF-8 BOM, and count CRLF/CR line endings the same way the parser does, so line numbers match what editors show.
-- **SuppressionCollector:** runs on the raw AST **before** the Pruner, so comments still exist. Syntax: `// @semantic-sec-ignore <category|CWE-ID|all>[: reason]`, also accepted inside a docblock.
+- **SuppressionCollector:** runs on the raw AST **before** the Pruner, so comments still exist. Syntax: `// @semantic-sec-ignore <category|CWE-ID|all>[: reason]`, also accepted inside a docblock. Directives above `namespace` or a class/trait/interface/enum declaration are rejected with a warning — only method and statement scope exist. A comment containing `@semantic-sec-ignore` that does not parse is reported as malformed; `<category>:` with no reason is accepted (and warned as reason-less).
   - On a method signature or in its docblock, it covers the **whole method**. Otherwise it covers the **next statement**.
   - **[new]** A suppression with no reason is honoured, but produces a warning in the output.
-- **SymbolTableBuilder:** builds a table of classes (fully qualified name, file, lines, parent, interfaces, traits) with their methods (name, lines, parameter types, return type, AST node) and properties (name, type). Types come from native types, promoted constructor parameters, and `@var`/`@param`/`@return` read with `phpstan/phpdoc-parser`. A type that can't be resolved is `null`; never guess.
+- **SymbolTableBuilder:** builds a table of classes (fully qualified name, file, lines, parent, interfaces, traits) with their methods (name, lines, parameter types, return type, AST node) and properties (name, type). Types come from native types, promoted constructor parameters, and `@var`/`@param`/`@return` read with `phpstan/phpdoc-parser`. A type that can't be resolved is `null`; never guess. Duplicate class names are reported (first declaration wins); a file whose symbols cannot be built is skipped and reported.
 
 ## 6. Laravel authorization map (deterministic, the core asset)
 
@@ -125,6 +125,7 @@ A route action becomes a candidate for a category when:
   - `X::m()` static calls
   - facades, via `LaravelContext::facadeMap()` (`Auth`, `Gate`, `DB`, `Cache`, …): facades are recorded as calls but never traversed
   - `app(X::class)` / `resolve(X::class)`
+  - untyped properties assigned from a typed constructor parameter (`$this->repo = $repo;`) take that parameter's type
   - the authenticated user: `auth()->user()`, `$request->user()`, `request()->user()`, `Auth::user()` resolve to `App\Models\User` (or the model named in `config/auth.php` `providers.users.model` when that file sets one); a relation property or method on a resolved model (`->account`, `->invoices()`) resolves to the related class named in its `hasOne/hasMany/belongsTo/belongsToMany/morph*(X::class, …)` body, or its `@return`/`@property` generic
 
   Nothing in `vendor/` is traversed. A target it can't resolve is recorded as `unresolved` and isn't guessed.
