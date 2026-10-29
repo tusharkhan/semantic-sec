@@ -98,4 +98,60 @@ cases:
       symbol: App\Http\Controllers\Safe\DownloadController::show
       map: [authentication]
       candidate: false
+  - id: mass-assign-guarded-empty
+    app: laravel11-app
+    category: mass_assignment
+    description: "Account has $guarded = [] and is updated from $request->all(), so plan, balance and is_admin can be overwritten; the safe variant updates a Member with $fillable name/email from validated()."
+    vulnerable:
+      route: PUT /vuln/account
+      symbol: App\Http\Controllers\Vuln\AccountController::update
+      line: 14
+      map: [authentication]
+    safe:
+      route: PUT /safe/account
+      symbol: App\Http\Controllers\Safe\MemberController::update
+      map: [authentication]
+      candidate: false
+  - id: mass-assign-sensitive-fillable
+    app: laravel11-app
+    category: mass_assignment
+    description: "Team::create($request->all()) with owner_id in $fillable lets the caller pick the owner; the safe variant creates through the user's ownedWorkspaces relation from validated()."
+    vulnerable:
+      route: POST /vuln/teams
+      symbol: App\Http\Controllers\Vuln\TeamController::store
+      line: 14
+      map: [authentication]
+    safe:
+      route: POST /safe/workspaces
+      symbol: App\Http\Controllers\Safe\WorkspaceController::store
+      map: [authentication]
+      candidate: false
+  - id: insecure-deserialization-cookie
+    app: laravel11-app
+    category: insecure_deserialization
+    description: "unserialize() on the cart cookie allows object injection; the safe variant decodes the cookie with json_decode."
+    vulnerable:
+      route: PUT /api/vuln/cart
+      symbol: App\Http\Controllers\Vuln\CartController::restore
+      line: 13
+      map: [authentication]
+    safe:
+      route: PUT /api/safe/cart
+      symbol: App\Http\Controllers\Safe\CartController::restore
+      map: [authentication]
+      candidate: false
+  - id: workflow-refund-any-status
+    app: laravel11-app
+    category: workflow_bypass
+    description: "Owner-authorized refund applied to an order in any status; the safe variant aborts with 422 unless the order is paid."
+    vulnerable:
+      route: POST /vuln/orders/{order}/refund
+      symbol: App\Http\Controllers\Vuln\OrderController::refund
+      line: 18
+      map: [authentication, controller_ability]
+    safe:
+      route: POST /safe/orders/{order}/refund
+      symbol: App\Http\Controllers\Safe\OrderController::refund
+      map: [authentication, controller_ability, abort_guard]
+      candidate: false
 public_routes: []

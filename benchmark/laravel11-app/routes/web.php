@@ -13,6 +13,9 @@ Route::middleware('auth')->group(function () {
         Route::delete('comments/{comment}', [Vuln\CommentController::class, 'destroy']);
         Route::get('documents/{document}', [Vuln\DocumentController::class, 'show']);
         Route::get('downloads/{id}', [Vuln\DownloadController::class, 'show']);
+        Route::put('account', [Vuln\AccountController::class, 'update']);
+        Route::post('teams', [Vuln\TeamController::class, 'store']);
+        Route::post('orders/{order}/refund', [Vuln\OrderController::class, 'refund']);
     });
 
     Route::prefix('safe')->group(function () {
@@ -24,5 +27,8 @@ Route::middleware('auth')->group(function () {
         Route::delete('comments/{reply}', [Safe\CommentController::class, 'destroy']);
         Route::get('documents/{document}', [Safe\DocumentController::class, 'show']);
         Route::get('downloads/{id}', [Safe\DownloadController::class, 'show']);
+        Route::put('account', [Safe\MemberController::class, 'update']);
+        Route::post('workspaces', [Safe\WorkspaceController::class, 'store']);
+        Route::post('orders/{order}/refund', [Safe\OrderController::class, 'refund']);
     });
 });
