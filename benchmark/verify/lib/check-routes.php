@@ -75,10 +75,10 @@ function middlewareProblems(array $middleware, array $map): array
 
 /**
  * @param  list<array<string, mixed>>  $routes
- * @param  list<string>  $map
+ * @param  list<string>|null  $map
  * @return list<string>
  */
-function checkRoute(array $routes, string $label, string $key, ?array $map): array
+function checkRoute(array $routes, string $label, string $key, ?array $map, string $symbol): array
 {
     $found = matchRoutes($routes, $key);
     if (count($found) !== 1) {
@@ -89,6 +89,11 @@ function checkRoute(array $routes, string $label, string $key, ?array $map): arr
         $problems = array_filter($middleware, isAuth(...)) !== [] ? ['public route has auth middleware'] : [];
     } else {
         $problems = middlewareProblems($middleware, $map);
+    }
+    $expectedAction = str_replace('::', '@', $symbol);
+    $actualAction = (string) ($found[0]['action'] ?? '');
+    if ($actualAction !== $expectedAction) {
+        $problems[] = "action is $actualAction, expected $expectedAction";
     }
 
     return array_map(static fn (string $p): string => "$label $key: $p", $problems);
@@ -111,7 +116,7 @@ function checkAll(array $expected, string $app, array $routes): array
             $entry = $case[$variant];
             $checked++;
             $map = array_map('strval', $entry['map'] ?? []);
-            array_push($failures, ...checkRoute($routes, $case['id'].".$variant", (string) $entry['route'], $map));
+            array_push($failures, ...checkRoute($routes, $case['id'].".$variant", (string) $entry['route'], $map, (string) ($entry['symbol'] ?? '')));
         }
     }
     foreach ($expected['public_routes'] ?? [] as $public) {
@@ -119,7 +124,7 @@ function checkAll(array $expected, string $app, array $routes): array
             continue;
         }
         $checked++;
-        array_push($failures, ...checkRoute($routes, 'public.route', (string) $public['route'], null));
+        array_push($failures, ...checkRoute($routes, 'public.route', (string) $public['route'], null, (string) ($public['symbol'] ?? '')));
     }
 
     return [$checked, $failures];
@@ -157,23 +162,25 @@ function selfTest(): int
     $auth = 'Illuminate\\Auth\\Middleware\\Authenticate';
     $authz = 'Illuminate\\Auth\\Middleware\\Authorize';
     $routes = [
-        ['method' => 'GET|HEAD', 'uri' => 'posts/{post}', 'middleware' => ['web']],
-        ['method' => 'GET|HEAD', 'uri' => 'a/{x}', 'middleware' => ['web', 'auth']],
-        ['method' => 'GET|HEAD', 'uri' => 'b/{x}', 'middleware' => ['web', 'auth:api']],
-        ['method' => 'GET|HEAD', 'uri' => 'c/{x}', 'middleware' => ['web', 'auth', 'can:view,x']],
-        ['method' => 'GET|HEAD', 'uri' => 'd/{x}', 'middleware' => ['web', 'auth', 'can:view,x']],
-        ['method' => 'GET|HEAD', 'uri' => 'f/{x}', 'middleware' => ['web', $auth, "$authz:view,x"]],
-        ['method' => 'GET|HEAD', 'uri' => 'e', 'middleware' => ['web', "$auth:web"]],
-        ['method' => 'GET|HEAD', 'uri' => 'noauth', 'middleware' => ['web']],
-        ['method' => 'GET|HEAD', 'uri' => 'dup', 'middleware' => ['web', 'auth']],
-        ['method' => 'POST', 'uri' => 'dup', 'middleware' => ['web', 'auth']],
-        ['method' => 'GET|POST', 'uri' => 'dup', 'middleware' => ['web', 'auth']],
-        ['method' => 'GET|HEAD', 'uri' => 'g/{x:slug}', 'middleware' => ['web', 'auth']],
-        ['method' => 'GET|HEAD', 'uri' => 'h/{x}', 'middleware' => ['web', 'auth', 'can:update,x']],
-        ['method' => 'GET|HEAD', 'uri' => 'i/{x}', 'middleware' => ['web', 'auth', "$authz:view,x"]],
+        ['method' => 'GET|HEAD', 'uri' => 'posts/{post}', 'middleware' => ['web'], 'action' => 'T\\C@m'],
+        ['method' => 'GET|HEAD', 'uri' => 'a/{x}', 'middleware' => ['web', 'auth'], 'action' => 'T\\C@m'],
+        ['method' => 'GET|HEAD', 'uri' => 'b/{x}', 'middleware' => ['web', 'auth:api'], 'action' => 'T\\C@m'],
+        ['method' => 'GET|HEAD', 'uri' => 'c/{x}', 'middleware' => ['web', 'auth', 'can:view,x'], 'action' => 'T\\C@m'],
+        ['method' => 'GET|HEAD', 'uri' => 'd/{x}', 'middleware' => ['web', 'auth', 'can:view,x'], 'action' => 'T\\C@m'],
+        ['method' => 'GET|HEAD', 'uri' => 'f/{x}', 'middleware' => ['web', $auth, "$authz:view,x"], 'action' => 'T\\C@m'],
+        ['method' => 'GET|HEAD', 'uri' => 'e', 'middleware' => ['web', "$auth:web"], 'action' => 'T\\C@m'],
+        ['method' => 'GET|HEAD', 'uri' => 'noauth', 'middleware' => ['web'], 'action' => 'T\\C@m'],
+        ['method' => 'GET|HEAD', 'uri' => 'dup', 'middleware' => ['web', 'auth'], 'action' => 'T\\C@m'],
+        ['method' => 'POST', 'uri' => 'dup', 'middleware' => ['web', 'auth'], 'action' => 'T\\C@m'],
+        ['method' => 'GET|POST', 'uri' => 'dup', 'middleware' => ['web', 'auth'], 'action' => 'T\\C@m'],
+        ['method' => 'GET|HEAD', 'uri' => 'g/{x:slug}', 'middleware' => ['web', 'auth'], 'action' => 'T\\C@m'],
+        ['method' => 'GET|HEAD', 'uri' => 'h/{x}', 'middleware' => ['web', 'auth', 'can:update,x'], 'action' => 'T\\C@m'],
+        ['method' => 'GET|HEAD', 'uri' => 'i/{x}', 'middleware' => ['web', 'auth', "$authz:view,x"], 'action' => 'T\\C@m'],
+        ['method' => 'GET|HEAD', 'uri' => 'w/{x}', 'middleware' => ['web', 'auth'], 'action' => 'T\\Other@m'],
+        ['method' => 'GET|HEAD', 'uri' => 'pw/{x}', 'middleware' => ['web'], 'action' => 'T\\Other@m'],
     ];
     $case = static fn (string $id, string $route, array $map): array => [
-        'id' => $id, 'app' => 't', 'vulnerable' => ['route' => $route, 'map' => $map], 'safe' => ['route' => $route, 'map' => $map],
+        'id' => $id, 'app' => 't', 'vulnerable' => ['route' => $route, 'map' => $map, 'symbol' => 'T\\C::m'], 'safe' => ['route' => $route, 'map' => $map, 'symbol' => 'T\\C::m'],
     ];
     $expected = [
         'cases' => [
@@ -191,11 +198,13 @@ function selfTest(): int
             $case('routeSlug', 'GET /g/{x}', ['authentication']),
             $case('routeSlug2', 'GET /g/{x:slug}', ['authentication']),
             $case('wrongClassCan', 'GET /i/{x}', ['authentication']),
+            $case('wrongAction', 'GET /w/{x}', ['authentication']),
         ],
         'public_routes' => [
-            ['app' => 't', 'route' => 'GET /posts/{post:slug}'],
-            ['app' => 't', 'route' => 'GET /a/{x}'],
-            ['app' => 'other', 'route' => 'GET /ignored'],
+            ['app' => 't', 'route' => 'GET /posts/{post:slug}', 'symbol' => 'T\\C::m'],
+            ['app' => 't', 'route' => 'GET /a/{x}', 'symbol' => 'T\\C::m'],
+            ['app' => 't', 'route' => 'GET /pw/{x}', 'symbol' => 'T\\C::m'],
+            ['app' => 'other', 'route' => 'GET /ignored', 'symbol' => 'T\\C::m'],
         ],
     ];
     [$checked, $failures] = evaluate($expected, 't', $routes);
@@ -207,10 +216,12 @@ function selfTest(): int
         ...$both('noAuth', 'GET /noauth', 'map has authentication but no auth middleware'),
         ...$both('dup', 'GET /dup', 'matched 2 route:list entries'),
         ...$both('wrongClassCan', 'GET /i/{x}', 'map has no ability check but route has can: middleware'),
+        ...$both('wrongAction', 'GET /w/{x}', 'action is T\\Other@m, expected T\\C@m'),
         'public.route GET /a/{x}: public route has auth middleware',
+        'public.route GET /pw/{x}: action is T\\Other@m, expected T\\C@m',
     ];
     $zero = evaluate($expected, 'nothing', $routes);
-    $ok = $checked === 30 && $failures === $want
+    $ok = $checked === 33 && $failures === $want
         && $zero === [0, ['no expected routes for app "nothing"']];
     if (! $ok) {
         fwrite(STDERR, "self-test FAILED ($checked)\n".implode("\n", $failures)."\n".json_encode($zero)."\n");
