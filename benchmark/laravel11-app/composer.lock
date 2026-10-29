@@ -1,0 +1,9 @@
+{
+    "packages": [
+        {
+            "name": "laravel/framework",
+            "version": "v11.31.0"
+        }
+    ],
+    "packages-dev": []
+}
