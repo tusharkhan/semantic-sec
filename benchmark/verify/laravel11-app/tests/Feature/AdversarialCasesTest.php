@@ -60,7 +60,7 @@ class AdversarialCasesTest extends TestCase
         $this->assertStringContainsString('INV-OWNER-1', $r->getContent());
     }
 
-    public function testPublicPostRouteServesGuests(): void
+    public function testPublicRouteShow(): void
     {
         PostFactory::new()->create(['slug' => 'published-one', 'title' => 'Published Title']);
         PostFactory::new()->create(['slug' => 'published-two']);

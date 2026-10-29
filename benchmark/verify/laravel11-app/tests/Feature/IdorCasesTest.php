@@ -3,7 +3,6 @@
 namespace Tests\Feature;
 
 use App\Models\Comment;
-use App\Models\Download;
 use App\Models\Invoice;
 use App\Models\Project;
 use App\Models\Reply;
@@ -54,7 +53,9 @@ class IdorCasesTest extends TestCase
     {
         $invoice = $this->ownersInvoice();
 
-        $this->assertBlocked($this->actingAs($this->attacker())->getJson("/safe/invoices/{$invoice->id}"), 404);
+        $r = $this->actingAs($this->attacker())->getJson("/safe/invoices/{$invoice->id}");
+        $this->assertBlocked($r, 404);
+        $this->assertStringNotContainsString('INV-OWNER-1', $r->getContent());
 
         $r = $this->actingAs($this->owner())->getJson("/safe/invoices/{$invoice->id}");
         $this->assertOwnerWorks($r);
@@ -102,7 +103,9 @@ class IdorCasesTest extends TestCase
         $invoice = $this->ownersInvoice();
 
         $this->withFile('app/invoices/INV-OWNER-1.pdf', function () use ($invoice) {
-            $this->assertBlocked($this->actingAs($this->attacker())->get("/safe/invoices/{$invoice->id}/pdf"), 403);
+            $r = $this->actingAs($this->attacker())->get("/safe/invoices/{$invoice->id}/pdf");
+            $this->assertBlocked($r, 403);
+            $this->assertStringNotContainsString('owner file contents', $r->getContent());
 
             $r = $this->actingAs($this->owner())->get("/safe/invoices/{$invoice->id}/pdf");
             $this->assertOwnerWorks($r);
@@ -190,10 +193,11 @@ class IdorCasesTest extends TestCase
     public function testIdorServiceLayerSafe(): void
     {
         $download = DownloadFactory::new()->for($this->owner(), 'owner')->create(['path' => 'owner-file.txt']);
-        $this->assertNotNull(Download::find($download->id));
 
         $this->withFile('app/downloads/owner-file.txt', function () use ($download) {
-            $this->assertBlocked($this->actingAs($this->attacker())->get("/safe/downloads/{$download->id}"), 404);
+            $r = $this->actingAs($this->attacker())->get("/safe/downloads/{$download->id}");
+            $this->assertBlocked($r, 404);
+            $this->assertStringNotContainsString('owner file contents', $r->getContent());
 
             $r = $this->actingAs($this->owner())->get("/safe/downloads/{$download->id}");
             $this->assertOwnerWorks($r);

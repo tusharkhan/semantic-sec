@@ -55,6 +55,7 @@ class LogicCasesTest extends TestCase
 
         $this->assertOwnerWorks($r);
         $fresh = Member::find($member->id);
+        $this->assertSame(0, Account::count());
         $this->assertSame('Mallory', $fresh->name);
         $this->assertSame('mallory@example.test', $fresh->email);
         $this->assertEqualsCanonicalizing(['id', 'user_id', 'name', 'email', 'created_at', 'updated_at'], array_keys($fresh->getAttributes()));
@@ -112,6 +113,10 @@ class LogicCasesTest extends TestCase
 
         $this->assertExploited($r);
         $this->assertSame('refunded', Order::find($order->id)->status);
+
+        $paid = OrderFactory::new()->for($this->owner())->create(['status' => 'paid']);
+        $this->assertBlocked($this->actingAs($this->attacker())->postJson("/vuln/orders/{$paid->id}/refund"), 403);
+        $this->assertSame('paid', Order::find($paid->id)->status);
     }
 
     public function testWorkflowRefundAnyStatusSafe(): void
@@ -124,5 +129,9 @@ class LogicCasesTest extends TestCase
         $paid = OrderFactory::new()->for($this->owner())->create(['status' => 'paid']);
         $this->assertOwnerWorks($this->actingAs($this->owner())->postJson("/safe/orders/{$paid->id}/refund"));
         $this->assertSame('refunded', Order::find($paid->id)->status);
+
+        $victim = OrderFactory::new()->for($this->owner())->create(['status' => 'paid']);
+        $this->assertBlocked($this->actingAs($this->attacker())->postJson("/safe/orders/{$victim->id}/refund"), 403);
+        $this->assertSame('paid', Order::find($victim->id)->status);
     }
 }

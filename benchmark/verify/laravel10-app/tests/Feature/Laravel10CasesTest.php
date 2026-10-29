@@ -16,6 +16,8 @@ class Laravel10CasesTest extends TestCase
 
     public function testLegacyRoutesResolveToStringActions(): void
     {
+        $this->assertInstanceOf(\App\Http\Kernel::class, app(\Illuminate\Contracts\Http\Kernel::class));
+
         $routes = app('router')->getRoutes();
 
         $this->assertSame(
@@ -28,7 +30,7 @@ class Laravel10CasesTest extends TestCase
         );
     }
 
-    public function testCtorMiddlewareVulnerable(): void
+    public function testIdorL10CtorMiddlewareVulnerable(): void
     {
         $report = ReportFactory::new()->for($this->owner())->create(['title' => 'OWNER-REPORT-1']);
 
@@ -38,7 +40,7 @@ class Laravel10CasesTest extends TestCase
         $this->assertStringContainsString('OWNER-REPORT-1', $r->getContent());
     }
 
-    public function testCtorMiddlewareSafe(): void
+    public function testIdorL10CtorMiddlewareSafe(): void
     {
         $report = ReportFactory::new()->for($this->owner())->create(['title' => 'OWNER-REPORT-1']);
 
@@ -51,7 +53,7 @@ class Laravel10CasesTest extends TestCase
         $this->assertStringContainsString('OWNER-REPORT-1', $r->getContent());
     }
 
-    public function testResourceVulnerable(): void
+    public function testIdorL10ResourceVulnerable(): void
     {
         $note = NoteFactory::new()->for($this->owner())->create(['title' => 'OWNER-NOTE-1']);
 
@@ -61,7 +63,7 @@ class Laravel10CasesTest extends TestCase
         $this->assertStringContainsString('OWNER-NOTE-1', $r->getContent());
     }
 
-    public function testResourceSafe(): void
+    public function testIdorL10ResourceSafe(): void
     {
         $note = NoteFactory::new()->for($this->owner())->create(['title' => 'OWNER-NOTE-1']);
 
