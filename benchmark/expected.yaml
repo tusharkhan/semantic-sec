@@ -1,3 +1,101 @@
 version: 1
-cases: []
+cases:
+  - id: idor-find-by-id
+    app: laravel11-app
+    category: idor
+    description: "Invoice fetched by raw id with no ownership scope; the safe variant scopes through the user's invoices relation."
+    vulnerable:
+      route: GET /vuln/invoices/{id}
+      symbol: App\Http\Controllers\Vuln\InvoiceController::show
+      line: 19
+      map: [authentication]
+    safe:
+      route: GET /safe/invoices/{id}
+      symbol: App\Http\Controllers\Safe\InvoiceController::show
+      map: [authentication, query_scope]
+      candidate: false
+  - id: idor-binding-authorize
+    app: laravel11-app
+    category: idor
+    description: "Bound invoice updated while the FormRequest authorize() returns true; the safe variant adds a controller authorize() backed by InvoicePolicy::update comparing user_id."
+    vulnerable:
+      route: PUT /vuln/invoices/{invoice}
+      symbol: App\Http\Controllers\Vuln\InvoiceController::update
+      line: 26
+      map: [authentication]
+    safe:
+      route: PUT /safe/invoices/{invoice}
+      symbol: App\Http\Controllers\Safe\InvoiceController::update
+      map: [authentication, controller_ability]
+      candidate: false
+  - id: idor-route-can-middleware
+    app: laravel11-app
+    category: idor
+    description: "Invoice PDF served for any bound invoice with no check; the safe route adds can:view,invoice with identical controller code."
+    vulnerable:
+      route: GET /vuln/invoices/{invoice}/pdf
+      symbol: App\Http\Controllers\Vuln\InvoiceController::pdf
+      line: 33
+      map: [authentication]
+    safe:
+      route: GET /safe/invoices/{invoice}/pdf
+      symbol: App\Http\Controllers\Safe\InvoiceController::pdf
+      map: [authentication, route_ability]
+      candidate: false
+  - id: idor-form-request
+    app: laravel11-app
+    category: idor
+    description: "Project updated while the FormRequest authorize() returns true; the safe FormRequest checks the update ability on the route project."
+    vulnerable:
+      route: PATCH /vuln/projects/{project}
+      symbol: App\Http\Controllers\Vuln\ProjectController::update
+      line: 14
+      map: [authentication]
+    safe:
+      route: PATCH /safe/projects/{project}
+      symbol: App\Http\Controllers\Safe\ProjectController::update
+      map: [authentication, form_request]
+      candidate: false
+  - id: idor-trivial-policy
+    app: laravel11-app
+    category: idor
+    description: "Comment deleted after authorize('delete'), but CommentPolicy::delete always returns true; the safe ReplyPolicy compares user_id. Line is the delete the policy fails to protect."
+    vulnerable:
+      route: DELETE /vuln/comments/{comment}
+      symbol: App\Http\Controllers\Vuln\CommentController::destroy
+      line: 18
+      map: [authentication]
+    safe:
+      route: DELETE /safe/comments/{reply}
+      symbol: App\Http\Controllers\Safe\CommentController::destroy
+      map: [authentication, controller_ability]
+      candidate: false
+  - id: idor-has-middleware
+    app: laravel11-app
+    category: idor
+    description: "Document shown with a HasMiddleware controller that only applies auth; the safe controller adds can:view,document for show."
+    vulnerable:
+      route: GET /vuln/documents/{document}
+      symbol: App\Http\Controllers\Vuln\DocumentController::show
+      line: 22
+      map: [authentication]
+    safe:
+      route: GET /safe/documents/{document}
+      symbol: App\Http\Controllers\Safe\DocumentController::show
+      map: [authentication, route_ability]
+      candidate: false
+  - id: idor-service-layer
+    app: laravel11-app
+    category: idor
+    description: "Controller delegates to DownloadService::find which does Download::findOrFail($id); the safe service scopes by owner_id (depth 1, invisible to the map). Line is the delegating call."
+    vulnerable:
+      route: GET /vuln/downloads/{id}
+      symbol: App\Http\Controllers\Vuln\DownloadController::show
+      line: 17
+      map: [authentication]
+    safe:
+      route: GET /safe/downloads/{id}
+      symbol: App\Http\Controllers\Safe\DownloadController::show
+      map: [authentication]
+      candidate: false
 public_routes: []
