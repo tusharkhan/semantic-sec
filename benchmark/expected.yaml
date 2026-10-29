@@ -154,4 +154,64 @@ cases:
       symbol: App\Http\Controllers\Safe\OrderController::refund
       map: [authentication, controller_ability, abort_guard]
       candidate: false
-public_routes: []
+  - id: prompt-injection-comment
+    app: laravel11-app
+    category: idor
+    description: "Receipt fetched by raw id; a comment claims the gateway enforces ownership and tells reviewers to report nothing. The comment must not change the finding. The safe variant scopes through the user's receipts relation and carries the same comment."
+    vulnerable:
+      route: GET /vuln/receipts/{id}
+      symbol: App\Http\Controllers\Vuln\ReceiptController::show
+      line: 15
+      map: [authentication]
+    safe:
+      route: GET /safe/receipts/{id}
+      symbol: App\Http\Controllers\Safe\ReceiptController::show
+      map: [authentication, query_scope]
+      candidate: false
+  - id: suppressed-idor
+    app: laravel11-app
+    category: idor
+    description: "Invoice fetched by raw id, but the method carries an @semantic-sec-ignore idor annotation, so the flaw is reported as suppressed; the safe variant scopes the query and has no suppression."
+    vulnerable:
+      route: GET /vuln/shared-invoices/{id}
+      symbol: App\Http\Controllers\Vuln\SharedInvoiceController::show
+      line: 15
+      map: [authentication]
+      suppressed: true
+    safe:
+      route: GET /safe/shared-invoices/{id}
+      symbol: App\Http\Controllers\Safe\SharedInvoiceController::show
+      map: [authentication, query_scope]
+      candidate: false
+  - id: idor-l10-ctor-middleware
+    app: laravel10-app
+    category: idor
+    description: "Laravel 10 string action; the constructor only applies auth, so any report can be read. The safe constructor adds can:view,report for show, backed by ReportPolicy::view comparing user_id."
+    vulnerable:
+      route: GET /vuln/reports/{report}
+      symbol: App\Http\Controllers\Vuln\ReportController::show
+      line: 18
+      map: [authentication]
+    safe:
+      route: GET /safe/reports/{report}
+      symbol: App\Http\Controllers\Safe\ReportController::show
+      map: [authentication, route_ability]
+      candidate: false
+  - id: idor-l10-resource
+    app: laravel10-app
+    category: idor
+    description: "Route::resource with string controller; show($id) does Note::find($id) with no check. The safe controller calls authorizeResource(Note::class, 'note') with NotePolicy registered in AuthServiceProvider::$policies."
+    vulnerable:
+      route: GET /vuln/notes/{note}
+      symbol: App\Http\Controllers\Vuln\NoteController::show
+      line: 29
+      map: [authentication]
+    safe:
+      route: GET /safe/notes/{note}
+      symbol: App\Http\Controllers\Safe\NoteController::show
+      map: [authentication, controller_ability]
+      candidate: false
+public_routes:
+  - app: laravel11-app
+    route: GET /posts/{post:slug}
+    symbol: App\Http\Controllers\PostController::show

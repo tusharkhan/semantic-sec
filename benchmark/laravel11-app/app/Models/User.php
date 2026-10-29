@@ -27,6 +27,11 @@ class User extends Authenticatable
         return $this->hasMany(Invoice::class);
     }
 
+    public function receipts(): HasMany
+    {
+        return $this->hasMany(Receipt::class);
+    }
+
     public function projects(): HasMany
     {
         return $this->hasMany(Project::class);

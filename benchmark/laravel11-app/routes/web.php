@@ -1,8 +1,11 @@
 <?php
 
+use App\Http\Controllers\PostController;
 use App\Http\Controllers\Safe;
 use App\Http\Controllers\Vuln;
 use Illuminate\Support\Facades\Route;
+
+Route::get('posts/{post:slug}', [PostController::class, 'show']);
 
 Route::middleware('auth')->group(function () {
     Route::prefix('vuln')->group(function () {
@@ -16,6 +19,8 @@ Route::middleware('auth')->group(function () {
         Route::put('account', [Vuln\AccountController::class, 'update']);
         Route::post('teams', [Vuln\TeamController::class, 'store']);
         Route::post('orders/{order}/refund', [Vuln\OrderController::class, 'refund']);
+        Route::get('receipts/{id}', [Vuln\ReceiptController::class, 'show']);
+        Route::get('shared-invoices/{id}', [Vuln\SharedInvoiceController::class, 'show']);
     });
 
     Route::prefix('safe')->group(function () {
@@ -30,5 +35,7 @@ Route::middleware('auth')->group(function () {
         Route::put('account', [Safe\MemberController::class, 'update']);
         Route::post('workspaces', [Safe\WorkspaceController::class, 'store']);
         Route::post('orders/{order}/refund', [Safe\OrderController::class, 'refund']);
+        Route::get('receipts/{id}', [Safe\ReceiptController::class, 'show']);
+        Route::get('shared-invoices/{id}', [Safe\SharedInvoiceController::class, 'show']);
     });
 });
