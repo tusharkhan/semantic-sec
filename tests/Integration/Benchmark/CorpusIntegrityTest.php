@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace TusharKhan\SemanticSec\Tests\Integration\Benchmark;
 
 use PhpParser\Node\Stmt\ClassMethod;
-use PhpParser\NodeFinder;
 use PhpParser\ParserFactory;
 use PHPUnit\Framework\TestCase;
 use RecursiveDirectoryIterator;
@@ -26,8 +25,12 @@ final class CorpusIntegrityTest extends TestCase
     {
         $ids = array_map(static fn (array $case): mixed => $case['id'] ?? null, BenchmarkCorpus::cases());
 
-        self::assertCount(count(BenchmarkCorpus::cases()), $ids);
-        self::assertSame(array_values(array_unique($ids, SORT_REGULAR)), $ids);
+        $duplicates = array_keys(array_filter(
+            array_count_values(array_map(static fn (mixed $id): string => (string) $id, $ids)),
+            static fn (int $count): bool => $count > 1,
+        ));
+
+        self::assertSame(count($ids), count(array_unique($ids, SORT_STRING)), 'duplicate case ids: ' . implode(', ', $duplicates));
     }
 
     public function testEveryCaseHasValidCategoryAndBothVariants(): void
@@ -110,14 +113,46 @@ final class CorpusIntegrityTest extends TestCase
         }
     }
 
+    public function testFindMethodIgnoresSameNamedMethodInAnotherClass(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class First
+{
+    public function show(): void
+    {
+    }
+}
+
+class Second
+{
+    public function other(): void
+    {
+    }
+
+    public function show(): void
+    {
+    }
+}
+PHP;
+
+        $method = BenchmarkCorpus::findMethodInSource($code, 'App\Http\Controllers\Second', 'show');
+
+        self::assertInstanceOf(ClassMethod::class, $method);
+        self::assertSame(18, $method->getStartLine());
+        self::assertNull(BenchmarkCorpus::findMethodInSource($code, 'App\Http\Controllers\First', 'other'));
+    }
+
     private function findMethod(string $app, string $symbol): ClassMethod
     {
-        $name = explode('::', $symbol)[1];
-        $ast = (new ParserFactory())->createForNewestSupportedVersion()
-            ->parse((string) file_get_contents(BenchmarkCorpus::fileForSymbol($app, $symbol))) ?? [];
-        $method = (new NodeFinder())->findFirst(
-            $ast,
-            static fn ($node): bool => $node instanceof ClassMethod && $node->name->toString() === $name,
+        [$class, $name] = explode('::', $symbol);
+        $method = BenchmarkCorpus::findMethodInSource(
+            (string) file_get_contents(BenchmarkCorpus::fileForSymbol($app, $symbol)),
+            $class,
+            $name,
         );
 
         self::assertInstanceOf(ClassMethod::class, $method, "method $symbol not found");

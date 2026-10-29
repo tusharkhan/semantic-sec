@@ -4,6 +4,14 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Tests\Support;
 
+use PhpParser\Node\Stmt\Class_;
+use PhpParser\Node\Stmt\ClassLike;
+use PhpParser\Node\Stmt\ClassMethod;
+use PhpParser\Node\Stmt\Trait_;
+use PhpParser\NodeFinder;
+use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\NameResolver;
+use PhpParser\ParserFactory;
 use Symfony\Component\Yaml\Yaml;
 
 final class BenchmarkCorpus
@@ -32,6 +40,23 @@ final class BenchmarkCorpus
         $relative = preg_replace('/^App\\\\/', '', $class) ?? $class;
 
         return self::root() . '/' . $app . '/app/' . str_replace('\\', '/', $relative) . '.php';
+    }
+
+    // Finds a method inside the class or trait named by the FQCN, never in another class.
+    public static function findMethodInSource(string $code, string $fqcn, string $method): ?ClassMethod
+    {
+        $ast = (new ParserFactory())->createForNewestSupportedVersion()->parse($code) ?? [];
+        $ast = (new NodeTraverser(new NameResolver()))->traverse($ast);
+        $fqcn = ltrim($fqcn, '\\');
+
+        $class = (new NodeFinder())->findFirst(
+            $ast,
+            static fn ($node): bool => ($node instanceof Class_ || $node instanceof Trait_)
+                && $node->namespacedName !== null
+                && $node->namespacedName->toString() === $fqcn,
+        );
+
+        return $class instanceof ClassLike ? $class->getMethod($method) : null;
     }
 
     /** @return list<array<string, mixed>> */
