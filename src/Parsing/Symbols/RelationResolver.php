@@ -133,11 +133,30 @@ final class RelationResolver
         $inTrait = $this->symbols->getClass($method->class)?->kind === 'trait';
 
         return match ($value->class->toLowerString()) {
-            'self' => $inTrait ? $model : $method->class,
+            'self' => $inTrait ? $this->traitUser($model, $method->class) : $method->class,
             'static' => $model,
             'parent' => $inTrait ? null : $this->symbols->getClass($method->class)?->parent,
             default => ltrim($value->class->toString(), '\\'),
         };
+    }
+
+    // The first class in the model's lineage whose traits (recursively) include the trait; what `self` means there.
+    private function traitUser(string $model, string $trait): ?string
+    {
+        foreach ($this->symbols->lineage($model) as $symbol) {
+            if ($symbol->kind === 'trait') {
+                continue;
+            }
+            foreach ($symbol->traits as $used) {
+                foreach ($this->symbols->lineage($used) as $nested) {
+                    if ($nested->name === $trait) {
+                        return $symbol->name;
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     /**

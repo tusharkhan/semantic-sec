@@ -74,7 +74,10 @@ final class RelationResolverTest extends TestCase
         'app/Models/Admin.php' => '<?php namespace App\Models; class Admin extends User {}',
         'app/Models/Profile.php' => '<?php namespace App\Models; class Profile extends \Illuminate\Database\Eloquent\Model {}',
         'app/Models/Order.php' => '<?php namespace App\Models; class Order extends \Illuminate\Database\Eloquent\Model {}',
-        'app/Models/Team.php' => '<?php namespace App\Models; class Team extends \Illuminate\Database\Eloquent\Model {}',
+        'app/Models/Team.php' => '<?php namespace App\Models; class Team extends \Illuminate\Database\Eloquent\Model { use Outer; }',
+        'app/Models/SubTeam.php' => '<?php namespace App\Models; class SubTeam extends Team {}',
+        'app/Models/Outer.php' => '<?php namespace App\Models; trait Outer { use Inner; }',
+        'app/Models/Inner.php' => '<?php namespace App\Models; trait Inner { public function nestedSelfRef() { return $this->belongsTo(self::class); } }',
     ];
 
     public function testResolvesRelationBodies(): void
@@ -141,7 +144,9 @@ final class RelationResolverTest extends TestCase
     {
         $r = self::resolver();
         self::assertSame('App\Models\User', $r->relatedClass('App\Models\User', 'selfRef'));
-        self::assertSame('App\Models\Admin', $r->relatedClass('App\Models\Admin', 'selfRef'));
+        self::assertSame('App\Models\User', $r->relatedClass('App\Models\Admin', 'selfRef'));
+        self::assertSame('App\Models\Team', $r->relatedClass('App\Models\Team', 'nestedSelfRef'));
+        self::assertSame('App\Models\Team', $r->relatedClass('App\Models\SubTeam', 'nestedSelfRef'));
         self::assertSame('App\Models\Admin', $r->relatedClass('App\Models\Admin', 'staticRef'));
         self::assertNull($r->relatedClass('App\Models\User', 'parentRef'));
     }
