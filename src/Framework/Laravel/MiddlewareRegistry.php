@@ -33,6 +33,16 @@ final class MiddlewareRegistry
     // Framework group members are never auth-relevant, so only the names are kept.
     public const DEFAULT_GROUPS = ['web' => [], 'api' => []];
 
+    private const AUTHORIZE = 'Illuminate\\Auth\\Middleware\\Authorize';
+
+    private const AUTHENTICATION_CLASSES = [
+        'Illuminate\\Auth\\Middleware\\Authenticate',
+        'Illuminate\\Auth\\Middleware\\AuthenticateWithBasicAuth',
+        'Illuminate\\Session\\Middleware\\AuthenticateSession',
+        'Illuminate\\Auth\\Middleware\\EnsureEmailIsVerified',
+        'Illuminate\\Routing\\Middleware\\ValidateSignature',
+    ];
+
     private const KERNEL = 'Illuminate\Foundation\Http\Kernel';
 
     /** @var array<string, string> target class => alias (first alias wins) */
@@ -44,6 +54,11 @@ final class MiddlewareRegistry
      */
     public function __construct(private array $aliases, private array $groups, private SymbolTable $symbols)
     {
+        foreach (self::DEFAULT_ALIASES as $alias => $target) {
+            if (isset($aliases[$alias])) {
+                $this->targets[ltrim($target, '\\')] ??= $alias;
+            }
+        }
         foreach ($aliases as $alias => $target) {
             $this->targets[ltrim(explode(':', $target)[0], '\\')] ??= (string) $alias;
         }
@@ -107,24 +122,50 @@ final class MiddlewareRegistry
     public function kind(string $canonical): MiddlewareKind
     {
         $name = explode(':', $canonical, 2)[0];
+        if (in_array($name, ['auth', 'auth.basic', 'auth.session', 'verified', 'signed'], true)) {
+            return MiddlewareKind::Authentication;
+        }
+        if ($this->isAbility($canonical)) {
+            return MiddlewareKind::Ability;
+        }
 
-        return match ($name) {
-            'auth', 'auth.basic', 'auth.session', 'verified', 'signed' => MiddlewareKind::Authentication,
-            'can' => str_contains($canonical, ':') ? MiddlewareKind::Ability : MiddlewareKind::Other,
-            default => MiddlewareKind::Other,
-        };
+        return $this->descendsFrom($name, self::AUTHENTICATION_CLASSES) ? MiddlewareKind::Authentication : MiddlewareKind::Other;
     }
 
     /** @return array{ability: string, arguments: list<string>}|null */
     public function ability(string $canonical): ?array
     {
-        if (! str_starts_with($canonical, 'can:')) {
+        if (! $this->isAbility($canonical)) {
             return null;
         }
-        $parts = explode(',', substr($canonical, 4));
+        $parts = explode(',', explode(':', $canonical, 2)[1]);
         $ability = array_shift($parts);
 
         return ['ability' => $ability, 'arguments' => $parts];
+    }
+
+    private function isAbility(string $canonical): bool
+    {
+        $parts = explode(':', $canonical, 2);
+
+        return isset($parts[1]) && $parts[1] !== '' && ($parts[0] === 'can' || $this->descendsFrom($parts[0], [self::AUTHORIZE]));
+    }
+
+    /** @param list<string> $bases */
+    private function descendsFrom(string $alias, array $bases): bool
+    {
+        $class = isset($this->aliases[$alias]) ? ltrim(explode(':', $this->aliases[$alias])[0], '\\') : null;
+        $seen = [];
+        while ($class !== null && ! isset($seen[$class])) {
+            $seen[$class] = true;
+            if (in_array($class, $bases, true)) {
+                return true;
+            }
+            $class = $this->symbols->getClass($class)?->parent;
+            $class = $class === null ? null : ltrim($class, '\\');
+        }
+
+        return false;
     }
 
     /**

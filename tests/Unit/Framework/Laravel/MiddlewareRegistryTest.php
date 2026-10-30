@@ -176,4 +176,57 @@ final class MiddlewareRegistryTest extends TestCase
         self::assertSame('auth', $r->canonical('Illuminate\Auth\Middleware\Authenticate'));
         self::assertSame([], $r->expand(['web']));
     }
+
+    /** @return array<string, string> */
+    private function subclasses(): array
+    {
+        return [
+            'app/Owner.php' => '<?php namespace App\Http\Middleware; class EnsureOwner extends \Illuminate\Auth\Middleware\Authorize {}',
+            'app/ApiAuth.php' => '<?php namespace App\Http\Middleware; class ApiAuth extends \Illuminate\Auth\Middleware\Authenticate {}',
+            'app/Authenticate.php' => '<?php namespace App\Http\Middleware; class Authenticate extends \Illuminate\Auth\Middleware\Authenticate {}',
+        ];
+    }
+
+    /** @param array<string, string> $aliases */
+    private function withAliases(array $aliases): MiddlewareRegistry
+    {
+        [, $symbols] = $this->project($this->subclasses());
+
+        return new MiddlewareRegistry($aliases + MiddlewareRegistry::DEFAULT_ALIASES, MiddlewareRegistry::DEFAULT_GROUPS, $symbols);
+    }
+
+    public function testAliasToAuthorizeSubclassIsAbility(): void
+    {
+        $r = $this->withAliases(['owner' => 'App\Http\Middleware\EnsureOwner']);
+        self::assertSame(MiddlewareKind::Ability, $r->kind('owner:update,post'));
+        self::assertSame(['ability' => 'update', 'arguments' => ['post']], $r->ability('owner:update,post'));
+        self::assertSame(MiddlewareKind::Other, $r->kind('owner'));
+        self::assertNull($r->ability('owner'));
+    }
+
+    public function testAliasToAuthenticateSubclassIsAuthentication(): void
+    {
+        $r = $this->withAliases(['api.auth' => 'App\Http\Middleware\ApiAuth']);
+        self::assertSame(MiddlewareKind::Authentication, $r->kind('api.auth'));
+    }
+
+    public function testSameTargetAppAliasDoesNotShadowDefault(): void
+    {
+        $r = $this->withAliases(['admin.auth' => 'Illuminate\Auth\Middleware\Authenticate']);
+        self::assertSame('auth', $r->canonical('Illuminate\Auth\Middleware\Authenticate'));
+        self::assertSame('admin.auth', $r->canonical('admin.auth'));
+    }
+
+    public function testAppAuthOverrideStaysAuthentication(): void
+    {
+        $r = $this->withAliases(['auth' => 'App\Http\Middleware\Authenticate']);
+        self::assertSame('auth:web', $r->canonical('App\Http\Middleware\Authenticate:web'));
+        self::assertSame(MiddlewareKind::Authentication, $r->kind('auth:web'));
+    }
+
+    public function testBareCanIsOtherWithNoAbility(): void
+    {
+        self::assertSame(MiddlewareKind::Other, $this->empty()->kind('can'));
+        self::assertNull($this->empty()->ability('can'));
+    }
 }
