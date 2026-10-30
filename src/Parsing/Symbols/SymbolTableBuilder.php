@@ -220,7 +220,39 @@ final class SymbolTableBuilder
         $genericTags = $doc === null ? [] : ($doc->getReturnTagValues('@phpstan-return') ?: $doc->getReturnTagValues('@psalm-return') ?: $doc->getReturnTagValues());
         $returnGeneric = $genericTags !== [] ? $this->genericArgument($genericTags[0]->type, $class, $parent, $resolve, $templates) : null;
 
-        return new MethodSymbol($class, $node->name->toString(), $file, $node->getStartLine(), $node->getEndLine(), $params, $returnType, $node->isStatic(), $node, $returnGeneric);
+        $docVars = $this->localVarTags($node, $class, $parent, $resolve, $templates);
+
+        return new MethodSymbol($class, $node->name->toString(), $file, $node->getStartLine(), $node->getEndLine(), $params, $returnType, $node->isStatic(), $node, $returnGeneric, $docVars);
+    }
+
+    /**
+     * Class-typed `@var` tags on `$x = …;` statements anywhere in the body.
+     *
+     * @param  callable(string): string  $resolve
+     * @param  list<string>  $templates
+     * @return array<int, array<string, string>>
+     */
+    private function localVarTags(ClassMethod $node, string $class, ?string $parent, callable $resolve, array $templates): array
+    {
+        $out = [];
+        foreach ((new NodeFinder())->findInstanceOf($node->stmts ?? [], Node\Stmt\Expression::class) as $stmt) {
+            $assign = $stmt->expr;
+            if (! $assign instanceof Node\Expr\Assign || ! $assign->var instanceof Node\Expr\Variable || ! is_string($assign->var->name)) {
+                continue;
+            }
+            $name = $assign->var->name;
+            foreach ($this->parseDoc($stmt)?->getVarTagValues() ?? [] as $tag) {
+                if ($tag->variableName !== '' && ltrim($tag->variableName, '$') !== $name) {
+                    continue;
+                }
+                $type = $this->docType($tag->type, $class, $parent, $resolve, $templates);
+                if ($type !== null && ! $this->isBuiltin($type)) {
+                    $out[$stmt->getStartFilePos()][$name] = $type;
+                }
+            }
+        }
+
+        return $out;
     }
 
     /**
