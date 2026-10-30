@@ -32,6 +32,13 @@ final class AuthExpressions
 
     private const REQUEST = 'Illuminate\\Http\\Request';
 
+    private const REQUEST_FACADES = ['Illuminate\\Support\\Facades\\Request', 'Illuminate\\Http\\Request', 'Request'];
+
+    private const SUPERGLOBALS = ['_GET', '_POST', '_REQUEST', '_COOKIE', '_SERVER'];
+
+    // Functions whose result is input when any argument is.
+    private const INPUT_WRAPPERS = ['intval', 'floatval', 'boolval', 'strval', 'trim', 'ltrim', 'rtrim', 'data_get', 'array_get'];
+
     private const FORM_REQUEST = 'Illuminate\\Foundation\\Http\\FormRequest';
 
     /** @var array<string, list<array{int, Expr}>> var => [assignment end position, value] in source order */
@@ -185,6 +192,11 @@ final class AuthExpressions
         if ($expr instanceof Expr\Variable) {
             return $this->variableIs($expr, $this->isAuthUser(...));
         }
+        if (self::isFunc($expr, 'optional')) {
+            $args = self::args($expr);
+
+            return count($args) === 1 && $this->isAuthUser($args[0]);
+        }
         if (! self::isCall($expr) || self::name($expr) !== 'user') {
             return false;
         }
@@ -195,6 +207,9 @@ final class AuthExpressions
 
     public function isAuthId(Expr $expr): bool
     {
+        if ($expr instanceof Expr\Cast) {
+            return $this->isAuthId($expr->expr);
+        }
         if ($expr instanceof Expr\StaticCall) {
             return self::isAuthFacade($expr->class) && self::name($expr) === 'id';
         }
@@ -209,7 +224,7 @@ final class AuthExpressions
         }
         $name = self::name($expr);
 
-        return ($name === 'id' && self::isGuard($expr->var)) || ($name === 'getkey' && $this->isAuthUser($expr->var));
+        return ($name === 'id' && self::isGuard($expr->var)) || (in_array($name, ['getkey', 'getauthidentifier'], true) && $this->isAuthUser($expr->var));
     }
 
     /** True when the subtree compares an auth-user or auth-id operand for (in)equality with something other than null/true/false. */
@@ -447,17 +462,39 @@ final class AuthExpressions
         return ! self::isLiteral($expr) && ! $this->isAuth($expr) && ! $this->isRequestInput($expr);
     }
 
-    /** Request input: request(..), $request->x, $request['x'], $request-><any but user()>(..), or a variable only ever assigned one. */
+    /** Request input: request(..), the Request facade, superglobals, $request->x/['x']/-><any but user()>(..), wrappers and chains on those. */
     public function isRequestInput(Expr $expr): bool
     {
         while ($expr instanceof Expr\Cast) {
             $expr = $expr->expr;
         }
         if ($expr instanceof Expr\Variable) {
-            return ($this->taintsAll && $expr->name !== 'this') || $this->variableIs($expr, $this->isRequestInput(...));
+            if (in_array($expr->name, self::SUPERGLOBALS, true)) {
+                return true;
+            }
+
+            return ($this->taintsAll && $expr->name !== 'this') || $this->variableAny($expr, $this->isRequestInput(...));
+        }
+        if ($expr instanceof Expr\BinaryOp\Coalesce) {
+            return $this->isRequestInput($expr->left) || $this->isRequestInput($expr->right);
+        }
+        if ($expr instanceof Expr\Ternary) {
+            return $this->isRequestInput($expr->if ?? $expr->cond) || $this->isRequestInput($expr->else);
         }
         if ($expr instanceof Expr\FuncCall) {
-            return self::isFunc($expr, 'request') && $expr->args !== [];
+            if (self::isFunc($expr, 'request')) {
+                return $expr->args !== [];
+            }
+
+            return in_array(self::name($expr), self::INPUT_WRAPPERS, true) && $this->anyArgIsInput($expr);
+        }
+        if ($expr instanceof Expr\StaticCall) {
+            if (self::isRequestFacade($expr->class)) {
+                return self::name($expr) !== 'user';
+            }
+            $arr = $expr->class instanceof Node\Name && in_array(ltrim($expr->class->toString(), '\\'), ['Illuminate\\Support\\Arr', 'Arr'], true);
+
+            return $arr && self::name($expr) === 'get' && $this->anyArgIsInput($expr);
         }
         if (! ($expr instanceof Expr\PropertyFetch || $expr instanceof Expr\NullsafePropertyFetch || $expr instanceof Expr\ArrayDimFetch || self::isCall($expr))) {
             return false;
@@ -474,11 +511,50 @@ final class AuthExpressions
         return $this->isRequestInput($var);
     }
 
+    private function anyArgIsInput(Expr\CallLike $call): bool
+    {
+        foreach ($call->isFirstClassCallable() ? [] : $call->getArgs() as $arg) {
+            if ($this->isRequestInput($arg->value)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function isRequestFacade(Node $class): bool
+    {
+        return $class instanceof Node\Name && in_array(ltrim($class->toString(), '\\'), self::REQUEST_FACADES, true);
+    }
+
+    /**
+     * A variable is input-tainted when any earlier assignment is input.
+     *
+     * @param  callable(Expr): bool  $test
+     */
+    private function variableAny(Expr\Variable $var, callable $test): bool
+    {
+        if (! is_string($var->name) || $var->name === 'this') {
+            return false;
+        }
+        foreach ($this->assignmentsBefore($var->name, $var->getStartFilePos()) as $value) {
+            if ($test($value)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     // route('p') on the request, directly or via a variable only ever assigned that.
     private function isRouteRead(Expr $expr): bool
     {
         if ($expr instanceof Expr\Variable) {
             return ! $this->taintsAll && $this->variableIs($expr, $this->isRouteRead(...));
+        }
+
+        if ($expr instanceof Expr\StaticCall) {
+            return self::isRequestFacade($expr->class) && self::name($expr) === 'route';
         }
 
         return self::isCall($expr) && self::name($expr) === 'route' && $this->isRequestReceiver($expr->var);

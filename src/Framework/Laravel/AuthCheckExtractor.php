@@ -407,7 +407,7 @@ final class AuthCheckExtractor
         $stmts = $authorize->node->stmts ?? [];
         $context = new AuthExpressions($this->symbols, self::nativeTypes($authorize->node->params), $stmts, true);
         $positions = new BodyPositions($stmts);
-        $leaf = fn (Expr $e, bool $allow): bool => $this->abilityCall($e, $context) !== null || $context->isRoleCall($e) || $context->guardQualifies($e, $allow);
+        $leaf = fn (Expr $e, bool $allow): bool => $this->decidingAbility($e, $context) || $context->isRoleCall($e) || $context->guardQualifies($e, $allow);
         $found = false;
         $reference = null;
         foreach ((new NodeFinder())->find($stmts, static fn (Node $n): bool => $n instanceof Expr) as $node) {
@@ -417,7 +417,18 @@ final class AuthCheckExtractor
             if (($ability === null && ! $comparison && ! $context->isRoleCall($node)) || ! $positions->isUnconditional($node, $ability === null || ! $ability[3])) {
                 continue;
             }
-            if (($ability !== null && $ability[3]) || $positions->isConditionPosition($node, true, $leaf)) {
+            // Gate::inspect returns an always-truthy Response; only `return Gate::inspect(..)` enforces it.
+            $inspect = $ability !== null && AuthExpressions::name($node) === 'inspect';
+            $polarities = match (true) {
+                $ability !== null => [! in_array(AuthExpressions::name($node), self::DENYING, true)],
+                $comparison => [$node instanceof Expr\BinaryOp\Identical || $node instanceof Expr\BinaryOp\Equal],
+                default => [true, false],
+            };
+            $decides = false;
+            foreach ($polarities as $trueAllows) {
+                $decides = $decides || $positions->isConditionPosition($node, true, $leaf, $trueAllows, true);
+            }
+            if (($ability !== null && $ability[3]) || ($inspect ? $positions->parent($node) instanceof Node\Stmt\Return_ : $decides)) {
                 $found = true;
                 $operands = $ability !== null ? AuthExpressions::args($node) : ($node instanceof Expr\BinaryOp ? [$node->left, $node->right] : []);
                 $reference ??= self::routeRead($operands, $context);
@@ -489,7 +500,7 @@ final class AuthCheckExtractor
         }
         $checks = [];
         $covered = [];
-        $leaf = fn (Expr $e, bool $allow): bool => $this->abilityCall($e, $context) !== null || $context->guardQualifies($e, $allow);
+        $leaf = fn (Expr $e, bool $allow): bool => $this->decidingAbility($e, $context) || $context->guardQualifies($e, $allow);
         foreach ($nodes as $node) {
             \assert($node instanceof Expr);
             $ability = $this->abilityCall($node, $context);
@@ -501,7 +512,7 @@ final class AuthCheckExtractor
                 $checks[] = new AuthCheck($kind, $strength, $source, $file, $node->getStartLine(), $strength === AuthStrength::Authorization ? $covers : null, $model);
             };
             // A non-throwing check counts only where its result decides a blocking branch or a guard.
-            if ($ability !== null && ($ability[3] || $positions->isConditionPosition($node, false, $leaf, ! in_array(AuthExpressions::name($node), self::DENYING, true)))) {
+            if ($ability !== null && ($ability[3] || ($this->decidingAbility($node, $context) && $positions->isConditionPosition($node, false, $leaf, ! in_array(AuthExpressions::name($node), self::DENYING, true))))) {
                 [$abilityArg, $modelArg, $any] = $ability;
                 $reason = $this->abilityReason($abilityArg, $modelArg, $any, $context, $file, $class);
                 $variable = $modelArg instanceof Expr\Array_ ? ($modelArg->items[0]->value ?? null) : $modelArg;
@@ -581,6 +592,12 @@ final class AuthCheckExtractor
                 return false;
             }
         }
+    }
+
+    // An ability call whose boolean result can decide a condition (Gate::inspect's Response is always truthy).
+    private function decidingAbility(Expr $node, AuthExpressions $context): bool
+    {
+        return $this->abilityCall($node, $context) !== null && AuthExpressions::name($node) !== 'inspect';
     }
 
     /** @return array{0: ?Expr, 1: ?Expr, 2: bool, 3: bool}|null ability arg, model arg, any-semantics, throws on denial */

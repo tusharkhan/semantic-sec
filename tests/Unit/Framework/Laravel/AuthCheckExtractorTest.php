@@ -241,9 +241,11 @@ final class AuthCheckExtractorTest extends TestCase
             ."Route::put('g/{post}', [C::class, 'g']);\nRoute::put('h/{post}', [C::class, 'h']);\nRoute::put('i/{post}', [C::class, 'i']);",
             $this->controller($body),
         );
-        foreach (['a', 'b', 'c', 'd'] as $m) {
+        foreach (['a', 'b', 'c'] as $m) {
             self::assertSame(['controller_ability/authorization'], self::checks($out['PUT /'.$m.'/{post}']), $m);
         }
+        // A ternary whose denial arm does not block decides nothing.
+        self::assertSame([], self::checks($out['PUT /d/{post}']));
         // A returned (not enforced) result and an injected or route-bound $user prove nothing.
         foreach (['e', 'g', 'h', 'i'] as $m) {
             self::assertSame([], self::checks($out['PUT /'.$m.'/{post}']), $m);
@@ -811,10 +813,10 @@ final class AuthCheckExtractorTest extends TestCase
             'j' => "public function j(Post \$post) { if (! Gate::allows('update', \$post) === true) { abort(403); } }",
             'k' => "public function k(Post \$post) { \$x = ['ok' => Gate::any(['update'], \$post)]; return \$x; }",
         ]);
-        foreach (['a', 'd', 'e', 'f', 'g', 'i', 'j'] as $m) {
+        foreach (['a', 'd', 'e', 'g', 'i', 'j'] as $m) {
             self::assertSame(['controller_ability/authorization'], self::checks($out[$m]), $m);
         }
-        foreach (['b', 'c', 'h', 'k'] as $m) {
+        foreach (['b', 'c', 'f', 'h', 'k'] as $m) {
             self::assertSame([], self::checks($out[$m]), $m);
         }
     }
@@ -1267,5 +1269,114 @@ final class AuthCheckExtractorTest extends TestCase
         self::assertNull($out['c']->checks[0]->model);
         self::assertSame('query_scope', $out['d']->checks[0]->kind->value);
         self::assertNull($out['d']->checks[0]->model);
+    }
+
+    public function testTernaryAndMatchCountOnlyWhenTheDenialArmBlocks(): void
+    {
+        $out = $this->each('get', '{post}', [
+            'b' => "public function b(Request \$r, Post \$post) { return Gate::allows('view', \$post) ? \$post : null; }",
+            'c' => "public function c(Request \$r, Post \$post) { \$post->update(\$r->all()); return Gate::allows('view', \$post) ? \$post : null; }",
+            'd' => "public function d(Request \$r, Post \$post) { \$x = Gate::allows('view', \$post) ? 1 : 0; \$post->delete(); return \$x; }",
+            'e' => "public function e(Request \$r, Post \$post) { return match (Gate::allows('view', \$post)) { true => \$post, false => null }; }",
+            'f' => "public function f(Request \$r, Post \$post) { \$post->delete(); return match (true) { Gate::allows('view', \$post) => 1, default => 0 }; }",
+            'g' => "public function g(Request \$r, Post \$post) { while (Gate::denies('view', \$post)) { break; } return \$post; }",
+            'h' => "public function h(Request \$r, Post \$post) { return Gate::allows('view', \$post) ? \$post : abort(403); }",
+            'i' => "public function i(Request \$r, Post \$post) { \$x = Gate::denies('view', \$post) ? throw new \\RuntimeException('no') : 1; return \$post; }",
+            'j' => "public function j(Request \$r, Post \$post) { return match (Gate::allows('view', \$post)) { true => \$post, false => abort(403) }; }",
+            'k' => "public function k(Request \$r, Post \$post) { return Gate::allows('view', \$post) ?: abort(403); }",
+            'l' => "public function l(Request \$r, Post \$post) { while (Gate::denies('view', \$post)) { abort(403); } return \$post; }",
+        ]);
+        foreach (['b', 'c', 'd', 'e', 'f', 'g', 'l'] as $m) {
+            self::assertSame([], self::checks($out[$m]), $m);
+        }
+        foreach (['h', 'i', 'j', 'k'] as $m) {
+            self::assertSame(['controller_ability/authorization'], self::checks($out[$m]), $m);
+        }
+    }
+
+    public function testFormRequestBranchesMustRefuseOnDenial(): void
+    {
+        $requests = [
+            'Fa' => "if (Gate::allows('view', \$this->route('post'))) { logger('x'); } return true;",
+            'Fb' => "if (Gate::denies('view', \$this->route('post'))) { logger('x'); } return true;",
+            'Fi' => "if (Gate::denies('view', \$this->route('post'))) { return false; } return true;",
+            'Fj' => "return Gate::allows('view', \$this->route('post')) ? true : true;",
+            'Fm' => "return Gate::allows('view', \$this->route('post')) ? true : false;",
+            'Fr' => "if (Gate::allows('view', \$this->route('post'))) { return true; } return false;",
+            'Fo' => "if (\$this->user()->isAdmin()) { logger('x'); } return true;",
+            'Fp' => 'if ($this->user()->isAdmin()) { return true; } return false;',
+            'Fk' => "return Gate::inspect('view', \$this->route('post'));",
+        ];
+        $code = "<?php namespace App\\Http\\Requests;\nuse Illuminate\\Foundation\\Http\\FormRequest;\nuse Illuminate\\Support\\Facades\\Gate;\n";
+        $routes = '';
+        $methods = '';
+        foreach ($requests as $name => $body) {
+            $code .= "class {$name} extends FormRequest { public function authorize(): bool { {$body} } }\n";
+            $routes .= sprintf("Route::put('%s/{post}', [C::class, '%s']);\n", strtolower($name), strtolower($name));
+            $methods .= sprintf("public function %s(\\App\\Http\\Requests\\%s \$request, Post \$post) {}\n", strtolower($name), $name);
+        }
+        [$out] = $this->analyse($routes, $this->controller($methods) + ['app/Http/Requests/Branches.php' => $code]);
+        $strength = static fn (string $m): string => $out['PUT /'.$m.'/{post}']->checks[0]->strength->value;
+        foreach (['fa', 'fb', 'fj', 'fo'] as $m) {
+            self::assertSame('none', $strength($m), $m);
+        }
+        foreach (['fi', 'fm', 'fr', 'fp', 'fk'] as $m) {
+            self::assertSame('authorization', $strength($m), $m);
+        }
+    }
+
+    public function testGateInspectNeverDecidesAConditionOrGuard(): void
+    {
+        $out = $this->each('get', '{post}', [
+            'a' => "public function a(Request \$r, Post \$post) { if (! Gate::inspect('view', \$post)) { abort(403); } return \$post; }",
+            'b' => "public function b(Request \$r, Post \$post) { abort_unless(Gate::inspect('view', \$post), 403); return \$post; }",
+            'c' => "public function c(Request \$r, Post \$post) { if (Gate::inspect('view', \$post)) { return \$post; } abort(403); }",
+            'd' => "public function d(Request \$r, Post \$post) { abort_unless(Gate::inspect('view', \$post) && \$post->user_id === auth()->id(), 403); return \$post; }",
+        ]);
+        foreach (['a', 'b', 'c'] as $m) {
+            self::assertSame([], self::checks($out[$m]), $m);
+        }
+        self::assertSame(['abort_guard/authorization'], self::checks($out['d']));
+    }
+
+    public function testMoreRequestInputForms(): void
+    {
+        $out = $this->each('get', '{post}', [
+            'c' => 'public function c(Request $r, Post $post) { abort_unless(auth()->id() === intval($r->owner_id), 403); return $post; }',
+            'd' => 'public function d(Request $r, Post $post) { $o = $r->owner ?? $post->user_id; abort_unless($o === auth()->id(), 403); return $post; }',
+            'e' => "public function e(Request \$r, Post \$post) { \$o = \$post->user_id; if (\$r->has('o')) { \$o = \$r->o; } abort_unless(\$o === auth()->id(), 403); return \$post; }",
+            'f' => "public function f(Request \$r, Post \$post) { abort_unless(auth()->id() === data_get(\$r->all(), 'owner'), 403); return \$post; }",
+            'g' => "public function g(Request \$r, Post \$post) { abort_unless(auth()->id() === \$_GET['o'], 403); return \$post; }",
+            'h' => 'public function h(Request $r, Post $post) { abort_unless(auth()->id() === ($r->owner ?: $post->user_id), 403); return $post; }',
+            'i' => "public function i(Request \$r, Post \$post) { abort_unless(auth()->id() === \$_POST['owner'], 403); return \$post; }",
+            'j' => "public function j(Request \$r, Post \$post) { abort_unless(auth()->id() === \\Illuminate\\Support\\Facades\\Request::get('owner'), 403); return \$post; }",
+            'k' => "public function k(Request \$r, Post \$post) { abort_unless(auth()->id() === Request::input('owner'), 403); return \$post; }",
+            'l' => "public function l(Request \$r, Post \$post) { abort_unless(auth()->id() === \\Illuminate\\Support\\Arr::get(\$r->all(), 'o'), 403); return \$post; }",
+            'm' => "public function m(Request \$r, Post \$post) { abort_unless(auth()->id() === trim(\$r->input('o')), 403); return \$post; }",
+            'ok1' => 'public function ok1(Request $r, Post $post) { $o = $post->user_id; abort_unless($o === auth()->id(), 403); return $post; }',
+            'ok2' => 'public function ok2(Request $r, Post $post) { abort_unless(Post::findOrFail($r->id)->user_id === auth()->id(), 403); return $post; }',
+            'ok3' => "public function ok3(Request \$r, Post \$post) { abort_unless(auth()->id() === \$r->route('post')->user_id, 403); return \$post; }",
+            'ok4' => 'public function ok4(Request $r, Post $post) { abort_unless(auth()->id() === intval($post->user_id), 403); return $post; }',
+        ]);
+        foreach (['c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm'] as $m) {
+            self::assertSame([], self::checks($out[$m]), $m);
+        }
+        foreach (['ok1', 'ok2', 'ok3', 'ok4'] as $m) {
+            self::assertSame(['abort_guard/authorization'], self::checks($out[$m]), $m);
+        }
+    }
+
+    public function testMoreTautologies(): void
+    {
+        $out = $this->each('get', '{post}', [
+            't1' => 'public function t1(Request $r, Post $post) { abort_unless(auth()->id() === $r->user()->getAuthIdentifier(), 403); return $post; }',
+            't4' => 'public function t4(Request $r, Post $post) { abort_unless(auth()->id() === (string) auth()->id(), 403); return $post; }',
+            't5' => 'public function t5(Request $r, Post $post) { abort_unless(auth()->id() === optional(auth()->user())->id, 403); return $post; }',
+            'ok' => 'public function ok(Request $r, Post $post) { abort_unless((int) $post->user_id === optional($r->user())->id, 403); return $post; }',
+        ]);
+        foreach (['t1', 't4', 't5'] as $m) {
+            self::assertSame([], self::checks($out[$m]), $m);
+        }
+        self::assertSame(['abort_guard/authorization'], self::checks($out['ok']));
     }
 }

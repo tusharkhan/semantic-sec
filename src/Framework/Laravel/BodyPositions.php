@@ -82,9 +82,10 @@ final class BodyPositions
      * asking $leaf whether each other operand qualifies.
      *
      * @param  (callable(Expr, bool): bool)|null  $leaf  operand, whether true must mean "allowed"
-     * @param  ?bool  $trueAllows  set for a non-throwing ability call: an `if` it decides must then gate a blocking path
+     * @param  ?bool  $trueAllows  set when true means "allowed" (false: "denied"); a branch it decides must then block on denial
+     * @param  bool  $request  inside FormRequest authorize(), where `return false` refuses
      */
-    public function isConditionPosition(Node $node, bool $returns, ?callable $leaf = null, ?bool $trueAllows = null): bool
+    public function isConditionPosition(Node $node, bool $returns, ?callable $leaf = null, ?bool $trueAllows = null, bool $request = false): bool
     {
         $found = $this->conditionRoot($node);
         if ($found === null) {
@@ -104,11 +105,64 @@ final class BodyPositions
 
             return $root instanceof Expr && $this->decides($root, $allow, $leaf);
         }
-        if ($slot instanceof Stmt\If_ && $trueAllows !== null && ! $compound) {
-            return $this->ifBlocks($slot, $this->polarity($node, $root) === $trueAllows);
+        if ($trueAllows === null || $compound) {
+            return ! $compound;
+        }
+        // Whether a true condition means "allowed".
+        $allows = $this->polarity($node, $root) === $trueAllows;
+
+        return match (true) {
+            $slot instanceof Stmt\If_ => $this->ifBlocks($slot, $allows, $request),
+            $slot instanceof Expr\Ternary => self::armBlocks($allows ? $slot->else : $slot->if, $request),
+            $slot instanceof Expr\Match_ => self::matchBlocks($slot, ! $allows, $request),
+            $slot instanceof Node\MatchArm => $this->armCondBlocks($slot, $allows, $request),
+            default => false,
+        };
+    }
+
+    // A ternary/match arm that throws or aborts; in a FormRequest also a literal false.
+    private static function armBlocks(?Expr $arm, bool $request): bool
+    {
+        return $arm instanceof Expr\Throw_ || ($arm instanceof Expr\FuncCall && AuthExpressions::name($arm) === 'abort')
+            || ($request && $arm instanceof Expr\ConstFetch && strtolower($arm->name->toString()) === 'false');
+    }
+
+    // The arm a boolean subject takes when it equals $denied must block; arms must be true/false literals or default.
+    private static function matchBlocks(Expr\Match_ $match, bool $denied, bool $request): bool
+    {
+        $default = null;
+        foreach ($match->arms as $arm) {
+            if ($arm->conds === null) {
+                $default = $arm;
+
+                continue;
+            }
+            foreach ($arm->conds as $cond) {
+                if (! $cond instanceof Expr\ConstFetch || ! in_array($name = strtolower($cond->name->toString()), ['true', 'false'], true)) {
+                    return false;
+                }
+                if (($name === 'true') === $denied) {
+                    return self::armBlocks($arm->body, $request);
+                }
+            }
         }
 
-        return ! $compound;
+        return $default !== null && self::armBlocks($default->body, $request);
+    }
+
+    // In match(true): a "denied" condition picks its own arm; an "allowed" sole condition falls to the next arm, which must be default.
+    private function armCondBlocks(Node\MatchArm $arm, bool $allows, bool $request): bool
+    {
+        $match = $this->parent($arm);
+        if (! $match instanceof Expr\Match_ || ! $match->cond instanceof Expr\ConstFetch || strtolower($match->cond->name->toString()) !== 'true') {
+            return false;
+        }
+        if (! $allows) {
+            return self::armBlocks($arm->body, $request);
+        }
+        $next = $match->arms[(int) array_search($arm, $match->arms, true) + 1] ?? null;
+
+        return count($arm->conds ?? []) === 1 && $next !== null && $next->conds === null && self::armBlocks($next->body, $request);
     }
 
     // Whether the condition is true exactly when the node is true, through `!`, `(bool)` and true/false comparisons.
@@ -128,28 +182,28 @@ final class BodyPositions
     }
 
     /** True when the denied path of the `if` blocks: its body when a true condition means denied, else its other branches or what follows it. */
-    private function ifBlocks(Stmt\If_ $if, bool $trueAllows): bool
+    private function ifBlocks(Stmt\If_ $if, bool $trueAllows, bool $request): bool
     {
         if (! $trueAllows) {
-            return self::blocks($if->stmts);
+            return self::blocks($if->stmts, $request);
         }
         if ($if->else !== null) {
             foreach ([...array_map(static fn (Stmt\ElseIf_ $e): array => $e->stmts, $if->elseifs), $if->else->stmts] as $stmts) {
-                if (! self::blocks($stmts)) {
+                if (! self::blocks($stmts, $request)) {
                     return false;
                 }
             }
 
             return true;
         }
-        if ($if->elseifs !== [] || ! self::leaves($if->stmts)) {
+        if ($if->elseifs !== [] || ! self::leaves($if->stmts, $request)) {
             return false;
         }
         $parent = $this->parent($if);
         $siblings = $parent === null ? $this->body : (property_exists($parent, 'stmts') && is_array($parent->stmts) ? $parent->stmts : []);
         $after = array_slice($siblings, (int) array_search($if, $siblings, true) + 1);
         foreach ($after as $stmt) {
-            if (self::isBlocking($stmt)) {
+            if (self::isBlocking($stmt, $request)) {
                 return true;
             }
             if (self::hasBypass($stmt)) {
@@ -161,10 +215,10 @@ final class BodyPositions
     }
 
     /** @param array<Node> $stmts */
-    private static function blocks(array $stmts): bool
+    private static function blocks(array $stmts, bool $request): bool
     {
         foreach ($stmts as $stmt) {
-            if (self::isBlocking($stmt)) {
+            if (self::isBlocking($stmt, $request)) {
                 return true;
             }
         }
@@ -173,10 +227,10 @@ final class BodyPositions
     }
 
     /** @param array<Node> $stmts */
-    private static function leaves(array $stmts): bool
+    private static function leaves(array $stmts, bool $request): bool
     {
         foreach ($stmts as $stmt) {
-            if ($stmt instanceof Stmt\Return_ || self::isBlocking($stmt)) {
+            if ($stmt instanceof Stmt\Return_ || self::isBlocking($stmt, $request)) {
                 return true;
             }
         }
@@ -184,9 +238,12 @@ final class BodyPositions
         return false;
     }
 
-    // abort(..), abort_if/unless, throw, exit, or a return of an error response or redirect.
-    private static function isBlocking(Node $stmt): bool
+    // abort(..), abort_if/unless, throw, exit, or a return of an error response or redirect (FormRequest: of false).
+    private static function isBlocking(Node $stmt, bool $request): bool
     {
+        if ($stmt instanceof Stmt\Return_ && $request) {
+            return $stmt->expr instanceof Expr\ConstFetch && strtolower($stmt->expr->name->toString()) === 'false';
+        }
         if ($stmt instanceof Stmt\Return_) {
             $root = $stmt->expr;
             while ($root !== null && AuthExpressions::isCall($root)) {
