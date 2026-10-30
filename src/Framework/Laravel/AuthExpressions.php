@@ -20,7 +20,7 @@ final class AuthExpressions
     private const NOT_RELATIONS = ['can', 'cannot', 'cant', 'getkey', 'tokencan', 'fresh', 'refresh', 'load', 'tojson', 'toarray', 'only', 'getattribute'];
 
     // Calls that leave the user's relation scope.
-    private const SCOPE_RESETS = ['newquery', 'query', 'newmodelquery', 'with', 'without', 'replicate', 'getmodel'];
+    private const SCOPE_RESETS = ['newquery', 'query', 'newmodelquery', 'replicate', 'getmodel'];
 
     private const AUTH_FACADES = ['Illuminate\\Support\\Facades\\Auth', 'Auth'];
 

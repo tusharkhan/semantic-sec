@@ -599,7 +599,7 @@ final class AuthCheckExtractorTest extends TestCase
                 public function a(Request $r, int $id) { return $r->user()->posts()->newQuery()->find($id); }
                 public function b(Request $r, int $id) { return $r->user()->posts()->getModel()->find($id); }
                 public function c(Request $r, int $id) { return $r->user()->newModelQuery()->find($id); }
-                public function d(Request $r, int $id) { return $r->user()->posts()->with('tags')->find($id); }
+                public function d(Request $r, int $id) { return $r->user()->posts()->with('tags')->findOrFail($id); }
                 public function e(Request $r, int $id) { return $r->user()->posts()->without('tags')->find($id); }
                 public function f(Request $r, int $id) { return $r->user()->replicate()->posts()->find($id); }
                 public function g(Request $r, int $id) { return $r->user()->posts()->query()->find($id); }
@@ -609,9 +609,12 @@ final class AuthCheckExtractorTest extends TestCase
             $routes .= "Route::get('{$m}', [C::class, '{$m}']);\n";
         }
         [$out] = $this->analyse($routes, $this->controller($body));
-        foreach (['a', 'b', 'c', 'd', 'e', 'f', 'g'] as $m) {
+        foreach (['a', 'b', 'c', 'f', 'g'] as $m) {
             self::assertSame([], self::checks($out['GET /'.$m]), $m);
         }
+        // Eager loading keeps the relation's constraints.
+        self::assertSame(['query_scope/authorization'], self::checks($out['GET /d']));
+        self::assertSame(['query_scope/authorization'], self::checks($out['GET /e']));
     }
 
     public function testAbortGuardNeedsComparisonWithAuth(): void
