@@ -87,6 +87,15 @@ final class BenchmarkMapTest extends TestCase
         }
     }
 
+    public function testRelationReadScopeRecordsTheRelatedModel(): void
+    {
+        $route = BenchmarkMaps::build('laravel11-app')->find('GET /safe/invoices/{id}');
+        self::assertNotNull($route);
+        $scopes = array_values(array_filter($route->checks, static fn ($c): bool => $c->kind->value === 'query_scope'));
+        self::assertCount(1, $scopes);
+        self::assertSame('App\\Models\\Invoice', $scopes[0]->model);
+    }
+
     public function testNoUnexpectedWarningsOnBenchmark(): void
     {
         foreach (self::APPS as $app) {

@@ -10,6 +10,7 @@ use PhpParser\NodeFinder;
 use PhpParser\PrettyPrinter\Standard;
 use TusharKhan\SemanticSec\Parsing\Symbols\ClassSymbol;
 use TusharKhan\SemanticSec\Parsing\Symbols\MethodSymbol;
+use TusharKhan\SemanticSec\Parsing\Symbols\RelationResolver;
 use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTable;
 
 /** Finds the depth-0 authorization checks that protect a route (SPEC §6). */
@@ -50,6 +51,8 @@ final class AuthCheckExtractor
         private readonly PolicyRegistry $policies,
         private readonly ControllerMiddlewareReader $controllerMiddleware,
         array $authHelpers,
+        private readonly ?RelationResolver $relations = null,
+        private readonly ?string $authUserModel = null,
     ) {
         $this->eval = new ConstantEvaluator();
         $this->printer = new Standard();
@@ -530,7 +533,7 @@ final class AuthCheckExtractor
             }
             $where = $context->isWhereScope($node);
             if (((! isset($inner[spl_object_id($node)]) && $context->isRelationRead($node)) || $where) && ! self::chainHasOrWhere($node, $inner)) {
-                $add(AuthCheckKind::QueryScope, AuthStrength::Authorization, $this->describe($node), null, $where ? self::scopedModel($node) : null);
+                $add(AuthCheckKind::QueryScope, AuthStrength::Authorization, $this->describe($node), null, $where ? self::scopedModel($node) : $this->relationModel($node, $context));
             }
             if ($this->isHelper($node, $class)) {
                 $add(AuthCheckKind::CustomHelper, AuthStrength::Authorization, $this->describe($node));
@@ -572,6 +575,35 @@ final class AuthCheckExtractor
         $root = $node instanceof Expr\StaticCall ? (AuthExpressions::name($node) ?? '') : '';
 
         return $node instanceof Expr\StaticCall && $node->class instanceof Node\Name && ($root === 'query' || str_starts_with($root, 'where')) ? self::modelName($node->class) : null;
+    }
+
+    // The related model of a relation read rooted at the auth user (`->team->projects()->find(..)`), hop by hop.
+    private function relationModel(Expr $node, AuthExpressions $context): ?string
+    {
+        if ($this->relations === null || $this->authUserModel === null) {
+            return null;
+        }
+        $hops = [];
+        while (! $context->isAuthUser($node)) {
+            $isFetch = $node instanceof Expr\PropertyFetch || $node instanceof Expr\NullsafePropertyFetch;
+            if (! $isFetch && ! AuthExpressions::isCall($node)) {
+                return null;
+            }
+            if (! $node->name instanceof Node\Identifier) {
+                return null;
+            }
+            array_unshift($hops, [$isFetch, $node->name->toString()]);
+            $node = $node->var;
+        }
+        $relations = [];
+        foreach ($hops as [$isFetch, $name]) {
+            $relations[] = $name;
+            if (! $isFetch) {
+                return $this->relations->followChain($this->authUserModel, $relations);
+            }
+        }
+
+        return null;
     }
 
     /**

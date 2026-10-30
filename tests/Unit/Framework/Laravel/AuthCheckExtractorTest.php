@@ -18,6 +18,8 @@ use TusharKhan\SemanticSec\Framework\Laravel\RouteFile;
 use TusharKhan\SemanticSec\Parsing\AstGenerator;
 use TusharKhan\SemanticSec\Parsing\ParseResult;
 use TusharKhan\SemanticSec\Parsing\SourceFile;
+use TusharKhan\SemanticSec\Parsing\Symbols\AuthUserModel;
+use TusharKhan\SemanticSec\Parsing\Symbols\RelationResolver;
 use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTableBuilder;
 
 final class AuthCheckExtractorTest extends TestCase
@@ -79,7 +81,7 @@ final class AuthCheckExtractorTest extends TestCase
             self::assertSame([], $collectWarnings);
         }
 
-        $extractor = new AuthCheckExtractor($symbols, $registry, $policies, new ControllerMiddlewareReader($symbols, $eval), $helpers);
+        $extractor = new AuthCheckExtractor($symbols, $registry, $policies, new ControllerMiddlewareReader($symbols, $eval), $helpers, new RelationResolver($symbols), AuthUserModel::resolve($result, $symbols, $eval));
         $out = [];
         $warnings = [];
         foreach ($entries as $entry) {
@@ -1269,6 +1271,37 @@ final class AuthCheckExtractorTest extends TestCase
         self::assertNull($out['c']->checks[0]->model);
         self::assertSame('query_scope', $out['d']->checks[0]->kind->value);
         self::assertNull($out['d']->checks[0]->model);
+    }
+
+    public function testRelationReadScopeRecordsTheRelatedModel(): void
+    {
+        $user = '<?php namespace App\Models; class User extends \Illuminate\Foundation\Auth\User {
+            public function posts() { return $this->hasMany(Post::class); }
+            public function drafts() { return $this->hasMany($this->draftClass); }
+        }';
+        $out = $this->each('get', '{post}', [
+            'a' => 'public function a(Request $r, Post $post) { return $r->user()->posts()->findOrFail(1); }',
+            'b' => 'public function b(Post $post) { $u = auth()->user(); return $u->posts()->where(\'id\', 1)->first(); }',
+            'c' => 'public function c(Post $post) { return Auth::user()->drafts()->first(); }',
+            'd' => 'public function d(Post $post) { return request()->user()->comments()->get(); }',
+        ], ['app/Models/User.php' => $user]);
+        self::assertSame('App\\Models\\Post', $out['a']->checks[0]->model);
+        self::assertSame('App\\Models\\Post', $out['b']->checks[0]->model);
+        foreach (['c', 'd'] as $m) {
+            self::assertSame('query_scope', $out[$m]->checks[0]->kind->value, $m);
+            self::assertNull($out[$m]->checks[0]->model, $m);
+        }
+    }
+
+    public function testRelationReadScopeModelIsNullWhenTheAuthUserModelIsUnknown(): void
+    {
+        $user = '<?php namespace App\Models; class User extends \Illuminate\Foundation\Auth\User { public function posts() { return $this->hasMany(Post::class); } }';
+        $config = "<?php return ['providers' => ['users' => ['model' => env('AUTH_MODEL')]]];";
+        $out = $this->each('get', '{post}', [
+            'a' => 'public function a(Request $r, Post $post) { return $r->user()->posts()->findOrFail(1); }',
+        ], ['app/Models/User.php' => $user, 'config/auth.php' => $config]);
+        self::assertSame('query_scope', $out['a']->checks[0]->kind->value);
+        self::assertNull($out['a']->checks[0]->model);
     }
 
     public function testTernaryAndMatchCountOnlyWhenTheDenialArmBlocks(): void

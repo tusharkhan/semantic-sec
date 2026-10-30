@@ -8,6 +8,8 @@ use TusharKhan\SemanticSec\Config\Config;
 use TusharKhan\SemanticSec\Framework\DetectedFramework;
 use TusharKhan\SemanticSec\Framework\FrameworkContext;
 use TusharKhan\SemanticSec\Parsing\ParseResult;
+use TusharKhan\SemanticSec\Parsing\Symbols\AuthUserModel;
+use TusharKhan\SemanticSec\Parsing\Symbols\RelationResolver;
 use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTable;
 
 final class LaravelContext implements FrameworkContext
@@ -49,7 +51,8 @@ final class LaravelContext implements FrameworkContext
         [$policies, $w] = PolicyRegistry::fromProject($symbols, $eval);
         array_push($warnings, ...$w);
 
-        $extractor = new AuthCheckExtractor($symbols, $registry, $policies, $controllerMiddleware, $config->authHelpers);
+        $authUser = AuthUserModel::resolve($parsed, $symbols, $eval);
+        $extractor = new AuthCheckExtractor($symbols, $registry, $policies, $controllerMiddleware, $config->authHelpers, new RelationResolver($symbols), $authUser);
         $out = [];
         foreach ($routes as $route) {
             [$entry, $w] = $extractor->extract($route);

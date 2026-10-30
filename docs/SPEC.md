@@ -138,7 +138,7 @@ Through `&&`/`||` it follows the abort-guard any/every rule (see the table below
 | An abort guard whose condition (after `!`) is one auth comparison with `$x->prop`, `$x` the untouched route-bound parameter variable | that parameter |
 | Other abort guards, query scopes, custom helpers, authentication | `null` |
 
-**Query-scope model (`model`).** A query-scope check records the FQN `X` for `X::where…(…)` and `X::query()->…->where(…)`; otherwise (relation reads, other roots) `null`.
+**Query-scope model (`model`).** A query-scope check records the FQN `X` for `X::where…(…)` and `X::query()->…->where(…)`; for a relation read rooted at the authenticated user, the related class of that relation on the auth user model (§8), resolved hop by hop; otherwise (an unresolved hop, other roots) `null`.
 
 M4's `idor` selection may require the check to cover the identifier parameter (decided in M4).
 
