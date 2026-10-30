@@ -19,6 +19,7 @@ use PhpParser\Node\Stmt\Property;
 use PhpParser\Node\Stmt\Trait_;
 use PhpParser\Node\Stmt\TraitUse;
 use PhpParser\Node\UnionType;
+use PhpParser\NodeFinder;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
@@ -175,7 +176,16 @@ final class SymbolTableBuilder
             }
         }
 
-        return new ClassSymbol($fqn, $kind, $file, $node->getStartLine(), $node->getEndLine(), $parent, $interfaces, $traits, $properties, $methods, $node);
+        $ctor = $methods['__construct'] ?? null;
+        foreach ($ctor === null ? [] : $this->constructorAssignedTypes($ctor) as $name => $type) {
+            $prop = $properties[$name] ?? null;
+            if ($prop !== null && $prop->type === null) {
+                $properties[$name] = new PropertySymbol($prop->name, $type, $prop->line, $prop->default);
+            }
+        }
+        [$docProperties, $docMethods] = $this->classDocTags($node, $fqn, $parent, $resolve, $templates);
+
+        return new ClassSymbol($fqn, $kind, $file, $node->getStartLine(), $node->getEndLine(), $parent, $interfaces, $traits, $properties, $methods, $node, $docProperties, $docMethods);
     }
 
     /**
@@ -207,8 +217,151 @@ final class SymbolTableBuilder
             $tags = $doc?->getReturnTagValues() ?? [];
             $returnType = $tags !== [] ? $this->docType($tags[0]->type, $class, $parent, $resolve, $templates) : null;
         }
+        $genericTags = $doc === null ? [] : ($doc->getReturnTagValues('@phpstan-return') ?: $doc->getReturnTagValues('@psalm-return') ?: $doc->getReturnTagValues());
+        $returnGeneric = $genericTags !== [] ? $this->genericArgument($genericTags[0]->type, $class, $parent, $resolve, $templates) : null;
 
-        return new MethodSymbol($class, $node->name->toString(), $file, $node->getStartLine(), $node->getEndLine(), $params, $returnType, $node->isStatic(), $node);
+        return new MethodSymbol($class, $node->name->toString(), $file, $node->getStartLine(), $node->getEndLine(), $params, $returnType, $node->isStatic(), $node, $returnGeneric);
+    }
+
+    /**
+     * The first class-like argument of a generic type, e.g. `HasMany<Invoice>`.
+     *
+     * @param  callable(string): string  $resolve
+     * @param  list<string>  $templates
+     */
+    private function genericArgument(TypeNode $type, string $class, ?string $parent, callable $resolve, array $templates): ?string
+    {
+        if ($type instanceof NullableTypeNode) {
+            return $this->genericArgument($type->type, $class, $parent, $resolve, $templates);
+        }
+        if ($type instanceof UnionTypeNode) {
+            foreach ($type->types as $inner) {
+                $found = $this->genericArgument($inner, $class, $parent, $resolve, $templates);
+                if ($found !== null) {
+                    return $found;
+                }
+            }
+
+            return null;
+        }
+        if (! $type instanceof GenericTypeNode) {
+            return null;
+        }
+        foreach ($type->genericTypes as $argument) {
+            $name = $this->docType($argument, $class, $parent, $resolve, $templates);
+            if ($name !== null && ! $this->isBuiltin($name)) {
+                return $name;
+            }
+        }
+
+        return null;
+    }
+
+    private function isBuiltin(string $name): bool
+    {
+        return in_array($name, self::BUILTINS, true) || in_array($name, self::DOC_ONLY_BUILTINS, true);
+    }
+
+    /**
+     * Class-level @property* and @method tags; phpstan/psalm variants win over plain ones.
+     *
+     * @param  callable(string): string  $resolve
+     * @param  list<string>  $templates
+     * @return array{0: array<string, string>, 1: array<string, string>}
+     */
+    private function classDocTags(ClassLike $node, string $class, ?string $parent, callable $resolve, array $templates): array
+    {
+        $doc = $this->parseDoc($node);
+        if ($doc === null) {
+            return [[], []];
+        }
+        $properties = [];
+        foreach (['@property', '@property-read', '@psalm-property', '@psalm-property-read', '@phpstan-property', '@phpstan-property-read'] as $tag) {
+            $values = str_ends_with($tag, '-read') ? $doc->getPropertyReadTagValues($tag) : $doc->getPropertyTagValues($tag);
+            foreach ($values as $value) {
+                $type = $this->docType($value->type, $class, $parent, $resolve, $templates);
+                if ($type !== null && $type !== 'null') {
+                    $properties[ltrim($value->propertyName, '$')] = $type;
+                }
+            }
+        }
+        $methods = [];
+        foreach (['@method', '@psalm-method', '@phpstan-method'] as $tag) {
+            foreach ($doc->getMethodTagValues($tag) as $value) {
+                $type = $value->returnType === null ? null : $this->docType($value->returnType, $class, $parent, $resolve, $templates);
+                if ($type !== null && $type !== 'null') {
+                    $methods[strtolower($value->methodName)] = $type;
+                }
+            }
+        }
+
+        return [$properties, $methods];
+    }
+
+    /**
+     * Property types proven by top-level `$this->p = $param;` (or `$param ?? …`) constructor statements.
+     *
+     * @return array<string, string>
+     */
+    private function constructorAssignedTypes(MethodSymbol $ctor): array
+    {
+        $stmts = $ctor->node->stmts ?? [];
+        $variadic = [];
+        foreach ($ctor->node->params as $param) {
+            if ($param->variadic && $param->var instanceof Node\Expr\Variable && is_string($param->var->name)) {
+                $variadic[$param->var->name] = true;
+            }
+        }
+        $topLevel = [];
+        foreach ($stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\Expression && $stmt->expr instanceof Node\Expr\Assign) {
+                $topLevel[spl_object_id($stmt->expr)] = true;
+            }
+        }
+
+        $finder = new NodeFinder();
+        $written = [];
+        $types = [];
+        $writes = $finder->find($stmts, static fn (Node $n): bool => $n instanceof Node\Expr\Assign || $n instanceof Node\Expr\AssignRef
+            || $n instanceof Node\Expr\AssignOp || $n instanceof Node\Stmt\Foreach_ || $n instanceof Node\Stmt\Catch_
+            || $n instanceof Node\Expr\PreInc || $n instanceof Node\Expr\PreDec || $n instanceof Node\Expr\PostInc || $n instanceof Node\Expr\PostDec);
+        foreach ($writes as $write) {
+            $targets = match (true) {
+                $write instanceof Node\Stmt\Foreach_ => [$write->keyVar, $write->valueVar],
+                $write instanceof Node\Stmt\Catch_, $write instanceof Node\Expr\Assign, $write instanceof Node\Expr\AssignRef, $write instanceof Node\Expr\AssignOp,
+                $write instanceof Node\Expr\PreInc, $write instanceof Node\Expr\PreDec, $write instanceof Node\Expr\PostInc, $write instanceof Node\Expr\PostDec => [$write->var],
+                default => [],
+            };
+            foreach ($targets as $target) {
+                if ($target === null) {
+                    continue;
+                }
+                foreach ($finder->findInstanceOf([$target], Node\Expr\Variable::class) as $var) {
+                    if (is_string($var->name)) {
+                        $written[$var->name] = true;
+                    }
+                }
+                if ($target instanceof Node\Expr\PropertyFetch && $target->var instanceof Node\Expr\Variable && $target->var->name === 'this' && $target->name instanceof Identifier) {
+                    $value = $write instanceof Node\Expr\Assign && isset($topLevel[spl_object_id($write)]) ? $write->expr : null;
+                    $value = $value instanceof Node\Expr\BinaryOp\Coalesce ? $value->left : $value;
+                    $types[$target->name->toString()][] = $value instanceof Node\Expr\Variable && is_string($value->name) && ! isset($variadic[$value->name]) ? $value->name : null;
+                }
+            }
+        }
+
+        $out = [];
+        foreach ($types as $property => $sources) {
+            $resolved = [];
+            foreach ($sources as $source) {
+                $resolved[] = $source === null || isset($written[$source]) ? null : ($ctor->params[$source] ?? null);
+            }
+            $unique = array_unique($resolved, SORT_REGULAR);
+            if (count($unique) === 1 && $unique[0] !== null) {
+                $out[$property] = $unique[0];
+            }
+        }
+
+        return $out;
     }
 
 

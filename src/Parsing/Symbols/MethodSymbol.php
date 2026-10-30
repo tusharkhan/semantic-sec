@@ -19,6 +19,7 @@ final readonly class MethodSymbol
         public ?string $returnType,
         public bool $static,
         public ClassMethod $node,
+        public ?string $returnGeneric = null, // first class-like generic argument of the docblock return type
     ) {
     }
 
