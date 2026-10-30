@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace TusharKhan\SemanticSec\Console;
 
 use Symfony\Component\Console\Application as BaseApplication;
+use TusharKhan\SemanticSec\Console\Commands\MapCommand;
 
 final class Application extends BaseApplication
 {
@@ -14,5 +15,6 @@ final class Application extends BaseApplication
     public function __construct()
     {
         parent::__construct(self::NAME, self::VERSION);
+        $this->add(new MapCommand());
     }
 }

@@ -1,0 +1,38 @@
+<?php
+
+declare(strict_types=1);
+
+namespace TusharKhan\SemanticSec\Console;
+
+use TusharKhan\SemanticSec\Config\ConfigLoader;
+use TusharKhan\SemanticSec\Framework\DetectedFramework;
+use TusharKhan\SemanticSec\Framework\FrameworkDetector;
+use TusharKhan\SemanticSec\Framework\Laravel\AuthorizationMap;
+use TusharKhan\SemanticSec\Framework\Laravel\LaravelContext;
+use TusharKhan\SemanticSec\Parsing\AstGenerator;
+use TusharKhan\SemanticSec\Parsing\FileFinder;
+use TusharKhan\SemanticSec\Parsing\ProjectParser;
+use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTableBuilder;
+
+final class MapBuilder
+{
+    /** @return array{0: AuthorizationMap, 1: DetectedFramework, 2: list<string>} */
+    public function build(string $root, ?string $configPath, ?string $framework): array
+    {
+        $config = (new ConfigLoader())->load($root, $configPath);
+        $detected = (new FrameworkDetector())->detect($root, $framework);
+        $parsed = (new ProjectParser(new FileFinder(), new AstGenerator()))->parse($root, $config->exclude);
+        $symbols = (new SymbolTableBuilder())->build($parsed);
+        $map = (new LaravelContext())->buildAuthorizationMap($parsed, $symbols, $config, $detected);
+
+        $warnings = [];
+        foreach ($parsed->failures as $failure) {
+            $warnings[] = $failure->sourceLine === null
+                ? sprintf('%s: %s', $failure->path, $failure->getMessage())
+                : sprintf('%s:%d: %s', $failure->path, $failure->sourceLine, $failure->getMessage());
+        }
+        array_push($warnings, ...$symbols->duplicates(), ...$symbols->failures(), ...$map->warnings);
+
+        return [$map, $detected, $warnings];
+    }
+}
