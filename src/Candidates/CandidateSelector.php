@@ -100,6 +100,10 @@ final class CandidateSelector
 
     private const MODEL_ROOTS = ['Illuminate\\Database\\Eloquent\\Model', 'Illuminate\\Foundation\\Auth\\User', 'Illuminate\\Database\\Eloquent\\Relations\\Pivot', 'Illuminate\\Database\\Eloquent\\Relations\\MorphPivot'];
 
+    private const BUILDERS = ['Illuminate\\Database\\Eloquent\\Builder', 'Illuminate\\Database\\Query\\Builder'];
+
+    private const RELATIONS_NS = 'Illuminate\\Database\\Eloquent\\Relations\\';
+
     private const MAX_SOURCE = 120;
 
     private readonly Standard $printer;
@@ -526,7 +530,16 @@ final class CandidateSelector
                 if ($call instanceof Expr\CallLike) {
                     $index = array_search($parent, $call->getRawArgs(), true);
 
-                    return $this->consumer($node, $call, is_int($index) ? $index : -1, $wrapped || $parent->name !== null || $parent->unpack, [], false);
+                    $flows = $this->consumer($node, $call, is_int($index) ? $index : -1, $wrapped || $parent->unpack, [], false, $parent->name?->toString());
+                    // A call that may return the read passes it on: follow its result too.
+                    if (! $this->isRealLookup($node, $call) && $this->calleeReturns($node, $call, $parent, 0)) {
+                        foreach ($this->readModels($node, $call) as $flow) {
+                            $flow['loose'] = true;
+                            $flows[] = $flow;
+                        }
+                    }
+
+                    return $flows;
                 }
             }
             if ($parent instanceof Expr\Assign && $parent->expr === $expr && $parent->var instanceof Expr\Variable && is_string($parent->var->name)) {
@@ -570,7 +583,7 @@ final class CandidateSelector
                 if (! $direct && ! $this->mentions($arg->value, $var)) {
                     continue;
                 }
-                foreach ($this->consumer($node, $call, $index, ! $direct || $arg->name !== null || $arg->unpack, $seen, $bound) as $flow) {
+                foreach ($this->consumer($node, $call, $index, ! $direct || $arg->unpack, $seen, $bound, $arg->name?->toString()) as $flow) {
                     $flow['loose'] = $flow['loose'] || ! $direct;
                     $flows[] = $flow;
                 }
@@ -579,7 +592,7 @@ final class CandidateSelector
         // Any assignment whose right-hand side mentions the identifier carries it on, loosely unless it is a plain copy.
         foreach ((new NodeFinder())->find($body->stmts, static fn (Node $n): bool => $n instanceof Expr\Assign || $n instanceof Expr\AssignOp) as $assign) {
             \assert($assign instanceof Expr\Assign || $assign instanceof Expr\AssignOp);
-            if (! $this->carriedBy($assign->expr, $var, $body)) {
+            if (! $this->carriedBy($assign->expr, $var, $node)) {
                 continue;
             }
             $target = $assign->var;
@@ -615,15 +628,22 @@ final class CandidateSelector
         return ($id || $key) && self::isVariable($expr->var, $var);
     }
 
-    // The value of $rhs may still hold the identifier: it is mentioned outside a lookup's arguments (a lookup's result is
-    // a model, analysed as a consumer of its own); any other call may return it.
-    private function carriedBy(Expr $rhs, string $var, FunctionBody $body): bool
+    // The value of $rhs may still hold the identifier: it is mentioned outside a model lookup's arguments (a lookup's result
+    // is a model, analysed as a consumer of its own) and outside a followed callee that never returns it; any other call may.
+    private function carriedBy(Expr $rhs, string $var, PathNode $node, int $depth = 0): bool
     {
+        $body = $this->bodies[$node->id];
         $occurrences = (new NodeFinder())->find([$rhs], fn (Node $n): bool => $n instanceof Expr && $this->mentionsDirectly($n, $var));
         foreach ($occurrences as $occurrence) {
             $consumed = false;
+            $child = $occurrence;
             for ($p = $body->positions->parent($occurrence); $p !== null && $occurrence !== $rhs; $p = $body->positions->parent($p)) {
-                if (($p instanceof Expr\StaticCall || AuthExpressions::isCall($p)) && self::isLookup(AuthExpressions::name($p) ?? '')) {
+                if ($p instanceof Expr\CallLike && ! $p->isFirstClassCallable() && $this->isRealLookup($node, $p)) {
+                    $consumed = true;
+
+                    break;
+                }
+                if ($p instanceof Expr\CallLike && $child instanceof Node\Arg && self::unwrap($child->value) === $occurrence && ! $this->calleeReturns($node, $p, $child, $depth)) {
                     $consumed = true;
 
                     break;
@@ -631,6 +651,7 @@ final class CandidateSelector
                 if ($p === $rhs) {
                     break;
                 }
+                $child = $p;
             }
             if (! $consumed) {
                 return true;
@@ -638,6 +659,73 @@ final class CandidateSelector
         }
 
         return false;
+    }
+
+    // Whether a followed callee may return the argument: false only when the argument maps to a plain parameter and
+    // no return of the callee carries it (through local copies too).
+    private function calleeReturns(PathNode $node, Expr\CallLike $call, Node\Arg $arg, int $depth): bool
+    {
+        $callee = $this->callees[spl_object_id($call)] ?? null;
+        $index = array_search($arg, $call->getRawArgs(), true);
+        $param = $callee === null || $arg->unpack || ! is_int($index) ? null : $this->calleeParam($callee, $index, $arg->name?->toString());
+        $calleeBody = $callee === null ? null : ($this->bodies[$callee->id] ?? null);
+        if ($callee === null || $param === null || $calleeBody === null || $depth > 4) {
+            return true;
+        }
+        $tainted = [$param => true];
+        $assigns = (new NodeFinder())->find($calleeBody->stmts, static fn (Node $n): bool => $n instanceof Expr\Assign || $n instanceof Expr\AssignOp || $n instanceof Expr\AssignRef);
+        for ($round = 0, $grew = true; $grew && $round < 8; $round++) {
+            $grew = false;
+            foreach ($assigns as $assign) {
+                \assert($assign instanceof Expr\Assign || $assign instanceof Expr\AssignOp || $assign instanceof Expr\AssignRef);
+                foreach (array_keys($tainted) as $t) {
+                    if (! $this->carriedBy($assign->expr, (string) $t, $callee, $depth + 1)) {
+                        continue;
+                    }
+                    if (! $assign->var instanceof Expr\Variable || ! is_string($assign->var->name)) {
+                        return true;
+                    }
+                    if (! isset($tainted[$assign->var->name])) {
+                        $tainted[$assign->var->name] = true;
+                        $grew = true;
+                    }
+                }
+            }
+        }
+        foreach ((new NodeFinder())->find($calleeBody->stmts, static fn (Node $n): bool => $n instanceof Stmt\Return_ || $n instanceof Expr\Yield_ || $n instanceof Expr\YieldFrom || $n instanceof Expr\ArrowFunction) as $exit) {
+            $value = match (true) {
+                $exit instanceof Stmt\Return_, $exit instanceof Expr\YieldFrom, $exit instanceof Expr\ArrowFunction => $exit->expr,
+                $exit instanceof Expr\Yield_ => $exit->value,
+                default => null,
+            };
+            foreach (array_keys($tainted) as $t) {
+                if ($value !== null && $this->carriedBy($value, (string) $t, $callee, $depth + 1)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    // The callee parameter an argument binds to, by name when named; null when it is variadic or not a plain variable.
+    private function calleeParam(PathNode $callee, int $index, ?string $named): ?string
+    {
+        $params = $callee->method?->node->params ?? [];
+        $param = $params[$index] ?? null;
+        if ($named !== null) {
+            $param = null;
+            foreach ($params as $candidate) {
+                if ($candidate->var instanceof Expr\Variable && $candidate->var->name === $named) {
+                    $param = $candidate;
+                }
+            }
+        }
+        if ($param === null || $param->variadic || ! $param->var instanceof Expr\Variable || ! is_string($param->var->name)) {
+            return null;
+        }
+
+        return $param->var->name;
     }
 
     private function mentionsDirectly(Node $n, string $var): bool
@@ -669,19 +757,19 @@ final class CandidateSelector
      * @param  array<string, true>  $seen
      * @return list<array{known: bool, lookup: bool, model: ?string, scoped: bool, firm: bool, throws: bool, loose: bool, text: string}>
      */
-    private function consumer(PathNode $node, Expr\CallLike $call, int $index, bool $loose, array $seen, bool $bound): array
+    private function consumer(PathNode $node, Expr\CallLike $call, int $index, bool $loose, array $seen, bool $bound, ?string $named = null): array
     {
         $name = AuthExpressions::name($call) ?? '';
         $callee = $this->callees[spl_object_id($call)] ?? null;
         if ($callee !== null) {
-            $param = $callee->method?->node->params[$index] ?? null;
-            if ($loose || $param === null || $param->variadic || ! $param->var instanceof Expr\Variable || ! is_string($param->var->name)) {
+            $param = $this->calleeParam($callee, $index, $named);
+            if ($loose || $param === null) {
                 return [self::unknownFlow()];
             }
 
-            return $this->flowModels($callee, $param->var->name, $seen, $bound);
+            return $this->flowModels($callee, $param, $seen, $bound);
         }
-        if (($call instanceof Expr\StaticCall || AuthExpressions::isCall($call)) && self::isLookup($name)) {
+        if (($call instanceof Expr\StaticCall || AuthExpressions::isCall($call)) && $this->isRealLookup($node, $call)) {
             return [$this->lookupFlow($node, $call)];
         }
         if ($call instanceof Expr\FuncCall) {
@@ -729,6 +817,26 @@ final class CandidateSelector
     private static function isLookup(string $name): bool
     {
         return str_starts_with($name, 'find') || str_starts_with($name, 'where') || str_starts_with($name, 'first') || $name === 'sole' || $name === 'destroy';
+    }
+
+    // A lookup-named call on a model class, or on a receiver typed as a model, an Eloquent or query builder, or a relation.
+    private function isRealLookup(PathNode $node, Expr\CallLike $call): bool
+    {
+        if (! self::isLookup(AuthExpressions::name($call) ?? '')) {
+            return false;
+        }
+        if ($call instanceof Expr\StaticCall) {
+            return $this->types->staticModel($call, $node) !== null;
+        }
+        if (! AuthExpressions::isCall($call)) {
+            return false;
+        }
+        if ($this->types->queryModel($call->var, $node) !== null) {
+            return true;
+        }
+        $type = $this->types->typeOf($call->var, $node);
+
+        return $type !== null && (in_array($type, self::BUILDERS, true) || str_starts_with($type, self::RELATIONS_NS));
     }
 
     // The finder's class: X in X::find|where..(), or the model a query or relation receiver reads.
@@ -979,6 +1087,10 @@ final class CandidateSelector
         if ($this->userRooted($call->var, $body)) {
             return ! $this->knownUserChainMethod($call, $body, $node);
         }
+        // A variable holding a user relation hop or scoped query allows only the methods a direct chain does.
+        if ($call->var instanceof Expr\Variable && $this->authRooted($call->var, $body, $node)) {
+            return ! $this->knownUserChainMethod($call, $body, $node);
+        }
         if ($this->harmlessReceiver($call->var, $body) || $this->authRooted($call->var, $body, $node) || $this->types->queryModel($call->var, $node) !== null) {
             return false;
         }
@@ -1050,7 +1162,8 @@ final class CandidateSelector
         if ($call !== null && $call->isFirstClassCallable()) {
             return false;
         }
-        foreach ($call === null ? [] : $call->getArgs() as $arg) {
+        // compact() strings are variable names, never called.
+        foreach ($call === null || $name === 'compact' ? [] : $call->getArgs() as $arg) {
             if (self::callableShaped($arg->value)) {
                 return false;
             }
@@ -1059,7 +1172,7 @@ final class CandidateSelector
         return true;
     }
 
-    // A closure, arrow function, first-class callable, [obj, 'm'] array, or a string naming a function or method.
+    // A closure, arrow function, first-class callable, [obj, 'm'] array, or an identifier-shaped or `::`/`@` string.
     private static function callableShaped(Expr $value): bool
     {
         if ($value instanceof Expr\Closure || $value instanceof Expr\ArrowFunction || ($value instanceof Expr\CallLike && $value->isFirstClassCallable())) {
@@ -1068,7 +1181,8 @@ final class CandidateSelector
         if ($value instanceof Node\Scalar\String_) {
             $text = ltrim($value->value, '\\');
 
-            return str_contains($text, '::') || str_contains($text, '@') || ($text !== '' && preg_match('/^[A-Za-z_][A-Za-z0-9_\\\\]*$/', $text) === 1 && function_exists($text));
+            // Any identifier may name an app function: function_exists() only sees this process.
+            return str_contains($text, '::') || str_contains($text, '@') || preg_match('/^[A-Za-z_][A-Za-z0-9_\\\\]*$/', $text) === 1;
         }
 
         return $value instanceof Expr\Array_ && count($value->items) === 2 && ($value->items[1]->value ?? null) instanceof Node\Scalar\String_;
