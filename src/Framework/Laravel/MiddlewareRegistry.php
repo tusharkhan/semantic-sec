@@ -44,6 +44,9 @@ final class MiddlewareRegistry
 
     private const KERNEL = 'Illuminate\Foundation\Http\Kernel';
 
+    /** @var list<string> */
+    private array $authMiddleware = [];
+
     /** @var array<string, string> target class => alias (first alias wins) */
     private array $targets = [];
 
@@ -63,8 +66,11 @@ final class MiddlewareRegistry
         }
     }
 
-    /** @return array{0: self, 1: list<string>} */
-    public static function fromProject(ParseResult $parsed, SymbolTable $symbols, DetectedFramework $fw, ConstantEvaluator $eval): array
+    /**
+     * @param  list<string>  $authMiddleware  configured alias names or class FQNs that authenticate
+     * @return array{0: self, 1: list<string>}
+     */
+    public static function fromProject(ParseResult $parsed, SymbolTable $symbols, DetectedFramework $fw, ConstantEvaluator $eval, array $authMiddleware = []): array
     {
         $aliases = [];
         $groups = self::DEFAULT_GROUPS;
@@ -80,7 +86,10 @@ final class MiddlewareRegistry
             self::readBootstrap($bootstrap->ast, 'bootstrap/app.php', $eval, $aliases, $groups, $warnings);
         }
 
-        return [new self($aliases + self::DEFAULT_ALIASES, $groups, $symbols), $warnings];
+        $registry = new self($aliases + self::DEFAULT_ALIASES, $groups, $symbols);
+        $registry->authMiddleware = array_map(static fn (string $m): string => ltrim($m, '\\'), $authMiddleware);
+
+        return [$registry, $warnings];
     }
 
     public function canonical(string $middleware): string
@@ -128,7 +137,7 @@ final class MiddlewareRegistry
             return MiddlewareKind::Ability;
         }
 
-        return $this->descendsFrom($name, self::AUTHENTICATION_CLASSES) ? MiddlewareKind::Authentication : MiddlewareKind::Other;
+        return $this->descendsFrom($name, [...self::AUTHENTICATION_CLASSES, ...$this->authMiddleware]) || in_array($name, $this->authMiddleware, true) ? MiddlewareKind::Authentication : MiddlewareKind::Other;
     }
 
     /** @return array{ability: string, arguments: list<string>}|null */

@@ -22,7 +22,7 @@ final class LaravelContext implements FrameworkContext
         $eval = new ConstantEvaluator();
         $warnings = [];
 
-        [$registry, $w] = MiddlewareRegistry::fromProject($parsed, $symbols, $framework, $eval);
+        [$registry, $w] = MiddlewareRegistry::fromProject($parsed, $symbols, $framework, $eval, $config->authMiddleware);
         array_push($warnings, ...$w);
 
         [$files, $w] = (new RouteFileLocator())->locate($parsed, $symbols, $framework, $config, $eval);

@@ -19,6 +19,8 @@ final class PendingRoute
 
     public ?bool $scopeBindings = null;
 
+    public ?string $domain = null;
+
     /** @var array<string, string> parameter name => binding field */
     public array $bindingFields = [];
 
@@ -56,11 +58,16 @@ final class PendingRoute
     private function parameters(string $uri): array
     {
         preg_match_all('/\{(\w+)(?::(\w+))?(\?)?\}/', $uri, $matches, PREG_SET_ORDER);
+        $domain = [];
+        if (($this->domain ?? $this->ctx->domain) !== null) {
+            preg_match_all('/\{(\w+)(\?)?\}/', $this->domain ?? (string) $this->ctx->domain, $found, PREG_SET_ORDER);
+            $domain = array_map(static fn (array $m): RouteParameter => new RouteParameter($m[1], null, ($m[2] ?? '') === '?', null, true), $found);
+        }
 
-        return array_map(fn (array $m): RouteParameter => new RouteParameter(
+        return [...$domain, ...array_map(fn (array $m): RouteParameter => new RouteParameter(
             $m[1],
             ($m[2] ?? '') !== '' ? $m[2] : ($this->bindingFields[$m[1]] ?? null),
             ($m[3] ?? '') === '?',
-        ), $matches);
+        ), $matches)];
     }
 }

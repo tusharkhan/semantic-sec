@@ -177,4 +177,21 @@ YAML);
 
         (new ConfigLoader())->load($this->dir, $this->dir.'/missing.yaml');
     }
+
+    public function testAuthMiddlewareDefaultsAndParses(): void
+    {
+        self::assertSame([], (new ConfigLoader())->load($this->dir)->authMiddleware);
+
+        $this->write("auth_middleware: [login, App\\Http\\Middleware\\LoginMiddleware]\n");
+
+        self::assertSame(['login', 'App\\Http\\Middleware\\LoginMiddleware'], (new ConfigLoader())->load($this->dir)->authMiddleware);
+    }
+
+    public function testAuthMiddlewareValidation(): void
+    {
+        $this->assertLoadFails("auth_middlewares: [login]\n", 'Unknown config key "auth_middlewares"');
+        $this->assertLoadFails("auth_middleware: login\n", 'auth_middleware');
+        $this->assertLoadFails("auth_middleware: ['']\n", 'auth_middleware');
+        $this->assertLoadFails("auth_middleware: [1]\n", 'auth_middleware');
+    }
 }

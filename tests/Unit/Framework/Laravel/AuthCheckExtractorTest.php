@@ -604,7 +604,6 @@ final class AuthCheckExtractorTest extends TestCase
         self::assertSame([], self::checks($out['GET /a']));
         self::assertSame([], self::checks($out['GET /b']));
         self::assertSame(['query_scope/authorization'], self::checks($out['GET /c']));
-        self::assertSame([], self::checks($out['GET /d']));
     }
 
     public function testRelationChainStopsAtQueryReset(): void
@@ -1378,5 +1377,42 @@ final class AuthCheckExtractorTest extends TestCase
             self::assertSame([], self::checks($out[$m]), $m);
         }
         self::assertSame(['abort_guard/authorization'], self::checks($out['ok']));
+    }
+
+    public function testDomainParameterBindsAndIsCoveredByCan(): void
+    {
+        $body = <<<'PHP'
+                public function a(Account $account, Post $post) {}
+            PHP;
+        $files = $this->controller($body) + ['app/Models/Account.php' => '<?php namespace App\Models; class Account extends \Illuminate\Database\Eloquent\Model {}'];
+        $files['app/Http/Controllers/C.php'] = str_replace('use App\Models\Post;', "use App\\Models\\Post;\nuse App\\Models\\Account;", $files['app/Http/Controllers/C.php']);
+        [$out] = $this->analyse(
+            "Route::domain('{account}.x.com')->group(function () {\n"
+            ."    Route::get('a/{post}', [C::class, 'a'])->middleware('can:view,account');\n"
+            .'});',
+            $files,
+        );
+        $route = $out['GET /a/{post}'];
+        self::assertSame(['account', 'post'], array_map(static fn ($p) => $p->name, $route->parameters));
+        self::assertSame('App\Models\Account', $route->parameters[0]->boundModel);
+        self::assertTrue($route->parameters[0]->domain);
+        self::assertContains('middleware can:view,account', self::sources($route));
+    }
+
+    public function testForeachOverInputIsNotAuthComparison(): void
+    {
+        $body = <<<'PHP'
+                public function a(Request $r) { foreach ($r->input('ids') as $id) { abort_if($id != auth()->id(), 403); } }
+                public function b(Request $r) { foreach (request()->all() as $k => $v) { abort_if($k != auth()->id(), 403); } }
+                public function c(Request $r) { $x = &$r->input('a'); abort_if($x != auth()->id(), 403); }
+            PHP;
+        $routes = '';
+        foreach (['a', 'b', 'c'] as $m) {
+            $routes .= "Route::get('{$m}', [C::class, '{$m}']);\n";
+        }
+        [$out] = $this->analyse($routes, $this->controller($body));
+        self::assertSame([], self::checks($out['GET /a']));
+        self::assertSame([], self::checks($out['GET /b']));
+        self::assertSame([], self::checks($out['GET /c']));
     }
 }

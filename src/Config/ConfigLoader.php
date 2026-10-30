@@ -16,7 +16,7 @@ final class ConfigLoader
     private const KEYS = [
         'provider', 'model', 'api_key_env', 'base_url', 'concurrency', 'budget_tokens',
         'max_payload_tokens', 'max_depth', 'level', 'min_confidence', 'paths', 'exclude',
-        'laravel', 'auth_helpers', 'rulesets',
+        'laravel', 'auth_helpers', 'auth_middleware', 'rulesets',
     ];
 
     private const LARAVEL_KEYS = ['route_files', 'sensitive_fields'];
@@ -71,6 +71,7 @@ final class ConfigLoader
             sensitiveFields: $sensitive,
             authHelpers: $this->stringList($data['auth_helpers'] ?? [], 'auth_helpers'),
             rulesets: $this->rulesets($data['rulesets'] ?? []),
+            authMiddleware: $this->stringList($data['auth_middleware'] ?? [], 'auth_middleware', true),
         );
     }
 
@@ -151,14 +152,14 @@ final class ConfigLoader
     }
 
     /** @return list<string> */
-    private function stringList(mixed $value, string $key): array
+    private function stringList(mixed $value, string $key, bool $nonEmpty = false): array
     {
         if (! is_array($value) || ! array_is_list($value)) {
             throw new ConfigException(sprintf('Config key "%s" must be a list of strings.', $key));
         }
         foreach ($value as $item) {
-            if (! is_string($item)) {
-                throw new ConfigException(sprintf('Config key "%s" must be a list of strings.', $key));
+            if (! is_string($item) || ($nonEmpty && $item === '')) {
+                throw new ConfigException(sprintf('Config key "%s" must be a list of %sstrings.', $key, $nonEmpty ? 'non-empty ' : ''));
             }
         }
 

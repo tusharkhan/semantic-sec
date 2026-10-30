@@ -293,7 +293,17 @@ final class RouteCollector
     /** @param list<Expr> $args */
     private function attribute(string $m, string $name, array $args, RouteContext $ctx, string $file, int $line): RouteContext
     {
-        if ($m === 'domain' || str_starts_with($m, 'where')) {
+        if ($m === 'domain') {
+            $domain = isset($args[0]) ? $this->eval->string($args[0], $file) : null;
+            if ($domain === null) {
+                $this->warn($file, $line, 'route domain could not be resolved');
+
+                return $ctx;
+            }
+
+            return $ctx->merge(new RouteContext(domain: $domain));
+        }
+        if (str_starts_with($m, 'where')) {
             return $ctx;
         }
         switch ($m) {
@@ -391,7 +401,17 @@ final class RouteCollector
     /** @param list<Expr> $args */
     private function routeStep(string $m, string $name, array $args, PendingRoute $route, string $file, int $line): void
     {
-        if ($m === 'domain' || str_starts_with($m, 'where')) {
+        if ($m === 'domain') {
+            $domain = isset($args[0]) ? $this->eval->string($args[0], $file) : null;
+            if ($domain === null) {
+                $this->warn($file, $line, 'route domain could not be resolved');
+            } else {
+                $route->domain = $domain;
+            }
+
+            return;
+        }
+        if (str_starts_with($m, 'where')) {
             return;
         }
         switch ($m) {

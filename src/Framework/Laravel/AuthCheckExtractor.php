@@ -217,7 +217,7 @@ final class AuthCheckExtractor
                 continue;
             }
             $variables[$p->name] = $variable;
-            $out[] = new RouteParameter($p->name, $p->field, $p->optional, ltrim((string) $types[$variable], '\\'));
+            $out[] = new RouteParameter($p->name, $p->field, $p->optional, ltrim((string) $types[$variable], '\\'), $p->domain);
         }
 
         return [$out, $variables];

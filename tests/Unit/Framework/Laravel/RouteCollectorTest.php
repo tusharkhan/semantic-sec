@@ -287,4 +287,36 @@ final class RouteCollectorTest extends TestCase
         self::assertFalse($this->find($routes, 'GET /g/{user}/p/{post:slug}')->scopeBindings);
         self::assertFalse($this->find($routes, 'GET /h/{user}/p/{post:slug}')->scopeBindings);
     }
+
+    public function testDomainParametersArePrependedAndMarked(): void
+    {
+        [$routes, $warnings] = $this->snippet(<<<'PHP'
+            Route::domain('{account}.x.com')->group(function () {
+                Route::get('p/{post}', [FooController::class, 'a']);
+                Route::get('q', [FooController::class, 'b'])->domain('{team}.y.com');
+            });
+            Route::group(['domain' => '{tenant?}.z.com'], fn () => Route::get('t/{id}', [FooController::class, 'c']));
+            PHP);
+
+        self::assertSame([], $warnings);
+        self::assertEquals([new RouteParameter('account', null, false, null, true), new RouteParameter('post', null, false)], $this->find($routes, 'GET /p/{post}')->parameters);
+        self::assertEquals([new RouteParameter('team', null, false, null, true)], $this->find($routes, 'GET /q')->parameters);
+        self::assertEquals([new RouteParameter('tenant', null, true, null, true), new RouteParameter('id', null, false)], $this->find($routes, 'GET /t/{id}')->parameters);
+        self::assertSame('GET /p/{post}', $this->find($routes, 'GET /p/{post}')->keys()[0]);
+    }
+
+    public function testUnresolvableDomainWarns(): void
+    {
+        [$routes, $warnings] = $this->snippet(<<<'PHP'
+            Route::domain($d)->group(function () {
+                Route::get('a', [FooController::class, 'a']);
+            });
+            Route::get('b', [FooController::class, 'b'])->domain(config('x'));
+            PHP);
+
+        self::assertCount(2, $warnings);
+        self::assertStringContainsString('route domain could not be resolved', $warnings[0]);
+        self::assertStringContainsString('route domain could not be resolved', $warnings[1]);
+        self::assertSame([], $this->find($routes, 'GET /a')->parameters);
+    }
 }
