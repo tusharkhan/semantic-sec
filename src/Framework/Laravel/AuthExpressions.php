@@ -145,6 +145,17 @@ final class AuthExpressions
         return $values === [] ? null : $values[count($values) - 1];
     }
 
+    /** @return list<Expr>|null every value assigned to the variable before it is read; null if it is rebound otherwise */
+    public function assignedValues(Expr\Variable $var): ?array
+    {
+        if (! is_string($var->name) || isset($this->tainted[$var->name])) {
+            return null;
+        }
+        $values = $this->assignmentsBefore($var->name, $var->getStartFilePos());
+
+        return $values === [] ? null : $values;
+    }
+
     /** True for an action parameter that is never reassigned or rebound before $pos. */
     public function isUntouchedParam(string $name, int $pos): bool
     {
@@ -404,7 +415,7 @@ final class AuthExpressions
     }
 
     /** An (in)equality between an auth operand and a non-literal; a null $equal accepts either polarity. */
-    private function isAuthComparison(Expr $n, ?bool $equal): bool
+    public function isAuthComparison(Expr $n, ?bool $equal): bool
     {
         $isEqual = $n instanceof Expr\BinaryOp\Identical || $n instanceof Expr\BinaryOp\Equal;
         $isNotEqual = $n instanceof Expr\BinaryOp\NotIdentical || $n instanceof Expr\BinaryOp\NotEqual;
