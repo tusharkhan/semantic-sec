@@ -72,7 +72,7 @@ final class ControllerMiddlewareReaderTest extends TestCase
 <?php
 namespace App;
 class Base { public function __construct() { $this->middleware('auth'); } }
-class Child extends Base { public function __construct() { $this->middleware(['verified', 'signed'])->except(['Index']); } public function index() {} public function show() {} }
+class Child extends Base { public function __construct() { parent::__construct(); $this->middleware(['verified', 'signed'])->except(['Index']); } public function index() {} public function show() {} }
 PHP]);
         $reader = $this->reader($root);
         self::assertSame([['auth', 'verified', 'signed'], []], $reader->forAction('App\\Child', 'show'));
@@ -124,5 +124,71 @@ PHP]);
     {
         $reader = $this->reader(BenchmarkCorpus::root().'/laravel10-app');
         self::assertSame([[], []], $reader->forAction('Nope\\Missing', 'show'));
+    }
+
+    /** @return array{0: list<string>, 1: list<string>} */
+    private function read(string $body, string $method = 'show'): array
+    {
+        $root = $this->project(['app/C.php' => "<?php\nnamespace App;\n".$body]);
+
+        return $this->reader($root)->forAction('App\\C', $method);
+    }
+
+    public function testParentConstructorSkippedWhenNotCalled(): void
+    {
+        $root = $this->project(['app/C.php' => <<<'PHP'
+<?php
+namespace App;
+class Base { public function __construct() { $this->middleware('auth'); } }
+class NoCall extends Base { public function __construct() { $this->middleware('verified'); } }
+class NoCtor extends Base {}
+PHP]);
+        $reader = $this->reader($root);
+        self::assertSame([['verified'], []], $reader->forAction('App\\NoCall', 'show'));
+        self::assertSame([['auth'], []], $reader->forAction('App\\NoCtor', 'show'));
+    }
+
+    public function testOptionsArrayForm(): void
+    {
+        $body = "class C { public function __construct() { \$this->middleware('can:x', ['only' => ['show']]); \$this->middleware('log', ['except' => 'index']); } }";
+        self::assertSame([['can:x', 'log'], []], $this->read($body, 'show'));
+        self::assertSame([[], []], $this->read($body, 'index'));
+        self::assertSame([['log'], []], $this->read($body, 'edit'));
+    }
+
+    public function testUnresolvableOnlySkipsAndWarns(): void
+    {
+        [$mw, $w] = $this->read('class C { public function __construct() { $this->middleware(\'a\')->only($x); $this->middleware(\'b\', [\'only\' => $y]); } }');
+        self::assertSame([], $mw);
+        self::assertCount(2, $w);
+    }
+
+    public function testStringOnlyAndCaseInsensitiveMethod(): void
+    {
+        $body = "class C { public function __construct() { \$this->middleware('a')->only('Show'); } }";
+        self::assertSame([['a'], []], $this->read($body, 'SHOW'));
+        self::assertSame([[], []], $this->read($body, 'index'));
+    }
+
+    public function testConditionalMiddlewareWarnsAndIsSkipped(): void
+    {
+        $body = "class C { public function __construct() { if (\$x) { \$this->middleware('a'); } foreach ([1] as \$i) { \$this->middleware('b'); } \$f = function () { \$this->middleware('c'); }; \$this->middleware('d'); } }";
+        [$mw, $w] = $this->read($body);
+        self::assertSame(['d'], $mw);
+        self::assertCount(3, $w);
+        self::assertStringContainsString(':3: conditional controller middleware is not analysed', $w[0]);
+    }
+
+    public function testMultiNameAndPipeMiddleware(): void
+    {
+        $body = "use Illuminate\\Routing\\Controllers\\HasMiddleware;\nuse Illuminate\\Routing\\Controllers\\Middleware;\nclass C implements HasMiddleware { public static function middleware(): array { return [new Middleware(['a', 'b'], only: ['show']), 'c|d']; } public function __construct() { \$this->middleware(['e', 'f|g'])->except('show'); } }";
+        self::assertSame([['a', 'b', 'c', 'd'], []], $this->read($body, 'show'));
+        self::assertSame([['e', 'f', 'g', 'c', 'd'], []], $this->read($body, 'index'));
+    }
+
+    public function testInheritedHasMiddleware(): void
+    {
+        $body = "use Illuminate\\Routing\\Controllers\\HasMiddleware;\nclass Base implements HasMiddleware { public static function middleware(): array { return ['auth']; } }\nclass C extends Base {}";
+        self::assertSame([['auth'], []], $this->read($body));
     }
 }

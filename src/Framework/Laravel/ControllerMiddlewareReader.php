@@ -31,11 +31,18 @@ final class ControllerMiddlewareReader
         }
         $warnings = [];
         $entries = [];
-        foreach (array_reverse($this->chain($symbol)) as $ancestor) {
+        $withCtor = [];
+        foreach ($this->chain($symbol) as $ancestor) {
             $ctor = $ancestor->methods['__construct'] ?? null;
             if ($ctor !== null) {
-                array_push($entries, ...$this->constructorEntries($ancestor, $ctor->node, $warnings));
+                $withCtor[] = [$ancestor, $ctor->node];
+                if (! self::callsParentConstructor($ctor->node)) {
+                    break;
+                }
             }
+        }
+        foreach (array_reverse($withCtor) as [$ancestor, $node]) {
+            array_push($entries, ...$this->constructorEntries($ancestor, $node, $warnings));
         }
         if ($this->implementsHasMiddleware($symbol)) {
             array_push($entries, ...$this->staticEntries($symbol, $warnings));
@@ -74,40 +81,54 @@ final class ControllerMiddlewareReader
         return false;
     }
 
+    private static function callsParentConstructor(Node\Stmt\ClassMethod $ctor): bool
+    {
+        foreach ($ctor->stmts ?? [] as $stmt) {
+            $call = $stmt instanceof Node\Stmt\Expression ? $stmt->expr : null;
+            if ($call instanceof Expr\StaticCall && $call->class instanceof Node\Name && strtolower($call->class->toString()) === 'parent'
+                && $call->name instanceof Node\Identifier && strtolower($call->name->toString()) === '__construct') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /**
      * @param  list<string>  $warnings
      * @return list<array{0: string, 1: ?list<string>, 2: ?list<string>}>
      */
     private function constructorEntries(ClassSymbol $class, Node\Stmt\ClassMethod $ctor, array &$warnings): array
     {
-        $calls = (new NodeFinder())->findInstanceOf($ctor->stmts ?? [], Expr\MethodCall::class);
-        $inner = [];
         $out = [];
-        foreach ($calls as $call) {
-            if (isset($inner[spl_object_id($call)])) {
-                continue;
-            }
-            $only = null;
-            $except = null;
-            $ok = true;
-            $node = $call;
-            while ($node instanceof Expr\MethodCall && $node->name instanceof Node\Identifier && in_array($name = strtolower($node->name->toString()), ['only', 'except'], true)) {
-                $list = $this->methodList($node->args, $class, $node->getStartLine(), $warnings);
-                $ok = $ok && $list !== null;
-                if ($name === 'only') {
-                    $only = $list;
-                } else {
-                    $except = $list;
+        foreach ($ctor->stmts ?? [] as $stmt) {
+            $top = $stmt instanceof Node\Stmt\Expression ? $this->chainRoot($stmt->expr) : null;
+            if ($top === null) {
+                foreach ((new NodeFinder())->findInstanceOf([$stmt], Expr\MethodCall::class) as $call) {
+                    if ($call->name instanceof Node\Identifier && strtolower($call->name->toString()) === 'middleware') {
+                        $warnings[] = sprintf('%s:%d: conditional controller middleware is not analysed', $class->file, $call->getStartLine());
+                    }
                 }
-                $node = $node->var;
-                $inner[spl_object_id($node)] = true;
-            }
-            if (! $node instanceof Expr\MethodCall || ! $node->name instanceof Node\Identifier || strtolower($node->name->toString()) !== 'middleware'
-                || ! $node->var instanceof Expr\Variable || $node->var->name !== 'this') {
+
                 continue;
             }
-            $inner[spl_object_id($node)] = true;
-            $names = $this->middlewareNames($node->args[0]->value ?? null, $class, $node->getStartLine(), $warnings);
+            [$root, $only, $except, $ok] = $this->readChain($stmt->expr, $top, $class, $warnings);
+            $names = $this->middlewareNames($root->args[0]->value ?? null, $class, $root->getStartLine(), $warnings);
+            $options = $root->args[1]->value ?? null;
+            if ($options instanceof Expr\Array_) {
+                foreach ($options->items as $item) {
+                    $key = $item->key instanceof Expr ? $this->eval->string($item->key, $class->file, $class) : null;
+                    if ($key === 'only' || $key === 'except') {
+                        $list = $this->methodList([new Node\Arg($item->value)], $class, $item->getStartLine(), $warnings);
+                        $ok = $ok && $list !== null;
+                        if ($key === 'only') {
+                            $only ??= $list;
+                        } else {
+                            $except ??= $list;
+                        }
+                    }
+                }
+            }
             if (! $ok) {
                 continue;
             }
@@ -117,6 +138,47 @@ final class ControllerMiddlewareReader
         }
 
         return $out;
+    }
+
+    // The inner `$this->middleware(...)` call of a `->only()/->except()` chain, or null.
+    private function chainRoot(Expr $expr): ?Expr\MethodCall
+    {
+        $node = $expr;
+        while ($node instanceof Expr\MethodCall && $node->name instanceof Node\Identifier) {
+            $name = strtolower($node->name->toString());
+            if ($name === 'middleware') {
+                return $node->var instanceof Expr\Variable && $node->var->name === 'this' ? $node : null;
+            }
+            if ($name !== 'only' && $name !== 'except') {
+                return null;
+            }
+            $node = $node->var;
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  list<string>  $warnings
+     * @return array{0: Expr\MethodCall, 1: ?list<string>, 2: ?list<string>, 3: bool}
+     */
+    private function readChain(Expr $expr, Expr\MethodCall $root, ClassSymbol $class, array &$warnings): array
+    {
+        $only = null;
+        $except = null;
+        $ok = true;
+        for ($node = $expr; $node instanceof Expr\MethodCall && $node !== $root; $node = $node->var) {
+            $name = $node->name instanceof Node\Identifier ? strtolower($node->name->toString()) : '';
+            $list = $this->methodList($node->args, $class, $node->getStartLine(), $warnings);
+            $ok = $ok && $list !== null;
+            if ($name === 'only') {
+                $only = $list;
+            } else {
+                $except = $list;
+            }
+        }
+
+        return [$root, $only, $except, $ok];
     }
 
     /**
@@ -146,10 +208,7 @@ final class ControllerMiddlewareReader
 
                 continue;
             }
-            $entry = $this->middlewareObject($value, $owner, $warnings);
-            if ($entry !== null) {
-                $out[] = $entry;
-            }
+            array_push($out, ...$this->middlewareObject($value, $owner, $warnings));
         }
 
         return $out;
@@ -157,15 +216,15 @@ final class ControllerMiddlewareReader
 
     /**
      * @param  list<string>  $warnings
-     * @return array{0: string, 1: ?list<string>, 2: ?list<string>}|null
+     * @return list<array{0: string, 1: ?list<string>, 2: ?list<string>}>
      */
-    private function middlewareObject(Expr\New_ $new, ClassSymbol $class, array &$warnings): ?array
+    private function middlewareObject(Expr\New_ $new, ClassSymbol $class, array &$warnings): array
     {
         $line = $new->getStartLine();
         if (! $new->class instanceof Node\Name || $new->class->toString() !== self::MIDDLEWARE) {
             $warnings[] = sprintf('%s:%d: controller middleware could not be resolved', $class->file, $line);
 
-            return null;
+            return [];
         }
         $args = [];
         foreach ($new->args as $i => $arg) {
@@ -179,11 +238,11 @@ final class ControllerMiddlewareReader
         $names = isset($args['middleware']) ? $this->middlewareNames($args['middleware'], $class, $line, $warnings) : [];
         $only = isset($args['only']) ? $this->methodList([new Node\Arg($args['only'])], $class, $line, $warnings) : null;
         $except = isset($args['except']) ? $this->methodList([new Node\Arg($args['except'])], $class, $line, $warnings) : null;
-        if (count($names) !== 1 || (isset($args['only']) && $only === null) || (isset($args['except']) && $except === null)) {
-            return null;
+        if ((isset($args['only']) && $only === null) || (isset($args['except']) && $except === null)) {
+            return [];
         }
 
-        return [$names[0], $only, $except];
+        return array_map(static fn (string $n): array => [$n, $only, $except], $names);
     }
 
     /**
@@ -198,7 +257,7 @@ final class ControllerMiddlewareReader
             if ($str === null) {
                 $warnings[] = sprintf('%s:%d: controller middleware could not be resolved', $class->file, $item?->getStartLine() ?? $line);
             } else {
-                $out[] = $str;
+                array_push($out, ...array_values(array_filter(explode('|', $str), static fn (string $n): bool => $n !== '')));
             }
         }
 

@@ -21,8 +21,15 @@ final class PolicyRegistry
 
     private const GATE = 'Illuminate\\Support\\Facades\\Gate';
 
-    /** @param array<string, string> $registered model => policy */
-    private function __construct(private readonly SymbolTable $symbols, private readonly array $registered)
+    private const USE_POLICY = 'Illuminate\\Database\\Eloquent\\Attributes\\UsePolicy';
+
+    private const RESPONSE = 'Illuminate\\Auth\\Access\\Response';
+
+    /**
+     * @param  array<string, string>  $registered  model => policy
+     * @param  array<string, string>  $attributed  model => policy from #[UsePolicy]
+     */
+    private function __construct(private readonly SymbolTable $symbols, private readonly array $registered, private readonly array $attributed)
     {
     }
 
@@ -41,7 +48,22 @@ final class PolicyRegistry
             }
         };
 
+        $attributed = [];
         foreach ($symbols->all() as $class) {
+            foreach ($class->node->attrGroups as $group) {
+                foreach ($group->attrs as $attr) {
+                    if ($attr->name->toString() !== self::USE_POLICY) {
+                        continue;
+                    }
+                    $arg = $attr->args[0]->value ?? null;
+                    $policy = $arg === null ? null : $eval->string($arg, $class->file, $class);
+                    if ($policy === null) {
+                        $warnings[] = sprintf('%s:%d: #[UsePolicy] could not be resolved', $class->file, $attr->getStartLine());
+                    } else {
+                        $attributed[$class->name] = ltrim($policy, '\\');
+                    }
+                }
+            }
             $ancestors = self::ancestors($symbols, $class);
             if (in_array(self::AUTH_PROVIDER, $ancestors, true)) {
                 self::readPoliciesProperty($class, $eval, $add, $warnings);
@@ -51,7 +73,7 @@ final class PolicyRegistry
             }
         }
 
-        return [new self($symbols, $registered), $warnings];
+        return [new self($symbols, $registered, $attributed), $warnings];
     }
 
     public function policyFor(string $model): ?string
@@ -59,6 +81,9 @@ final class PolicyRegistry
         $model = ltrim($model, '\\');
         if (isset($this->registered[$model])) {
             return $this->registered[$model];
+        }
+        if (isset($this->attributed[$model])) {
+            return $this->attributed[$model];
         }
         foreach ($this->candidates($model) as $candidate) {
             if ($this->symbols->getClass($candidate) !== null) {
@@ -71,13 +96,29 @@ final class PolicyRegistry
 
     public function isTrivial(string $policy, string $ability): bool
     {
-        $stmts = $this->abilityHolder($policy, $ability)?->node->stmts;
+        $before = $this->symbols->findMethod($policy, 'before');
+        if ($before !== null && self::allowsAll($before)) {
+            return true;
+        }
+        $method = $this->abilityHolder($policy, $ability);
+
+        return $method !== null && self::allowsAll($method);
+    }
+
+    // Body is exactly `return true;` or `return Response::allow();`.
+    private static function allowsAll(MethodSymbol $method): bool
+    {
+        $stmts = $method->node->stmts;
         if ($stmts === null || count($stmts) !== 1 || ! $stmts[0] instanceof Return_) {
             return false;
         }
         $expr = $stmts[0]->expr;
+        if ($expr instanceof Expr\ConstFetch) {
+            return strtolower($expr->name->toString()) === 'true';
+        }
 
-        return $expr instanceof Expr\ConstFetch && strtolower($expr->name->toString()) === 'true';
+        return $expr instanceof Expr\StaticCall && $expr->class instanceof Name && $expr->class->toString() === self::RESPONSE
+            && $expr->name instanceof \PhpParser\Node\Identifier && strtolower($expr->name->toString()) === 'allow';
     }
 
     public function abilityHolder(string $policy, string $ability): ?MethodSymbol
@@ -85,20 +126,30 @@ final class PolicyRegistry
         return $this->symbols->findMethod($policy, $ability);
     }
 
-    /** @return list<string> */
+    /**
+     * Mirrors Gate::guessPolicyName: prefixes + \Policies\XPolicy, plus the \Models\ variants, longest first.
+     *
+     * @return list<string>
+     */
     private function candidates(string $model): array
     {
         $pos = strrpos($model, '\\');
-        $ns = $pos === false ? '' : substr($model, 0, $pos);
-        $short = $pos === false ? $model : substr($model, $pos + 1);
-        $root = explode('\\', $ns)[0];
-        $primary = str_ends_with($ns, '\\Models') ? substr($ns, 0, -7) : $ns;
+        if ($pos === false) {
+            return [];
+        }
+        $dir = substr($model, 0, $pos);
+        $base = substr($model, $pos + 1).'Policy';
+        $segments = explode('\\', $dir);
         $out = [];
-        foreach ([$primary, $root] as $base) {
-            $out[] = ($base === '' ? '' : $base.'\\').'Policies\\'.$short.'Policy';
+        foreach (range(1, count($segments)) as $n) {
+            $out[] = implode('\\', array_slice($segments, 0, $n)).'\\Policies\\'.$base;
+        }
+        if (str_contains($dir, '\\Models\\')) {
+            $out[] = str_replace('\\Models\\', '\\Policies\\', $dir).'\\'.$base;
+            $out[] = str_replace('\\Models\\', '\\Models\\Policies\\', $dir).'\\'.$base;
         }
 
-        return array_values(array_unique($out));
+        return array_reverse($out);
     }
 
     /**
