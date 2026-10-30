@@ -528,8 +528,10 @@ final class AuthCheckExtractorTest extends TestCase
                 public function a(int $id) { $c = Post::findOrFail($id)->comments()->firstOrFail(); $this->authorize('delete', $c); }
                 public function b(int $id) { $c = Post::where('id', $id)->first()->comments()->first(); $this->authorize('delete', $c); }
                 public function c(int $id) { $c = Post::query()->where('id', $id)->first(); $this->authorize('delete', $c); }
+                public function d(int $id) { $c = Post::where('a', $id)->pluck('id')->first(); $this->authorize('delete', $c); }
             PHP;
-        [$out] = $this->analyse("Route::delete('a', [C::class, 'a']);\nRoute::delete('b', [C::class, 'b']);\nRoute::delete('c', [C::class, 'c']);", $this->controller($body));
+        [$out] = $this->analyse("Route::delete('a', [C::class, 'a']);\nRoute::delete('b', [C::class, 'b']);\nRoute::delete('c', [C::class, 'c']);\nRoute::delete('d', [C::class, 'd']);", $this->controller($body));
+        self::assertSame(['controller_ability/authorization'], self::checks($out['DELETE /d']));
         self::assertSame(['controller_ability/authorization'], self::checks($out['DELETE /a']));
         self::assertSame(['controller_ability/authorization'], self::checks($out['DELETE /b']));
         self::assertSame(['controller_ability/none'], self::checks($out['DELETE /c']));
@@ -537,7 +539,7 @@ final class AuthCheckExtractorTest extends TestCase
 
     public function testBindingNamesMatchLaravelSnakeCase(): void
     {
-        $files = $this->controller('public function a(BlogPost $blogPost) {} public function b(\App\Models\BlogPost $blogPost) { $this->authorize(\'update\', $blogPost); }')
+        $files = $this->controller('public function a(BlogPost $blogPost) {} public function b(\App\Models\BlogPost $blogPost) { $this->authorize(\'update\', $blogPost); } public function c(string $blog_post, BlogPost $blogPost) {} public function d(Post $postID) {}')
             + [
                 'app/Models/BlogPost.php' => '<?php namespace App\Models; class BlogPost extends \Illuminate\Database\Eloquent\Model {}',
                 'app/Policies/BlogPostPolicy.php' => '<?php namespace App\Policies; class BlogPostPolicy { public function update($u, $p) { return true; } }',
@@ -546,12 +548,19 @@ final class AuthCheckExtractorTest extends TestCase
         [$out] = $this->analyse(
             "Route::put('posts/{blog_post}', [C::class, 'a'])->middleware('can:update,blog_post');\n"
             ."Route::patch('posts/{blog_post}', [C::class, 'a'])->middleware('can:update,blogPost');\n"
-            ."Route::post('posts/{blog_post}', [C::class, 'b']);",
+            ."Route::post('posts/{blog_post}', [C::class, 'b']);\n"
+            ."Route::get('scalar/{blog_post}', [C::class, 'c']);\n"
+            ."Route::get('ids/{post_i_d}', [C::class, 'd']);\n"
+            ."Route::get('id/{post_id}', [C::class, 'd']);",
             $files,
         );
         self::assertSame('App\Models\BlogPost', $out['PUT /posts/{blog_post}']->parameters[0]->boundModel);
         self::assertSame(['route_ability/none'], self::checks($out['PUT /posts/{blog_post}']));
-        self::assertSame(['route_ability/none'], self::checks($out['PATCH /posts/{blog_post}']));
+        // Authorize::getModel reads $request->route('blogPost'): no such parameter, so no policy is provably trivial.
+        self::assertSame(['route_ability/authorization'], self::checks($out['PATCH /posts/{blog_post}']));
+        self::assertSame('App\Models\BlogPost', $out['GET /scalar/{blog_post}']->parameters[0]->boundModel);
+        self::assertSame('App\Models\Post', $out['GET /ids/{post_i_d}']->parameters[0]->boundModel);
+        self::assertNull($out['GET /id/{post_id}']->parameters[0]->boundModel);
         self::assertSame(['controller_ability/none'], self::checks($out['POST /posts/{blog_post}']));
     }
 
@@ -603,13 +612,16 @@ final class AuthCheckExtractorTest extends TestCase
                 public function e(Request $r, int $id) { return $r->user()->posts()->without('tags')->find($id); }
                 public function f(Request $r, int $id) { return $r->user()->replicate()->posts()->find($id); }
                 public function g(Request $r, int $id) { return $r->user()->posts()->query()->find($id); }
+                public function h(Request $r, int $id) { return $r->user()->posts()->getRelated()->find($id); }
+                public function i(Request $r, int $id) { return $r->user()->posts()->newModelInstance()->find($id); }
+                public function j(Request $r, int $id) { return $r->user()->posts()->make()->find($id); }
             PHP;
         $routes = '';
-        foreach (['a', 'b', 'c', 'd', 'e', 'f', 'g'] as $m) {
+        foreach (['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'] as $m) {
             $routes .= "Route::get('{$m}', [C::class, '{$m}']);\n";
         }
         [$out] = $this->analyse($routes, $this->controller($body));
-        foreach (['a', 'b', 'c', 'f', 'g'] as $m) {
+        foreach (['a', 'b', 'c', 'f', 'g', 'h', 'i', 'j'] as $m) {
             self::assertSame([], self::checks($out['GET /'.$m]), $m);
         }
         // Eager loading keeps the relation's constraints.
@@ -660,5 +672,57 @@ final class AuthCheckExtractorTest extends TestCase
         [$out, $warnings] = $this->analyse("Route::get('posts/{post}', [C::class, 'show']);", $this->controller($body));
         self::assertSame([], self::checks($out['GET /posts/{post}']));
         self::assertSame(['app/Http/Controllers/C.php:15: authorizeResource options could not be resolved'], $warnings);
+    }
+
+    public function testModelLessResourceMethodsDoNotCoverParent(): void
+    {
+        $body = <<<'PHP'
+                public function __construct() { $this->authorizeResource(User::class, 'user'); }
+                public function index(User $user, Post $post) {}
+                public function show(User $user, Post $post) {}
+            PHP;
+        [$out] = $this->analyse("Route::get('i/{user}/{post:slug}', [C::class, 'index']);\nRoute::get('s/{user}/{post:slug}', [C::class, 'show']);", $this->controller($body));
+        self::assertSame(['query_scope/none', 'controller_ability/authorization'], self::checks($out['GET /i/{user}/{post:slug}']));
+        self::assertSame(['query_scope/authorization', 'controller_ability/authorization'], self::checks($out['GET /s/{user}/{post:slug}']));
+    }
+
+    public function testNullComparisonGuardIsNoCheck(): void
+    {
+        $body = <<<'PHP'
+                public function a() { abort_if(auth()->id() === null, 401); }
+                public function b() { abort_unless(auth()->user() != null, 401); }
+                public function c() { abort_if(null === Auth::user(), 401); }
+                public function d() { abort_unless(auth()->user() == true, 401); }
+                public function e(Post $post) { abort_unless($post->user_id === auth()->id(), 403); }
+            PHP;
+        $routes = '';
+        foreach (['a', 'b', 'c', 'd', 'e'] as $m) {
+            $routes .= "Route::get('{$m}/{post}', [C::class, '{$m}']);\n";
+        }
+        [$out] = $this->analyse($routes, $this->controller($body));
+        foreach (['a', 'b', 'c', 'd'] as $m) {
+            self::assertSame([], self::checks($out['GET /'.$m.'/{post}']), $m);
+        }
+        self::assertSame(['abort_guard/authorization'], self::checks($out['GET /e/{post}']));
+    }
+
+    public function testOrWhereVoidsScope(): void
+    {
+        $body = <<<'PHP'
+                public function a(int $id) { return Post::where('user_id', auth()->id())->orWhere('public', 1)->find($id); }
+                public function b(int $id) { return auth()->user()->posts()->orWhere('public', 1)->find($id); }
+                public function c(int $id) { return Post::where('user_id', auth()->id())->orWhereNull('deleted_at')->get(); }
+                public function d(int $id) { return Post::orWhere('public', 1)->where('user_id', auth()->id())->get(); }
+                public function e(int $id) { return Post::where('user_id', auth()->id())->where('public', 1)->find($id); }
+            PHP;
+        $routes = '';
+        foreach (['a', 'b', 'c', 'd', 'e'] as $m) {
+            $routes .= "Route::get('{$m}', [C::class, '{$m}']);\n";
+        }
+        [$out] = $this->analyse($routes, $this->controller($body));
+        foreach (['a', 'b', 'c', 'd'] as $m) {
+            self::assertSame([], self::checks($out['GET /'.$m]), $m);
+        }
+        self::assertSame(['query_scope/authorization'], self::checks($out['GET /e']));
     }
 }

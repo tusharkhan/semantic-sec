@@ -20,7 +20,7 @@ final class AuthExpressions
     private const NOT_RELATIONS = ['can', 'cannot', 'cant', 'getkey', 'tokencan', 'fresh', 'refresh', 'load', 'tojson', 'toarray', 'only', 'getattribute'];
 
     // Calls that leave the user's relation scope.
-    private const SCOPE_RESETS = ['newquery', 'query', 'newmodelquery', 'replicate', 'getmodel'];
+    private const SCOPE_RESETS = ['newquery', 'query', 'newmodelquery', 'replicate', 'getmodel', 'getrelated', 'newmodelinstance', 'make'];
 
     private const AUTH_FACADES = ['Illuminate\\Support\\Facades\\Auth', 'Auth'];
 
@@ -106,12 +106,18 @@ final class AuthExpressions
         return ($name === 'id' && self::isGuard($expr->var)) || ($name === 'getkey' && $this->isAuthUser($expr->var));
     }
 
-    /** True when the subtree holds an (in)equality comparison with an auth-user or auth-id operand. */
+    /** True when the subtree compares an auth-user or auth-id operand for (in)equality with something other than null/true/false. */
     public function comparesAuth(Node $node): bool
     {
         return (new NodeFinder())->findFirst([$node], fn (Node $n): bool => ($n instanceof Expr\BinaryOp\Identical || $n instanceof Expr\BinaryOp\NotIdentical
             || $n instanceof Expr\BinaryOp\Equal || $n instanceof Expr\BinaryOp\NotEqual)
-            && ($this->isAuth($n->left) || $this->isAuth($n->right))) !== null;
+            && (($this->isAuth($n->left) && ! self::isLiteral($n->right)) || ($this->isAuth($n->right) && ! self::isLiteral($n->left)))) !== null;
+    }
+
+    // A null/true/false comparison only checks that someone is logged in.
+    private static function isLiteral(Expr $expr): bool
+    {
+        return $expr instanceof Expr\ConstFetch && in_array(strtolower($expr->name->toString()), ['null', 'true', 'false'], true);
     }
 
     private function isAuth(Expr $expr): bool

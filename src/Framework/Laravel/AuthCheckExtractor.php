@@ -155,14 +155,14 @@ final class AuthCheckExtractor
         return $checks;
     }
 
-    // Laravel's Authorize middleware reads the route parameter named by the argument.
+    // Authorize::getModel reads $request->route($argument): exact name only.
     private function routeParameter(RouteEntry $route, ?string $argument): ?RouteParameter
     {
         if ($argument === null) {
             return null;
         }
         foreach ($route->parameters as $p) {
-            if ($p->name === $argument || $p->name === self::snake($argument)) {
+            if ($p->name === $argument) {
                 return $p;
             }
         }
@@ -175,10 +175,15 @@ final class AuthCheckExtractor
         return $argument !== null && str_contains($argument, '\\') ? ltrim($argument, '\\') : null;
     }
 
-    // Mirrors Str::snake for parameter names.
-    private static function snake(string $name): string
+    // Mirrors Laravel 12 Str::snake.
+    private static function snake(string $value): string
     {
-        return strtolower((string) preg_replace('/(?<=[a-z0-9])(?=[A-Z])/', '_', $name));
+        if (ctype_lower($value)) {
+            return $value;
+        }
+        $value = (string) preg_replace('/\s+/u', '', ucwords($value));
+
+        return mb_strtolower((string) preg_replace('/(.)(?=[A-Z])/u', '$1_', $value), 'UTF-8');
     }
 
     /**
@@ -193,18 +198,21 @@ final class AuthCheckExtractor
         $out = [];
         $variables = [];
         foreach ($parameters as $p) {
-            $variable = array_key_exists($p->name, $types) ? $p->name : null;
-            foreach (array_keys($types) as $name) {
-                $variable ??= self::snake($name) === $p->name ? $name : null;
+            $variable = null;
+            foreach ($types as $name => $type) {
+                $class = $type !== null && ! in_array(strtolower($type), self::SCALARS, true);
+                // Laravel binds class-typed action parameters only, by exact or snake name.
+                if ($class && ($name === $p->name || self::snake($name) === $p->name) && ($variable === null || $name === $p->name)) {
+                    $variable = $name;
+                }
             }
-            $type = $variable === null ? null : $types[$variable];
-            if ($variable === null || $type === null || in_array(strtolower($type), self::SCALARS, true)) {
+            if ($variable === null) {
                 $out[] = $p;
 
                 continue;
             }
             $variables[$p->name] = $variable;
-            $out[] = new RouteParameter($p->name, $p->field, $p->optional, ltrim($type, '\\'));
+            $out[] = new RouteParameter($p->name, $p->field, $p->optional, ltrim((string) $types[$variable], '\\'));
         }
 
         return [$out, $variables];
@@ -283,7 +291,8 @@ final class AuthCheckExtractor
                 }
                 $reason = $model === null ? null : $this->trivialReason(ltrim($model, '\\'), [$ability], false);
                 $parameter = isset($args[1]) ? $this->eval->string($args[1], $ctor->file, $owner) : ($model === null ? null : self::snake(self::short($model)));
-                if ($reason === null && $parameter !== null) {
+                // index/create/store authorize the class, never the bound instance.
+                if ($reason === null && $parameter !== null && ! in_array(strtolower($method->name), ['index', 'create', 'store'], true)) {
                     $covered[$parameter] = true;
                 }
                 $source = sprintf('authorizeResource(%s) %s -> %s', $model === null ? '?' : self::short($model).'::class', $method->name, $ability);
@@ -386,10 +395,11 @@ final class AuthCheckExtractor
     {
         $finder = new NodeFinder();
         $nodes = $finder->find($body, static fn (Node $n): bool => $n instanceof Expr\CallLike);
+        // Maps each chain receiver to the call made on it.
         $inner = [];
         foreach ($nodes as $node) {
             if (AuthExpressions::isCall($node)) {
-                $inner[spl_object_id($node->var)] = true;
+                $inner[spl_object_id($node->var)] = $node;
             }
         }
         $discarded = [];
@@ -421,7 +431,7 @@ final class AuthCheckExtractor
                     $add(AuthCheckKind::AbortGuard, AuthStrength::Authorization, $this->describe($node));
                 }
             }
-            if ((! isset($inner[spl_object_id($node)]) && $context->isRelationRead($node)) || $context->isWhereScope($node)) {
+            if (((! isset($inner[spl_object_id($node)]) && $context->isRelationRead($node)) || $context->isWhereScope($node)) && ! self::chainHasOrWhere($node, $inner)) {
                 $add(AuthCheckKind::QueryScope, AuthStrength::Authorization, $this->describe($node));
             }
             if ($this->isHelper($node, $class)) {
@@ -430,6 +440,26 @@ final class AuthCheckExtractor
         }
 
         return [$checks, $covered];
+    }
+
+    /**
+     * An orWhere anywhere in the chain widens the query past the scope.
+     *
+     * @param  array<int, Expr>  $inner
+     */
+    private static function chainHasOrWhere(Expr $node, array $inner): bool
+    {
+        while (isset($inner[spl_object_id($node)])) {
+            $node = $inner[spl_object_id($node)];
+        }
+        for (; ; $node = $node->var) {
+            if (str_starts_with(AuthExpressions::name($node) ?? '', 'orwhere')) {
+                return true;
+            }
+            if (! AuthExpressions::isCall($node)) {
+                return false;
+            }
+        }
     }
 
     /**
@@ -549,7 +579,7 @@ final class AuthCheckExtractor
         return null;
     }
 
-    // X::find*|first*(..), or X::where*|query(..)->...->find*|first*|sole(..) with no fetch in between.
+    // X::find*|first*(..), or X::where*|query(..)->...->find*|first*|sole(..) with no fetch or read in between.
     private static function queriedModel(Expr $expr): ?string
     {
         $calls = [];
@@ -567,7 +597,7 @@ final class AuthCheckExtractor
             return $fetches($root) ? self::modelName($node->class) : null;
         }
         $outer = array_pop($calls);
-        if (! $fetches($outer) || ! (str_starts_with($root, 'where') || $root === 'query') || array_filter($calls, $fetches) !== []) {
+        if (! $fetches($outer) || ! (str_starts_with($root, 'where') || $root === 'query') || array_filter($calls, static fn (string $n): bool => $fetches($n) || in_array($n, AuthExpressions::READS, true)) !== []) {
             return null;
         }
 
