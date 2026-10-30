@@ -52,8 +52,15 @@ final class CandidateSelector
 
     private const MASS_READS = ['all', 'input', 'post', 'collect', 'query'];
 
-    // Calls that turn a query into a model or values; anything after them leaves the scoped query.
-    private const MATERIALISING = ['first', 'firstorfail', 'sole', 'get', 'value', 'pluck'];
+    // Calls that turn a query into a model or values (besides every first* and find*); anything after them leaves the scoped query.
+    private const MATERIALISING = ['sole', 'get', 'value', 'pluck', 'cursor', 'lazy'];
+
+    // Query and model methods Eloquent itself provides; any other method on a user-rooted chain is unknown.
+    private const ELOQUENT_METHODS = [
+        'where', 'orderby', 'orderbydesc', 'latest', 'oldest', 'with', 'without', 'withcount', 'limit', 'take', 'skip', 'offset', 'select',
+        'addselect', 'distinct', 'groupby', 'having', 'withtrashed', 'onlytrashed', 'sole', 'get', 'value', 'pluck', 'count', 'exists',
+        'doesntexist', 'paginate', 'simplepaginate', 'cursorpaginate', 'cursor', 'lazy', 'sum', 'max', 'min', 'avg', 'tobase', 'getresults',
+    ];
 
     // Finders that throw when the scoped query has no such row.
     private const THROWING = ['findorfail', 'firstorfail', 'sole'];
@@ -608,16 +615,15 @@ final class CandidateSelector
         return ($id || $key) && self::isVariable($expr->var, $var);
     }
 
-    // The value of $rhs still holds the identifier: it is mentioned outside the arguments of a method, static or
-    // user-function call, which is analysed as a consumer of its own.
+    // The value of $rhs may still hold the identifier: it is mentioned outside a lookup's arguments (a lookup's result is
+    // a model, analysed as a consumer of its own); any other call may return it.
     private function carriedBy(Expr $rhs, string $var, FunctionBody $body): bool
     {
         $occurrences = (new NodeFinder())->find([$rhs], fn (Node $n): bool => $n instanceof Expr && $this->mentionsDirectly($n, $var));
         foreach ($occurrences as $occurrence) {
             $consumed = false;
             for ($p = $body->positions->parent($occurrence); $p !== null && $occurrence !== $rhs; $p = $body->positions->parent($p)) {
-                if ($p instanceof Expr\MethodCall || $p instanceof Expr\NullsafeMethodCall || $p instanceof Expr\StaticCall || $p instanceof Expr\New_
-                    || ($p instanceof Expr\FuncCall && ! $this->propagates($p))) {
+                if (($p instanceof Expr\StaticCall || AuthExpressions::isCall($p)) && self::isLookup(AuthExpressions::name($p) ?? '')) {
                     $consumed = true;
 
                     break;
@@ -632,14 +638,6 @@ final class CandidateSelector
         }
 
         return false;
-    }
-
-    // compact(), wrappers and internal functions without callables return a value built from their arguments.
-    private function propagates(Expr\FuncCall $call): bool
-    {
-        $name = $call->name instanceof Node\Name ? strtolower(ltrim($call->name->toString(), '\\')) : '';
-
-        return $name === 'compact' || in_array($name, self::WRAPPERS, true) || (! in_array($name, self::KNOWN_FUNCTIONS, true) && $this->knownFunction($name, $call));
     }
 
     private function mentionsDirectly(Node $n, string $var): bool
@@ -785,7 +783,7 @@ final class CandidateSelector
 
     private static function materialises(string $name): bool
     {
-        return in_array($name, self::MATERIALISING, true) || str_starts_with($name, 'find');
+        return str_starts_with($name, 'first') || str_starts_with($name, 'find') || in_array($name, self::MATERIALISING, true);
     }
 
     // The hop right after the auth user names a relation RelationResolver knows on the auth user model.
@@ -977,11 +975,9 @@ final class CandidateSelector
 
             return ! self::isSafeFacade(ltrim($call->class->toString(), '\\')) && $this->types->staticModel($call, $node) === null;
         }
-        // An unknown method on the user itself may write anything.
-        if ($body->auth->isAuthUser($call->var)) {
-            $name = $call->name->toLowerString();
-
-            return ! in_array($name, [...self::USER_METHODS, ...AuthExpressions::WRITES, ...self::STATE_CALLS], true) && ! $this->isRelation($call->var, $call, $node);
+        // An unknown method anywhere on a chain from the user may write anything.
+        if ($this->userRooted($call->var, $body)) {
+            return ! $this->knownUserChainMethod($call, $body, $node);
         }
         if ($this->harmlessReceiver($call->var, $body) || $this->authRooted($call->var, $body, $node) || $this->types->queryModel($call->var, $node) !== null) {
             return false;
@@ -994,6 +990,10 @@ final class CandidateSelector
     private function harmlessReceiver(Expr $expr, FunctionBody $body): bool
     {
         while (AuthExpressions::isCall($expr) || $expr instanceof Expr\PropertyFetch || $expr instanceof Expr\NullsafePropertyFetch || $expr instanceof Expr\ArrayDimFetch) {
+            // The user reached through the request is no request read.
+            if ($body->auth->isAuthUser($expr)) {
+                return false;
+            }
             if ($this->isRequestReceiver($expr, $body)) {
                 return true;
             }
@@ -1009,6 +1009,36 @@ final class CandidateSelector
         return $this->isRequestReceiver($expr, $body);
     }
 
+    // The chain passes through the authenticated user (auth()->user(), $request->user(), Auth::user(), or a variable holding it).
+    private function userRooted(Expr $expr, FunctionBody $body): bool
+    {
+        while (true) {
+            if ($body->auth->isAuthUser($expr)) {
+                return true;
+            }
+            if (! (AuthExpressions::isCall($expr) || $expr instanceof Expr\PropertyFetch || $expr instanceof Expr\NullsafePropertyFetch || $expr instanceof Expr\ArrayDimFetch)) {
+                return false;
+            }
+            $expr = $expr->var;
+        }
+    }
+
+    // A method Eloquent provides on a user-rooted receiver, or a relation of the model there.
+    private function knownUserChainMethod(Expr\MethodCall|Expr\NullsafeMethodCall $call, FunctionBody $body, PathNode $node): bool
+    {
+        $name = $call->name instanceof Node\Identifier ? $call->name->toLowerString() : '';
+        if (in_array($name, [...self::ELOQUENT_METHODS, ...self::USER_METHODS, ...AuthExpressions::WRITES, ...self::STATE_CALLS], true)
+            || str_starts_with($name, 'where') || str_starts_with($name, 'orwhere') || str_starts_with($name, 'first') || str_starts_with($name, 'find')) {
+            return true;
+        }
+        if ($body->auth->isAuthUser($call->var)) {
+            return $this->isRelation($call->var, $call, $node);
+        }
+        $model = $this->types->queryModel($call->var, $node) ?? $this->types->typeOf($call->var, $node);
+
+        return $model !== null && $this->relations->relatedClass($model, $name) !== null;
+    }
+
     private function knownFunction(string $name, ?Expr\FuncCall $call = null): bool
     {
         if (in_array($name, self::KNOWN_FUNCTIONS, true)) {
@@ -1017,13 +1047,31 @@ final class CandidateSelector
         if (in_array($name, self::CALLABLE_FUNCTIONS, true) || ! function_exists($name) || ! (new \ReflectionFunction($name))->isInternal()) {
             return false;
         }
-        foreach ($call === null || $call->isFirstClassCallable() ? [] : $call->getArgs() as $arg) {
-            if ($arg->value instanceof Expr\Closure || $arg->value instanceof Expr\ArrowFunction) {
+        if ($call !== null && $call->isFirstClassCallable()) {
+            return false;
+        }
+        foreach ($call === null ? [] : $call->getArgs() as $arg) {
+            if (self::callableShaped($arg->value)) {
                 return false;
             }
         }
 
         return true;
+    }
+
+    // A closure, arrow function, first-class callable, [obj, 'm'] array, or a string naming a function or method.
+    private static function callableShaped(Expr $value): bool
+    {
+        if ($value instanceof Expr\Closure || $value instanceof Expr\ArrowFunction || ($value instanceof Expr\CallLike && $value->isFirstClassCallable())) {
+            return true;
+        }
+        if ($value instanceof Node\Scalar\String_) {
+            $text = ltrim($value->value, '\\');
+
+            return str_contains($text, '::') || str_contains($text, '@') || ($text !== '' && preg_match('/^[A-Za-z_][A-Za-z0-9_\\\\]*$/', $text) === 1 && function_exists($text));
+        }
+
+        return $value instanceof Expr\Array_ && count($value->items) === 2 && ($value->items[1]->value ?? null) instanceof Node\Scalar\String_;
     }
 
     private static function isSafeFacade(string $class): bool
