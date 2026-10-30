@@ -247,4 +247,52 @@ PHP,
         self::assertSame([], $files);
         self::assertSame(['app/Providers/RouteServiceProvider.php:11: nested route groups in providers are not analysed'], $warnings);
     }
+
+    public function testEveryServiceProviderIsScanned(): void
+    {
+        $root = $this->project([
+            'bootstrap/app.php' => "<?php\nreturn Application::configure()->withRouting(web: __DIR__.'/../routes/web.php')->create();",
+            'app/Providers/AppServiceProvider.php' => "<?php\nnamespace App\\Providers;\nuse Illuminate\\Support\\Facades\\Route;\nuse Illuminate\\Support\\ServiceProvider;\nclass AppServiceProvider extends ServiceProvider\n{\n    public function boot(): void\n    {\n        Route::middleware('web')->prefix('admin')->group(base_path('routes/admin.php'));\n    }\n}\n",
+            'routes/web.php' => '<?php',
+            'routes/admin.php' => '<?php',
+        ]);
+        [$files, $warnings] = $this->locate($root, 11);
+        self::assertSame([['routes/web.php', '', ['web'], null], ['routes/admin.php', 'admin', ['web'], null]], $this->shape($files));
+        self::assertSame([], $warnings);
+    }
+
+    public function testProviderRequiresAndLoadRoutesFrom(): void
+    {
+        $root = $this->project([
+            'app/Providers/PackageServiceProvider.php' => <<<'PHP'
+<?php
+namespace App\Providers;
+use Illuminate\Support\Facades\Route;
+class PackageServiceProvider extends \Illuminate\Support\ServiceProvider
+{
+    public function boot(): void
+    {
+        $this->loadRoutesFrom(__DIR__.'/../../routes/pkg.php');
+        Route::prefix('x')->middleware('auth')->group(function () {
+            require base_path('routes/inner.php');
+        });
+        require base_path('routes/bare.php');
+        require_once __DIR__.'/../helpers.php';
+        require $dynamic;
+    }
+}
+PHP,
+            'routes/pkg.php' => '<?php',
+            'routes/inner.php' => '<?php',
+            'routes/bare.php' => '<?php',
+            'app/helpers.php' => '<?php',
+        ]);
+        [$files, $warnings] = $this->locate($root, 11);
+        self::assertSame([
+            ['routes/pkg.php', '', [], null],
+            ['routes/inner.php', 'x', ['auth'], null],
+            ['routes/bare.php', '', [], null],
+        ], $this->shape($files));
+        self::assertSame(['app/Providers/PackageServiceProvider.php:14: route file path could not be resolved'], $warnings);
+    }
 }

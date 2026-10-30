@@ -8,6 +8,7 @@ use PhpParser\Node;
 use PhpParser\Node\Arg;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
+use PhpParser\NodeFinder;
 use TusharKhan\SemanticSec\Parsing\ParseResult;
 
 /** Interprets Route:: fluent chains in route files into RouteEntry objects, from the AST alone. */
@@ -36,6 +37,9 @@ final class RouteCollector
     /** @var array<string, true> */
     private array $loading = [];
 
+    /** @var array<string, true> every route file read so far, across collect() calls */
+    private array $visited = [];
+
     private readonly StringListReader $lists;
 
     private readonly RouteActionResolver $actions;
@@ -57,6 +61,23 @@ final class RouteCollector
         return [$this->routes, $this->warnings];
     }
 
+    /** @return list<string> */
+    public function visited(): array
+    {
+        return array_keys($this->visited);
+    }
+
+    /**
+     * True when the AST calls the Route facade statically anywhere.
+     *
+     * @param  array<Node>  $ast
+     */
+    public static function definesRoutes(array $ast): bool
+    {
+        return (new NodeFinder())->findFirst($ast, static fn (Node $n): bool => $n instanceof Expr\StaticCall && $n->class instanceof Node\Name
+            && in_array(ltrim($n->class->toString(), '\\'), [self::FACADE, 'Route'], true)) !== null;
+    }
+
     private function load(string $path, RouteContext $ctx, ?string $from, int $line): void
     {
         $parsed = $this->parsed->file($path);
@@ -76,6 +97,7 @@ final class RouteCollector
             return;
         }
         $this->loading[$path] = true;
+        $this->visited[$path] = true;
         $this->statements($parsed->ast, $ctx, $path);
         unset($this->loading[$path]);
     }

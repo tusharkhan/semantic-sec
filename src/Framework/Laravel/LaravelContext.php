@@ -36,6 +36,15 @@ final class LaravelContext implements FrameworkContext
             array_push($warnings, ...$w);
         }
 
+        // Safety net: a routes/ file that defines routes but that nothing loads.
+        $visited = array_flip($collector->visited());
+        foreach ($parsed->files as $file) {
+            $path = $file->file->path;
+            if (str_starts_with($path, 'routes/') && ! isset($visited[$path]) && RouteCollector::definesRoutes($file->ast)) {
+                $warnings[] = sprintf('%s defines routes but is not loaded by any analysed source', $path);
+            }
+        }
+
         $controllerMiddleware = new ControllerMiddlewareReader($symbols, $eval);
         [$policies, $w] = PolicyRegistry::fromProject($symbols, $eval);
         array_push($warnings, ...$w);

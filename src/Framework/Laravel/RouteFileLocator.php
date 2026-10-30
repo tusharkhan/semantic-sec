@@ -17,7 +17,12 @@ use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTable;
 /** Works out which route files a Laravel app loads, from the AST alone. */
 final class RouteFileLocator
 {
-    private const BASE_PROVIDER = 'Illuminate\\Foundation\\Support\\Providers\\RouteServiceProvider';
+    private const PROVIDERS = [
+        'Illuminate\\Support\\ServiceProvider',
+        'Illuminate\\Foundation\\Support\\Providers\\RouteServiceProvider',
+        'Illuminate\\Foundation\\Support\\Providers\\AuthServiceProvider',
+        'Illuminate\\Foundation\\Support\\Providers\\EventServiceProvider',
+    ];
 
     private const FACADE = 'Illuminate\\Support\\Facades\\Route';
 
@@ -34,9 +39,9 @@ final class RouteFileLocator
         if ($withRouting !== null) {
             $referenced = true;
             $this->fromWithRouting($withRouting, $parsed, $eval, $files, $warnings);
-        } else {
-            $referenced = $this->fromProviders($parsed, $symbols, $eval, $files, $warnings);
         }
+        // Any service provider may load route files, with or without withRouting.
+        $referenced = $this->fromProviders($parsed, $symbols, $eval, $files, $warnings) || $referenced;
 
         if (! $referenced) {
             if ($parsed->file('routes/web.php') !== null) {
@@ -151,33 +156,92 @@ final class RouteFileLocator
     private function fromProviders(ParseResult $parsed, SymbolTable $symbols, ConstantEvaluator $eval, array &$files, array &$warnings): bool
     {
         $referenced = false;
+        $finder = new NodeFinder();
         foreach ($symbols->all() as $class) {
-            if ($class->kind !== 'class' || ! $this->isRouteProvider($class, $symbols)) {
+            if ($class->kind !== 'class' || ! Ancestry::descendsFrom($symbols, $class->parent, self::PROVIDERS)) {
                 continue;
             }
             foreach ($class->methods as $method) {
-                $groups = (new NodeFinder())->find($method->node->stmts ?? [], fn (Node $n): bool => $this->isRouteGroup($n));
+                $stmts = $method->node->stmts ?? [];
+                $groups = array_values(array_filter($finder->find($stmts, fn (Node $n): bool => $this->isRouteGroup($n)), fn (Node $n): bool => $n instanceof Expr\MethodCall || $n instanceof Expr\StaticCall));
                 $nested = [];
-                $groups = array_values(array_filter($groups, fn (Node $n): bool => $n instanceof Expr\MethodCall || $n instanceof Expr\StaticCall));
+                $inGroup = [];
                 foreach ($groups as $group) {
                     foreach ($this->closureArgs($group) as $closure) {
-                        foreach ((new NodeFinder())->find($closure->getStmts(), fn (Node $n): bool => $this->isRouteGroup($n)) as $inner) {
+                        foreach ($finder->find($closure->getStmts(), fn (Node $n): bool => $this->isRouteGroup($n)) as $inner) {
                             $nested[spl_object_id($inner)] = $inner;
+                        }
+                        foreach ($finder->findInstanceOf($closure->getStmts(), Expr\Include_::class) as $include) {
+                            $inGroup[spl_object_id($include)] = true;
                         }
                     }
                 }
+                // Source order: groups, bare route-file includes and loadRoutesFrom() calls.
+                $items = [];
                 foreach ($groups as $group) {
-                    if (isset($nested[spl_object_id($group)])) {
-                        $warnings[] = sprintf('%s:%d: nested route groups in providers are not analysed', $class->file, $group->getStartLine());
+                    $items[] = [$group->getStartFilePos(), function () use ($group, $nested, $class, $parsed, $eval, &$files, &$warnings): bool {
+                        if (isset($nested[spl_object_id($group)])) {
+                            $warnings[] = sprintf('%s:%d: nested route groups in providers are not analysed', $class->file, $group->getStartLine());
 
-                        continue;
+                            return false;
+                        }
+
+                        return $this->fromGroup($group, $class, $parsed, $eval, $files, $warnings);
+                    }];
+                }
+                foreach ($finder->findInstanceOf($stmts, Expr\Include_::class) as $include) {
+                    if (! isset($inGroup[spl_object_id($include)])) {
+                        $items[] = [$include->getStartFilePos(), function () use ($include, $class, $parsed, $eval, &$files, &$warnings): bool {
+                            return $this->addPath($include->expr, $include, $class, '', [], null, [], true, $parsed, $eval, $files, $warnings);
+                        }];
                     }
-                    $referenced = $this->fromGroup($group, $class, $parsed, $eval, $files, $warnings) || $referenced;
+                }
+                foreach ($finder->findInstanceOf($stmts, Expr\MethodCall::class) as $call) {
+                    $arg = $call->args[0] ?? null;
+                    if ($call->var instanceof Expr\Variable && $call->var->name === 'this' && $call->name instanceof Node\Identifier
+                        && strtolower($call->name->toString()) === 'loadroutesfrom' && $arg instanceof Arg) {
+                        $items[] = [$call->getStartFilePos(), function () use ($arg, $call, $class, $parsed, $eval, &$files, &$warnings): bool {
+                            return $this->addPath($arg->value, $call, $class, '', [], null, [], false, $parsed, $eval, $files, $warnings);
+                        }];
+                    }
+                }
+                usort($items, static fn (array $a, array $b): int => $a[0] <=> $b[0]);
+                foreach ($items as [, $load]) {
+                    $referenced = $load() || $referenced;
                 }
             }
         }
 
         return $referenced;
+    }
+
+    /**
+     * Adds one route file reference; a bare include counts only when it points into routes/.
+     *
+     * @param  list<string>  $middleware
+     * @param  list<string>  $without
+     * @param  list<RouteFile>  $files
+     * @param  list<string>  $warnings
+     */
+    private function addPath(Expr $expr, Node $at, ClassSymbol $class, string $prefix, array $middleware, ?string $namespace, array $without, bool $routesOnly, ParseResult $parsed, ConstantEvaluator $eval, array &$files, array &$warnings): bool
+    {
+        $path = $eval->path($expr, $class->file, $class);
+        if ($path === null) {
+            $warnings[] = sprintf('%s:%d: route file path could not be resolved', $class->file, $at->getStartLine());
+
+            return true;
+        }
+        if ($routesOnly && ! str_starts_with($path, 'routes/')) {
+            return false;
+        }
+        if ($parsed->file($path) === null) {
+            $warnings[] = sprintf('route file %s not found', $path);
+
+            return true;
+        }
+        $files[] = new RouteFile($path, $prefix, $middleware, $namespace, $without);
+
+        return true;
     }
 
     /** @phpstan-assert-if-true Expr\MethodCall|Expr\StaticCall $n */
@@ -210,21 +274,6 @@ final class RouteFileLocator
         return $out;
     }
 
-    private function isRouteProvider(ClassSymbol $class, SymbolTable $symbols): bool
-    {
-        $seen = [];
-        $parent = $class->parent;
-        while ($parent !== null && ! isset($seen[$parent])) {
-            if (ltrim($parent, '\\') === self::BASE_PROVIDER) {
-                return true;
-            }
-            $seen[$parent] = true;
-            $parent = $symbols->getClass($parent)?->parent;
-        }
-
-        return false;
-    }
-
     /**
      * @param  list<RouteFile>  $files
      * @param  list<string>  $warnings
@@ -240,7 +289,7 @@ final class RouteFileLocator
         if ($group instanceof Expr\StaticCall) {
             $attrs = $group->args[0] ?? null;
             $pathArg = $group->args[1] ?? null;
-            if (! $pathArg instanceof Arg || $pathArg->value instanceof Expr\Closure || $pathArg->value instanceof Expr\ArrowFunction) {
+            if (! $pathArg instanceof Arg || ! $this->loadsFiles($pathArg->value)) {
                 return false;
             }
             if (! $attrs instanceof Arg || ! $attrs->value instanceof Expr\Array_) {
@@ -258,7 +307,7 @@ final class RouteFileLocator
             }
         } else {
             $pathArg = $group->args[0] ?? null;
-            if (! $pathArg instanceof Arg || $pathArg->value instanceof Expr\Closure || $pathArg->value instanceof Expr\ArrowFunction) {
+            if (! $pathArg instanceof Arg || ! $this->loadsFiles($pathArg->value)) {
                 return false;
             }
             // Flatten the chain from the root outwards.
@@ -285,18 +334,24 @@ final class RouteFileLocator
             }
         }
 
-        $path = $eval->path($pathArg->value, $file, $class);
-        if ($path === null) {
-            $warnings[] = sprintf('%s:%d: route file path could not be resolved', $file, $group->getStartLine());
+        $target = $pathArg->value;
+        if ($target instanceof Expr\Closure || $target instanceof Expr\ArrowFunction) {
+            foreach ((new NodeFinder())->findInstanceOf($target->getStmts(), Expr\Include_::class) as $include) {
+                $this->addPath($include->expr, $include, $class, $prefix, $middleware, $namespace, $without, false, $parsed, $eval, $files, $warnings);
+            }
 
             return true;
         }
-        if ($parsed->file($path) === null) {
-            $warnings[] = sprintf('route file %s not found', $path);
 
-            return true;
+        return $this->addPath($target, $group, $class, $prefix, $middleware, $namespace, $without, false, $parsed, $eval, $files, $warnings);
+    }
+
+    // A path argument, or a closure that requires route files.
+    private function loadsFiles(Expr $target): bool
+    {
+        if ($target instanceof Expr\Closure || $target instanceof Expr\ArrowFunction) {
+            return (new NodeFinder())->findFirstInstanceOf($target->getStmts(), Expr\Include_::class) !== null;
         }
-        $files[] = new RouteFile($path, $prefix, $middleware, $namespace, $without);
 
         return true;
     }
