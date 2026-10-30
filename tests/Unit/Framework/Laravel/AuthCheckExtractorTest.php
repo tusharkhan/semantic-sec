@@ -732,9 +732,10 @@ final class AuthCheckExtractorTest extends TestCase
     /**
      * @param  array<string, string>  $bodies  method => controller body
      * @param  array<string, string>  $files
+     * @param  list<string>  $helpers
      * @return array<string, RouteEntry>
      */
-    private function each(string $verb, string $uri, array $bodies, array $files = []): array
+    private function each(string $verb, string $uri, array $bodies, array $files = [], array $helpers = []): array
     {
         $routes = '';
         $code = '';
@@ -742,7 +743,7 @@ final class AuthCheckExtractorTest extends TestCase
             $routes .= sprintf("Route::%s('%s/%s', [C::class, '%s']);\n", $verb, $m, $uri, $m);
             $code .= $body."\n";
         }
-        [$out] = $this->analyse($routes, $this->controller($code) + $files);
+        [$out] = $this->analyse($routes, $this->controller($code) + $files, $helpers);
         $byMethod = [];
         foreach (array_keys($bodies) as $m) {
             $byMethod[$m] = $out[strtoupper($verb).' /'.$m.'/'.$uri];
@@ -1109,5 +1110,27 @@ final class AuthCheckExtractorTest extends TestCase
         );
         self::assertSame(['controller_ability/authorization'], self::checks($out['GET /a/{post}']));
         self::assertSame('post', $out['GET /a/{post}']->checks[0]->covers);
+    }
+
+    public function testShortCircuitOperandsStayConditional(): void
+    {
+        $out = $this->each('get', '{post}', [
+            'q1' => "public function q1(Request \$r, Post \$post) { if (\$r->boolean('x') && Gate::authorize('view', \$post)) { } return \$post; }",
+            'q2' => "public function q2(Request \$r, Post \$post) { return \$r->boolean('x') && Gate::authorize('view', \$post); }",
+            'q3' => "public function q3(Request \$r, Post \$post) { abort_if(\$r->boolean('x') && Gate::authorize('view', \$post), 403); return \$post; }",
+            'q4' => "public function q4(Request \$r, Post \$post) { if (\$r->boolean('x') && auth()->user()->posts()->where('id', 1)->first()) { } return \$post; }",
+            'q5' => "public function q5(Request \$r, Post \$post) { abort_if(\$r->boolean('x') || \$this->ensureOwner(\$post), 403); }",
+        ], helpers: ['ensureOwner']);
+        foreach (['q1', 'q2', 'q3', 'q4', 'q5'] as $m) {
+            self::assertSame([], self::checks($out[$m]), $m);
+        }
+    }
+
+    public function testEarlyReturnInsideTheCheckedIfDoesNotVoidItsCondition(): void
+    {
+        $out = $this->each('get', '{post}', [
+            'q7' => "public function q7(Request \$r, Post \$post) { if (Gate::denies('view', \$post)) { if (\$r->x) { return 1; } abort(403); } return \$post; }",
+        ]);
+        self::assertSame(['controller_ability/authorization'], self::checks($out['q7']));
     }
 }

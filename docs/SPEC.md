@@ -91,10 +91,10 @@ Built entirely from the AST. The tool never runs `artisan` or the app's own code
 - a loop body, a `switch` case, or a ternary branch
 - a `match` arm body, or any arm after the first (its conditions included)
 - a `try` body that has a `catch`, or the `catch` itself
-- the right side of `??`, or of `&&`/`||` outside a condition
+- the right operand of `&&`/`||`/`??`, which may be short-circuited. The exception is a non-throwing ability call (in a FormRequest, also a role call or auth comparison) inside a condition; the any/every rule below judges it instead.
 - any closure/arrow function (this covers `->when(cond, fn …)`/`->unless`)
 
-The condition of the first `if`, of `while`, of a ternary and of the `match` subject is an unconditional position. **Early return:** a check is also void when an earlier sibling statement, at its own level or an enclosing one, is an `if` (or one of its `elseif`/`else` branches) that directly `return`s a non-error value or `exit`s. Error values are `abort(…)`, `response(…, 4xx/5xx)` and `redirect()`/`to_route()` to login; a bare `return;` or an unknown value is non-error.
+A condition is not a conditional slot of its own construct: a check in the condition of the first `if`, of `while` or of a ternary, or in the `match` subject, is not skipped by that construct, though its other ancestors must still be unconditional. An early-return `if` voids only the statements after it, never its own condition. **Early return:** a check is also void when an earlier sibling statement, at its own level or an enclosing one, is an `if` (or one of its `elseif`/`else` branches) that directly `return`s a non-error value or `exit`s. Error values are `abort(…)`, `response(…, 4xx/5xx)` and `redirect()`/`to_route()` to login; a bare `return;` or an unknown value is non-error.
 
 A **non-throwing** ability call (`allows`, `denies`, `check`, `any`, `none`, `inspect`, `can`, `cannot`, `cant`) counts only in a **condition position**, reached through `!`, `(bool)`, `&&`, `||` or a comparison with `true`/`false`:
 - the condition of an `if`/`elseif`/ternary/`while`, or a `match` subject or arm condition (still subject to the rule above)

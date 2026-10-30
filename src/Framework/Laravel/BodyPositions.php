@@ -55,8 +55,12 @@ final class BodyPositions
         return $this->parents[spl_object_id($node)] ?? null;
     }
 
-    /** True when nothing between the node and the body root can skip it, including an earlier early-return `if`. */
-    public function isUnconditional(Node $node): bool
+    /**
+     * True when nothing between the node and the body root can skip it, including an earlier early-return `if`.
+     * $judged: the node is a leaf the any/every rule judges (a non-throwing ability call), so a short-circuited
+     * operand inside a condition is left to that rule.
+     */
+    public function isUnconditional(Node $node, bool $judged = false): bool
     {
         for ($child = $node, $parent = $this->parent($node); ; $child = $parent, $parent = $this->parent($parent)) {
             $siblings = $parent === null ? $this->body : (property_exists($parent, 'stmts') && is_array($parent->stmts) ? $parent->stmts : []);
@@ -66,7 +70,7 @@ final class BodyPositions
             if ($parent === null) {
                 return true;
             }
-            if ($this->isConditionalSlot($parent, $child)) {
+            if ($this->isConditionalSlot($parent, $child, $judged)) {
                 return false;
             }
         }
@@ -177,6 +181,10 @@ final class BodyPositions
      */
     private static function bypassedBefore(array $siblings, Node $child): bool
     {
+        // Only statements before the child in its own list; an `if` condition never sees its own body.
+        if (! in_array($child, $siblings, true)) {
+            return false;
+        }
         foreach ($siblings as $stmt) {
             if ($stmt === $child) {
                 return false;
@@ -258,7 +266,7 @@ final class BodyPositions
         return $parent instanceof Expr\BinaryOp && (self::boolLiteralSide($parent)[0] ?? null) === $child;
     }
 
-    private function isConditionalSlot(Node $parent, Node $child): bool
+    private function isConditionalSlot(Node $parent, Node $child, bool $judged): bool
     {
         return match (true) {
             $parent instanceof Stmt\If_ => in_array($child, $parent->stmts, true) || in_array($child, $parent->elseifs, true) || $parent->else === $child,
@@ -270,9 +278,9 @@ final class BodyPositions
             $parent instanceof Expr\Match_ => $child instanceof Node\MatchArm && array_search($child, $parent->arms, true) !== 0,
             $parent instanceof Node\MatchArm => $parent->body === $child || (int) array_search($child, $parent->conds ?? [], true) > 0,
             $parent instanceof Expr\Ternary => $parent->if === $child || $parent->else === $child,
-            // A short-circuited operand inside a condition is judged by the any/every rule instead.
+            // A short-circuited operand is conditional, unless it is a judged leaf inside a condition.
             $parent instanceof Expr\BinaryOp\BooleanAnd, $parent instanceof Expr\BinaryOp\BooleanOr,
-            $parent instanceof Expr\BinaryOp\LogicalAnd, $parent instanceof Expr\BinaryOp\LogicalOr => $parent->right === $child && $this->conditionRoot($parent) === null,
+            $parent instanceof Expr\BinaryOp\LogicalAnd, $parent instanceof Expr\BinaryOp\LogicalOr => $parent->right === $child && ! ($judged && $this->conditionRoot($parent) !== null),
             $parent instanceof Expr\BinaryOp\Coalesce => $parent->right === $child,
             $parent instanceof Expr\AssignOp\Coalesce => $parent->expr === $child,
             $parent instanceof Expr\Closure, $parent instanceof Expr\ArrowFunction, $parent instanceof Stmt\Function_,

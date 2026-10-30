@@ -411,7 +411,7 @@ final class AuthCheckExtractor
             \assert($node instanceof Expr);
             $ability = $this->abilityCall($node, $context);
             $comparison = $node instanceof Expr\BinaryOp && $context->isAuthComparison($node, null);
-            if (($ability === null && ! $comparison && ! $context->isRoleCall($node)) || ! $positions->isUnconditional($node)) {
+            if (($ability === null && ! $comparison && ! $context->isRoleCall($node)) || ! $positions->isUnconditional($node, $ability === null || ! $ability[3])) {
                 continue;
             }
             if (($ability !== null && $ability[3]) || $positions->isConditionPosition($node, true, $leaf)) {
@@ -489,14 +489,14 @@ final class AuthCheckExtractor
         $leaf = fn (Expr $e, bool $allow): bool => $this->abilityCall($e, $context) !== null || $context->guardQualifies($e, $allow);
         foreach ($nodes as $node) {
             \assert($node instanceof Expr);
+            $ability = $this->abilityCall($node, $context);
             // A check that some path can skip protects nothing.
-            if (! $positions->isUnconditional($node)) {
+            if (! $positions->isUnconditional($node, $ability !== null && ! $ability[3])) {
                 continue;
             }
             $add = static function (AuthCheckKind $kind, AuthStrength $strength, string $source, ?string $covers = null) use (&$checks, $file, $node): void {
                 $checks[] = new AuthCheck($kind, $strength, $source, $file, $node->getStartLine(), $strength === AuthStrength::Authorization ? $covers : null);
             };
-            $ability = $this->abilityCall($node, $context);
             // A non-throwing check counts only where its result decides a branch or guard.
             if ($ability !== null && ($ability[3] || $positions->isConditionPosition($node, false, $leaf))) {
                 [$abilityArg, $modelArg, $any] = $ability;
