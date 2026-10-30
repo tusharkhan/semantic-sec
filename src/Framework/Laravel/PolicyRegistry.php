@@ -106,7 +106,7 @@ final class PolicyRegistry
     }
 
     // Body is exactly `return true;` or `return Response::allow();`.
-    private static function allowsAll(MethodSymbol $method): bool
+    public static function allowsAll(MethodSymbol $method): bool
     {
         $stmts = $method->node->stmts;
         if ($stmts === null || count($stmts) !== 1 || ! $stmts[0] instanceof Return_) {
