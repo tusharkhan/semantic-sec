@@ -72,33 +72,70 @@ Built entirely from the AST. The tool never runs `artisan` or the app's own code
 
 **Framework detection:** from `composer.lock` (falling back to `composer.json`), the `laravel/framework` version decides where middleware is registered: up to 10 it's `app/Http/Kernel.php`, from 11 on it's `bootstrap/app.php`. `--framework=laravel` forces detection; the version still comes from the lock file if one exists.
 
-**Routes:** files from `bootstrap/app.php` `->withRouting(web:, api:, commands:, then:)` (11+), or from `RouteServiceProvider` `->group(base_path(...))` (≤10, including the `$namespace` prefix for string actions). Defaults are `routes/web.php` and `routes/api.php`; config can add more. Supported forms:
+**Routes:** files from `bootstrap/app.php` `->withRouting(web:, api:, commands:)` (11+; `then:` and `using:` are warned, not analysed), plus every service provider (any class descending from `ServiceProvider`, with or without `withRouting`): `Route::…->group(<path>)` (including the `$namespace` prefix for string actions; a `$this->namespace` the app never declares is `null`), a group closure that `require`s route files (loaded with the group's prefix and middleware), a bare `require`/`include` of a file under `routes/`, and `$this->loadRoutesFrom(<path>)`. Defaults are `routes/web.php` and `routes/api.php` when nothing references a route file; config can add more. Any file under `routes/` that calls `Route::` but is never loaded gets the warning `routes/<x>.php defines routes but is not loaded by any analysed source`. Supported forms:
 - `Route::get|post|put|patch|delete|options|any|match`
 - `Route::resource` / `apiResource`, with `->only()` / `->except()` and nested resources
-- groups: `Route::middleware()->prefix()->controller()->name()->group(...)`, plus the array-style `Route::group([...], fn)`
-- `->middleware()`, `->withoutMiddleware()`, `->can()`, `->scopeBindings()`
+- groups: `Route::middleware()->prefix()->controller()->name()->can()->group(...)`, plus the array-style `Route::group([...], fn)`
+- `->middleware()`, `->withoutMiddleware()`, `->can()`, `->scopeBindings()`, `->withoutScopedBindings()`
 - actions written as `[Controller::class, 'm']`, `'Controller@m'`, an invokable `Controller::class`, or a closure (a closure becomes an action with no class, and its body is the code analysed)
 - web-group middleware applied to `web.php` routes, api-group middleware to `api.php` routes
 
-**Middleware resolution:** aliases and groups from `Kernel.php` (`$middlewareGroups`, `$middlewareAliases`, `$routeMiddleware`) or `bootstrap/app.php` (`->withMiddleware(fn ($m) => $m->alias([...]), ->web(append:), ->api(append:), ->group(...))`), plus Laravel's built-in defaults (`auth`, `can`, `verified`, …). Controller middleware comes from `$this->middleware(...)->only/except` in the constructor (≤10) or the static `middleware()` method of `HasMiddleware` (11+).
+**Middleware resolution:** aliases and groups from `Kernel.php` (`$middlewareGroups`, `$middlewareAliases`, `$routeMiddleware`) or `bootstrap/app.php` (`->withMiddleware(fn ($m) => $m->alias([...]), ->web(append:), ->api(append:), ->group(...))`), plus Laravel's built-in defaults (`auth`, `can`, `verified`, …). Controller middleware comes from `$this->middleware(...)->only/except` in the constructor (≤10) or the static `middleware()` method of `HasMiddleware` (11+). If any `withoutMiddleware` item on a route (or a provider group's `excluded_middleware`) cannot be resolved, every middleware-derived check on that route gets strength **None** with the source `<middleware> (may be removed by unresolved withoutMiddleware)`.
+
+**Parameters and binding:** route-model binding, FormRequest detection and the bound model use **native** parameter types only, never docblocks (Laravel ignores them), for methods and closures alike.
+
+**Authenticated-user and auth-id expressions.** Auth user: `auth()->user()`, `auth('x')->user()`, `Auth::user()`, `Auth::guard(..)->user()`, `request()->user()`, `$request->user()` (a `Request`/FormRequest parameter or `$request`), and `$this->user()` inside a FormRequest. Auth id: `auth()->id()`, `Auth::id()`, `<auth user>->id`, `<auth user>->getKey()`. A **variable** is one of these only if **every** assignment to it earlier in the method is such an expression and it is never a `foreach` key/value, a `list()`/`[...]` destructuring target, assigned by reference or through a compound operator, a `global`/`static` target, nor assigned inside a closure; otherwise it is unknown.
+
+**Where a check counts.** A check found in the action body (an ability call, an abort guard, a query scope, a custom helper) counts only in an **unconditional position**. No enclosing construct between it and the method or closure body may be:
+- an `if` body, or any `elseif`/`else` branch (its condition included, since it runs only when the `if` fails; `else if` and `elseif` behave the same)
+- a loop body, a `switch` case, or a ternary branch
+- a `match` arm body, or any arm after the first (its conditions included)
+- a `try` body that has a `catch`, or the `catch` itself
+- the right operand of `&&`/`||`/`??`, which may be short-circuited. The exception is a non-throwing ability call (in a FormRequest, also a role call or auth comparison) inside a condition; the any/every rule below judges it instead.
+- any closure/arrow function (this covers `->when(cond, fn …)`/`->unless`)
+
+A condition is not a conditional slot of its own construct: a check in the condition of the first `if`, of `while` or of a ternary, or in the `match` subject, is not skipped by that construct, though its other ancestors must still be unconditional. An early-return `if` voids only the statements after it, never its own condition. **Early return:** a check is also void when an earlier sibling statement, at its own level or an enclosing one, is an `if` (or one of its `elseif`/`else` branches) that directly `return`s a non-error value or `exit`s. Error values are `abort(…)`, `response(…, 4xx/5xx)` and `redirect()`/`to_route()` to login; a bare `return;` or an unknown value is non-error.
+
+A **non-throwing** ability call (`allows`, `denies`, `check`, `any`, `none`, `inspect`, `can`, `cannot`, `cant`) counts only in a **condition position**, reached through `!`, `(bool)`, `&&`, `||` or a comparison with `true`/`false`:
+- the condition of an `if`/`elseif`/ternary/`while`, or a `match` subject or arm condition (still subject to the rule above)
+- the first argument of `abort_if|abort_unless|throw_if|throw_unless`
+- the `return` expression of a FormRequest `authorize()`
+
+Through `&&`/`||` it follows the abort-guard any/every rule (see the table below). In a guard or return, every other operand must qualify where the rule says "every", for example `abort_unless(Gate::allows(..) || $flag)` gives no check. In an `if`/ternary/`while`/`match` condition the polarity is unclear, so it never counts. Assigned to a variable, returned from a controller, or passed to a view/array/response, it is no check. `authorize()` / `Gate::authorize()` throw, so they count in any unconditional position.
 
 **Authorization sources**, each recorded as an `AuthCheck` with a strength:
 
 | Source | Strength |
 |---|---|
-| `auth`, `auth:*`, `verified`, `signed` middleware | Authentication only |
-| `can:ability,model` middleware or `->can()` on a route | Authorization |
-| Policy found (registered in `AuthServiceProvider::$policies` / `Gate::policy()`, or by auto-discovery `App\Policies\{Model}Policy`) **and** invoked: `authorizeResource()` in the constructor, `$this->authorize()`, `Gate::authorize/allows/denies`, `->can()` / `->cannot()`, `@can`-style `$user->can()` | Authorization |
-| Policy method whose body is only `return true;` | **None**, flagged in the map |
-| FormRequest parameter whose `authorize()` contains more than `return true;` | Authorization |
-| FormRequest `authorize()` that returns `true` | None |
-| `abort_if` / `abort_unless` / `throw_if` comparing against `auth()->id()` / `$request->user()` / `Auth::id()` — a guard on any other condition (e.g. `$order->status === 'paid'`) is **not** an AuthCheck; see `workflow_bypass` in §7. | Authorization |
-| Query scoped to the user: a query that starts from the authenticated user (`auth()->user()`, `$request->user()`, `request()->user()`, `Auth::user()`, `$this->user()` in a FormRequest) and then calls a relation **method** followed by a read (`->invoices()->find*/first*/where*/get`), **or** any query that compares any column to the authenticated id (`->where('<any column>', auth()->id())`, `Auth::id()`, `$request->user()->id`, `->whereBelongsTo($user)`), or a nested route with `->scopeBindings()`. Writes through the user's relations (`->member->update`, `->ownedTeams()->create`) are **not** a query scope. | Authorization |
+| `auth`, `auth:*`, `auth.basic`, `verified`, `signed` middleware, plus any middleware whose class descends from those (`Authenticate`, `AuthenticateWithBasicAuth`, `EnsureEmailIsVerified`, `ValidateSignature`). `auth.session` (`AuthenticateSession`) is not one. | Authentication only |
+| `can:ability,model` middleware or `->can()` on a route or route group | Authorization |
+| Policy found (registered in `AuthServiceProvider::$policies` / `Gate::policy()`, or by auto-discovery `App\Policies\{Model}Policy`) **and** invoked: `authorizeResource()` in the constructor, `$this->authorize()`, `Gate::authorize/allows/denies`, or `->can()` / `->cannot()` on the **authenticated user**. `$user->can()` on an action parameter is no check: Laravel injects an empty model when it isn't route-bound, and a route-bound one is chosen by the caller. | Authorization |
+| An ability call above whose model has no policy (unknown or unresolved model, or a Gate-only ability) | Authorization: triviality cannot be proven, and the explicit call is real intent |
+| A trivial policy: the ability method's body is only `return true;` or `return Response::allow();`, or `before()` is | **None**, flagged in the map |
+| FormRequest parameter whose `authorize()` (found on the class, a parent or a trait) contains **enforced** evidence: an ability call (`can`/`cannot`/`cant`, `Gate::*`, `authorize`), an auth comparison (with the guard polarity: `return` means "allowed"), or a method call on the auth user other than `check`/`guest`/`id`/`getKey`/`getAuthIdentifier` (role checks such as `->isAdmin()`). The evidence must sit in an unconditional, early-return-free position of `authorize()` and decide the `return` or a condition by the any/every rule, so `isAdmin() \|\| true` doesn't count. A `$this->route('p')` read alone is neither evidence nor coverage. | Authorization |
+| FormRequest `authorize()` that only checks login: `auth()->check()`, `Auth::check()`, `Auth::guard(..)->check()`, `$this->user() !== null`, `! is_null($this->user())`, `(bool) $this->user()`, `return $this->user();`, joined only by `&&`, `\|\|`, `!` and literals | Authentication only |
+| FormRequest with no `authorize()`, one that returns `true` or `Response::allow()`, or one with nothing auth-related | None |
+| `abort_if` / `abort_unless` / `throw_if` / `throw_unless` whose condition's **top-level** comparison is between an auth-user/auth-id operand and something other than `null`/`true`/`false`, **with the right polarity**: `abort_if`/`throw_if` need `!==`/`!=`, `abort_unless`/`throw_unless` need `===`/`==`; a leading `!` flips the requirement. Compound conditions: `abort_unless(A && B)` and `abort_if(A \|\| B)` count if **any** operand qualifies; `abort_unless(A \|\| B)` and `abort_if(A && B)` only if **every** operand does. `abort_if($user->id === auth()->id())` (blocks only yourself), a login check such as `abort_if(auth()->id() === null, 401)`, a bare `abort_unless($request->user(), 401)`, a call such as `$request->user()->isAdmin()`, or any other condition (e.g. `$order->status === 'paid'`) is **not** an AuthCheck; see `workflow_bypass` in §7. | Authorization |
+| Query scoped to the user: a query that starts from the authenticated user and then calls a relation **method** followed by a read (`->invoices()->find*/first*/where*/get`), unless the chain passes `newQuery`, `query`, `newModelQuery`, `replicate`, `getModel`, `getRelated`, `newModelInstance` or `make`; **or** a `where('<any column>', <auth id>)` / `where('<col>', '=', <auth id>)`, or `->whereBelongsTo(<auth user>)`. Other operators and `orWhere` don't count, and any `orWhere*` in the same chain voids the scope (`->where('user_id', auth()->id())->orWhere('public', 1)`). Writes through the user's relations (`->member->update`, `->ownedTeams()->create`) are **not** a query scope. | Authorization |
+| Child binding scoped to its URL parent: `->scopeBindings()`, or Laravel's implicit scoping of a custom-keyed child (`/users/{user}/posts/{post:slug}`); `->withoutScopedBindings()` turns both off | Authorization only when another authorization-strength check covers the parent parameter (a `can:` naming it, or an ability call on its variable); otherwise **None** (`scoped to URL parent {user}`) |
 | Helper on the user's `auth_helpers` config list | Authorization |
 
-**`RouteEntry`** holds: HTTP methods, URI, name, action (`class`, `method`, or closure), resolved middleware, parameters (name, bound model class, whether scoped), checks, and the file and line it was defined on. URIs are printed as declared, including binding fields (`/posts/{post:slug}`), with a leading `/`, and with group prefixes and the automatic `/api` prefix applied. `map:` lists are compared as sets.
+**Coverage (`covers`).** Each `AuthCheck` records the route parameter it is proven to protect. It is set **only when the check's strength is Authorization**, and is `null` otherwise or when the check is route-wide/unknown.
 
-**`semantic-sec map`** prints this map (console table or `--format=json`). It's free, deterministic, and useful on its own.
+| Check | `covers` |
+|---|---|
+| `can:ability,<param>` | that parameter (`can:ability,Class` → `null`) |
+| An ability call whose model argument is the untouched, route-bound parameter variable | that parameter |
+| `authorizeResource(…, '<param>')` on a model-carrying method | that parameter |
+| An authorization-strength scoped binding | the child parameter |
+| A FormRequest whose counted evidence uses `$this->route('<p>')` as an ability argument or comparison operand (directly, or through a variable whose every assignment is that read) | `<p>` |
+| Abort guards, query scopes, custom helpers, authentication | `null` |
+
+M4's `idor` selection may require the check to cover the identifier parameter (decided in M4).
+
+**`RouteEntry`** holds: HTTP methods, URI, name, action (`class`, `method`, or closure), resolved middleware, `withoutMiddleware`, `scopeBindings` (`null` default, `true`, `false`), parameters (name, binding field, optional, bound model class), checks, and the file and line it was defined on. URIs are printed as declared, including binding fields (`/posts/{post:slug}`), with a leading `/`, and with group prefixes and the automatic `/api` prefix applied. `map:` lists are compared as sets.
+
+**`semantic-sec map`** prints this map (console table or `--format=json`). The console table shows every check with its source (`kind: <source>`, `kind (auth only): <source>`, `kind (none): <source>`, identical lines collapsed), then `N routes: A with authorization, B authentication only, C unprotected` and the warnings. JSON carries each route's `file`, `line`, `withoutMiddleware`, `scopeBindings` and each check's `covers`, and substitutes invalid UTF-8. It's free, deterministic, and useful on its own.
 
 ## 7. Candidate selection (the pre-filter) [new]
 
@@ -106,7 +143,7 @@ A route action becomes a candidate for a category when:
 
 | Category | Trigger (all must hold) |
 |---|---|
-| `idor` | Takes a user-controlled identifier: a route parameter, or a request input named `id`/`*_id`/`*Id` that reaches a model lookup (`find*`, `where*`, `first*`, route-model binding) within depth 3. **And** no authorization-strength check covers the route. |
+| `idor` | Takes a user-controlled identifier: a route parameter, or a request input named `id`/`*_id`/`*Id` that reaches a model lookup (`find*`, `where*`, `first*`, route-model binding) within depth 3. **And** no authorization-strength check covers the route. M4 may additionally require that check to cover the identifier parameter itself (`AuthCheck::$covers`, §6). |
 | `missing_authorization` | The route changes state (POST/PUT/PATCH/DELETE, or calls `save/update/delete/create` or a destroy-style action within depth 3) and has **no** authorization-strength check. Authentication alone doesn't count. |
 | `mass_assignment` | Calls `create`, `update`, `fill`, `forceFill` or `upsert` with `$request->all()`, `$request->input()`, `$request->except()` or `request()->all()` on a model whose `$guarded` is `[]`, or whose `$fillable` contains a name from `sensitive_fields` (default: `is_admin`, `role`, `role_id`, `admin`, `balance`, `credits`, `email_verified_at`, `password`, `user_id`, `owner_id`, `team_id`, `tenant_id`, `status`). |
 | `insecure_deserialization` | `unserialize()` is reachable within depth 3 with an argument not provably constant. |
@@ -230,6 +267,8 @@ semantic-sec baseline             # alias for analyze --generate-baseline
 | `--deep` | off | Section 7 |
 | `--dry-run` | off | Writes every payload and prompt to `.semantic-sec/dry-run/NNN-<symbol>.txt`; makes no network calls; needs no API key |
 | `--no-cache` | off | |
+
+**Memory:** `bin/semantic-sec` raises PHP's `memory_limit` to `1G` when it is lower (and not `-1`), since real projects exceed the 128M default; `SEMANTIC_SEC_MEMORY_LIMIT` overrides it with any php.ini value (`-1`, `2G`, …).
 
 **Exit codes:** `0` clean (or only suppressed, baselined or non-failing findings) · `1` at least one failing finding · `2` tool error (bad config, no framework detected, missing API key when not in dry-run, every request failed) · `3` budget exceeded with no failing findings. **[new] `1` beats `3`:** if the budget runs out after failing findings are found, the exit code is 1, and the partial results are always written.
 

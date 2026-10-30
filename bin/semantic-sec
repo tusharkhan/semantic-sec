@@ -4,12 +4,16 @@
 declare(strict_types=1);
 
 use TusharKhan\SemanticSec\Console\Application;
+use TusharKhan\SemanticSec\Console\MemoryLimit;
 
 $autoloaders = [__DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../../autoload.php'];
 
 foreach ($autoloaders as $autoloader) {
     if (is_file($autoloader)) {
         require $autoloader;
+
+        $env = getenv('SEMANTIC_SEC_MEMORY_LIMIT');
+        MemoryLimit::apply($env === false ? null : $env);
 
         exit((new Application())->run());
     }

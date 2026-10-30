@@ -23,6 +23,10 @@ final class ProjectParserTest extends TestCase
 
     protected function tearDown(): void
     {
+        if (in_array('ssboom', stream_get_wrappers(), true)) {
+            stream_wrapper_unregister('ssboom');
+        }
+        ExplodingStream::$files = [];
         foreach (glob($this->root.'/app/*') ?: [] as $f) {
             is_link($f) || is_file($f) ? unlink($f) : null;
         }
@@ -124,5 +128,18 @@ final class ProjectParserTest extends TestCase
     private function parser(): ProjectParser
     {
         return new ProjectParser(new FileFinder(), new AstGenerator());
+    }
+
+    public function testTearDownUnregistersStreamWrapper(): void
+    {
+        ExplodingStream::register();
+        ExplodingStream::$files = ['x' => null];
+
+        $this->tearDown();
+
+        self::assertFalse(in_array('ssboom', stream_get_wrappers(), true));
+        self::assertSame([], ExplodingStream::$files);
+
+        $this->setUp();
     }
 }
