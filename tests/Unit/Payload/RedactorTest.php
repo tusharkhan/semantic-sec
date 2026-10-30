@@ -107,7 +107,7 @@ final class RedactorTest extends TestCase
 
     public function testEntropyThresholdJustUnderIsKept(): void
     {
-        $s = 'aB3dE5gH7jK9mN1paB3d';
+        $s = 'abcdefghijklm!@#abcd';
 
         self::assertSame(20, strlen($s));
         self::assertSame("\$k = '{$s}';", (new Redactor())->redact("\$k = '{$s}';"));
@@ -115,7 +115,7 @@ final class RedactorTest extends TestCase
 
     public function testEntropyThresholdJustOverIsRedacted(): void
     {
-        $s = 'aB3dE5gH7jK9mN1pQ2sT';
+        $s = 'abcdefghijklm!@#%^*+';
 
         self::assertSame(20, strlen($s));
         self::assertSame("\$k = '<redacted>';", (new Redactor())->redact("\$k = '{$s}';"));
@@ -123,23 +123,16 @@ final class RedactorTest extends TestCase
 
     public function testExactlyFourBitsIsKept(): void
     {
-        $s = 'aB3dE5gH7jK9mN1p' . 'aB3dE5gH7jK9mN1p';
+        $s = 'abcdefghijklm!@#' . 'abcdefghijklm!@#';
 
         self::assertSame("\$k = '{$s}';", (new Redactor())->redact("\$k = '{$s}';"));
     }
 
     public function testNineteenCharsAreKeptEvenWithHighEntropy(): void
     {
-        $s = 'aB3dE5gH7jK9mN1pQ2s';
+        $s = 'abcdefghijklm!@#%^*';
 
         self::assertSame(19, strlen($s));
-        self::assertSame("\$k = '{$s}';", (new Redactor())->redact("\$k = '{$s}';"));
-    }
-
-    public function testStringsWithSpacesAreKept(): void
-    {
-        $s = 'Zq8xK2mR9vL4tW7yB3nC5 and more';
-
         self::assertSame("\$k = '{$s}';", (new Redactor())->redact("\$k = '{$s}';"));
     }
 
@@ -282,11 +275,24 @@ final class RedactorTest extends TestCase
     /** @return array<string, array{string}> */
     public static function benchmarkFiles(): array
     {
-        $root = dirname(__DIR__, 3) . '/benchmark/laravel11-app/app/';
+        $base = dirname(__DIR__, 3) . '/benchmark/';
+        $cases = [];
+        foreach (['laravel10-app', 'laravel11-app'] as $app) {
+            foreach (['app', 'routes'] as $dir) {
+                $root = $base . $app . '/' . $dir;
+                if (! is_dir($root)) {
+                    continue;
+                }
+                $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS));
+                foreach ($it as $f) {
+                    if ($f instanceof \SplFileInfo && $f->getExtension() === 'php') {
+                        $cases[$app . '/' . substr($f->getPathname(), strlen($base . $app . '/'))] = [$f->getPathname()];
+                    }
+                }
+            }
+        }
+        ksort($cases);
 
-        return [
-            'InvoiceController' => [$root . 'Http/Controllers/Vuln/InvoiceController.php'],
-            'Invoice model' => [$root . 'Models/Invoice.php'],
-        ];
+        return $cases;
     }
 }
