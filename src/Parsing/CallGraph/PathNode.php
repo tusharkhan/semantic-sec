@@ -13,7 +13,7 @@ final readonly class PathNode
     /**
      * @param  string  $id  "Class::method" or "closure@<file>:<line>"
      * @param  ?string  $calledBy  parent PathNode id
-     * @param  ?string  $closureClass  for a closure, the class `$this` is bound to when known
+     * @param  ?string  $closureClass  the class `$this` is bound to when known: for a closure, or for a trait method the using class
      */
     public function __construct(
         public string $id,

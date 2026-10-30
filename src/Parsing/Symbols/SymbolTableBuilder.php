@@ -213,16 +213,75 @@ final class SymbolTableBuilder
         }
 
         $returnType = $this->nativeType($node->returnType, $class, $parent);
+        $shape = $this->nativeShape($node->returnType);
         if ($returnType === null) {
             $tags = $doc?->getReturnTagValues() ?? [];
             $returnType = $tags !== [] ? $this->docType($tags[0]->type, $class, $parent, $resolve, $templates) : null;
+            $shape = $tags !== [] && $node->returnType === null ? $this->docShape($tags[0]->type) : $shape;
         }
         $genericTags = $doc === null ? [] : ($doc->getReturnTagValues('@phpstan-return') ?: $doc->getReturnTagValues('@psalm-return') ?: $doc->getReturnTagValues());
         $returnGeneric = $genericTags !== [] ? $this->genericArgument($genericTags[0]->type, $class, $parent, $resolve, $templates) : null;
 
         $docVars = $this->localVarTags($node, $class, $parent, $resolve, $templates);
 
-        return new MethodSymbol($class, $node->name->toString(), $file, $node->getStartLine(), $node->getEndLine(), $params, $returnType, $node->isStatic(), $node, $returnGeneric, $docVars);
+        return new MethodSymbol($class, $node->name->toString(), $file, $node->getStartLine(), $node->getEndLine(), $params, $returnType, $node->isStatic(), $node, $returnGeneric, $docVars, ...$shape);
+    }
+
+    /** @return array{bool, bool, bool} returns static/$this, returns self, ambiguous */
+    private function nativeShape(Identifier|Name|ComplexType|null $type): array
+    {
+        $members = $type instanceof UnionType ? $type->types : [$type instanceof NullableType ? $type->type : $type];
+        $classes = [];
+        foreach ($members as $member) {
+            if ($member instanceof IntersectionType) {
+                $classes[] = '&';
+
+                continue;
+            }
+            $text = $member instanceof Identifier || $member instanceof Name ? strtolower(ltrim($member->toString(), '\\')) : '';
+            if ($text !== '' && ! in_array($text, self::BUILTINS, true)) {
+                $classes[] = $text;
+            }
+        }
+
+        return self::shape($classes);
+    }
+
+    /** @return array{bool, bool, bool} returns static/$this, returns self, ambiguous */
+    private function docShape(TypeNode $type): array
+    {
+        $members = $type instanceof UnionTypeNode ? $type->types : [$type];
+        $classes = [];
+        foreach ($members as $member) {
+            while ($member instanceof NullableTypeNode || $member instanceof GenericTypeNode) {
+                $member = $member->type;
+            }
+            if ($member instanceof ThisTypeNode) {
+                $classes[] = '$this';
+            } elseif ($member instanceof IdentifierTypeNode) {
+                $lower = strtolower($member->name);
+                if (! $this->isBuiltin($lower) && ! isset(self::LEGACY[$lower]) && ! in_array($lower, self::PSEUDO, true) && ! str_contains($lower, '-')) {
+                    $classes[] = $lower;
+                }
+            }
+        }
+
+        return self::shape($classes);
+    }
+
+    /**
+     * @param  list<string>  $classes  lower-cased class-like members of a return type
+     * @return array{bool, bool, bool}
+     */
+    private static function shape(array $classes): array
+    {
+        if (count($classes) > 1) {
+            return [false, false, true];
+        }
+        $only = $classes[0] ?? null;
+
+        // `parent` names an instance of the parent or any subclass, so it is as unknown as a union.
+        return [$only === 'static' || $only === '$this', $only === 'self', $only === 'parent'];
     }
 
     /**
@@ -311,7 +370,7 @@ final class SymbolTableBuilder
         foreach (['@property', '@property-read', '@psalm-property', '@psalm-property-read', '@phpstan-property', '@phpstan-property-read'] as $tag) {
             $values = str_ends_with($tag, '-read') ? $doc->getPropertyReadTagValues($tag) : $doc->getPropertyTagValues($tag);
             foreach ($values as $value) {
-                $type = $this->docType($value->type, $class, $parent, $resolve, $templates);
+                $type = in_array(true, $this->docShape($value->type), true) ? null : $this->docType($value->type, $class, $parent, $resolve, $templates);
                 if ($type !== null && $type !== 'null') {
                     $properties[ltrim($value->propertyName, '$')] = $type;
                 }
@@ -320,7 +379,7 @@ final class SymbolTableBuilder
         $methods = [];
         foreach (['@method', '@psalm-method', '@phpstan-method'] as $tag) {
             foreach ($doc->getMethodTagValues($tag) as $value) {
-                $type = $value->returnType === null ? null : $this->docType($value->returnType, $class, $parent, $resolve, $templates);
+                $type = $value->returnType === null || in_array(true, $this->docShape($value->returnType), true) ? null : $this->docType($value->returnType, $class, $parent, $resolve, $templates);
                 if ($type !== null && $type !== 'null') {
                     $methods[strtolower($value->methodName)] = $type;
                 }

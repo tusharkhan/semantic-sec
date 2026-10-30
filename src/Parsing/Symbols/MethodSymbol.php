@@ -24,6 +24,9 @@ final readonly class MethodSymbol
         public ClassMethod $node,
         public ?string $returnGeneric = null, // first class-like generic argument of the docblock return type
         public array $docVars = [],
+        public bool $returnsStatic = false, // declared `static` or `$this`: the receiver's class
+        public bool $returnsSelf = false, // declared `self`: the declaring class or any subclass
+        public bool $returnAmbiguous = false, // two or more class-like members (or `parent`); returnType is only a hint
     ) {
     }
 

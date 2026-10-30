@@ -332,7 +332,42 @@ class C {}']);
             'member' => 'App\Models\Member',
             'team' => 'Other\Team',
         ], $class->docProperties);
-        self::assertSame(['latestinvoice' => 'App\Models\Invoice', 'active' => 'App\Models\Builder'], $class->docMethods);
+        // A two-class union (Builder|C) is ambiguous, so it is not recorded.
+        self::assertSame(['latestinvoice' => 'App\Models\Invoice'], $class->docMethods);
+    }
+
+    public function testReturnShapeMarkers(): void
+    {
+        $table = $this->build(['C.php' => '<?php
+namespace App;
+class C {
+    public function a(): static {}
+    public function b(): ?self {}
+    /** @return $this */
+    public function c() {}
+    public function d(): A|B|null {}
+    /** @return A|B */
+    public function e() {}
+    /** @return A|null */
+    public function f() {}
+    public function g(): parent {}
+}']);
+
+        $shapes = [];
+        foreach (['a', 'b', 'c', 'd', 'e', 'f', 'g'] as $name) {
+            $method = $table->findMethod('App\C', $name);
+            self::assertNotNull($method);
+            $shapes[$name] = [$method->returnsStatic, $method->returnsSelf, $method->returnAmbiguous];
+        }
+        self::assertSame([
+            'a' => [true, false, false],
+            'b' => [false, true, false],
+            'c' => [true, false, false],
+            'd' => [false, false, true],
+            'e' => [false, false, true],
+            'f' => [false, false, false],
+            'g' => [false, false, true],
+        ], $shapes);
     }
 
     public function testConstructorAssignedPropertyTakesTheParameterType(): void

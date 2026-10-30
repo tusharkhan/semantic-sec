@@ -19,6 +19,10 @@ final class RelationResolver
         'morphone', 'morphmany', 'morphtomany', 'morphedbymany',
     ];
 
+    private const TO_ONE = ['hasone', 'belongsto', 'hasonethrough', 'morphone'];
+
+    private const RELATION_NS = 'Illuminate\\Database\\Eloquent\\Relations\\';
+
     /** @var array<string, ?string> */
     private array $cache = [];
 
@@ -35,6 +39,43 @@ final class RelationResolver
         }
 
         return $this->cache[$key];
+    }
+
+    /** True when reading the relation as a property gives one model, false for a collection, null when unknown. */
+    public function isToOne(string $model, string $relation): ?bool
+    {
+        $model = ltrim($model, '\\');
+        $method = $this->symbols->findMethod($model, $relation);
+        if ($method !== null) {
+            if ($this->callsMorphTo($method)) {
+                return true;
+            }
+            $kinds = [];
+            foreach ($this->returns($method->node->stmts ?? []) as $return) {
+                $call = $return->expr === null ? null : $this->relationCall($return->expr);
+                $kinds[] = $call === null ? null : in_array($call->name instanceof Node\Identifier ? $call->name->toLowerString() : '', self::TO_ONE, true);
+            }
+            $unique = array_unique($kinds, SORT_REGULAR);
+            if (count($unique) === 1 && $unique[0] !== null) {
+                return $unique[0];
+            }
+            $declared = $method->returnAmbiguous || $method->returnType === null ? '' : strtolower(ltrim($method->returnType, '\\'));
+            if (str_starts_with($declared, strtolower(self::RELATION_NS))) {
+                $kind = substr($declared, strlen(self::RELATION_NS));
+
+                return in_array($kind, self::RELATIONS, true) ? in_array($kind, self::TO_ONE, true) : null;
+            }
+
+            return null;
+        }
+        // A class @property naming a model is one model.
+        foreach ($this->symbols->lineage($model) as $symbol) {
+            if (isset($symbol->docProperties[$relation])) {
+                return $this->modelOrNull($symbol->docProperties[$relation]) !== null ? true : null;
+            }
+        }
+
+        return null;
     }
 
     /** @param list<string> $relations resolved hop by hop; any unknown hop gives null */
@@ -106,7 +147,8 @@ final class RelationResolver
         return $found;
     }
 
-    private function relationTarget(Expr $expr, MethodSymbol $method, string $model): ?string
+    // The `$this->hasMany(…)` call at the root of a returned chain.
+    private function relationCall(Expr $expr): ?Expr\MethodCall
     {
         while (($expr instanceof Expr\MethodCall || $expr instanceof Expr\NullsafeMethodCall)
             && ! ($expr->var instanceof Expr\Variable && $expr->var->name === 'this')) {
@@ -114,6 +156,16 @@ final class RelationResolver
         }
         if (! $expr instanceof Expr\MethodCall || ! $expr->name instanceof Node\Identifier
             || ! in_array($expr->name->toLowerString(), self::RELATIONS, true) || $expr->isFirstClassCallable()) {
+            return null;
+        }
+
+        return $expr;
+    }
+
+    private function relationTarget(Expr $expr, MethodSymbol $method, string $model): ?string
+    {
+        $expr = $this->relationCall($expr);
+        if ($expr === null) {
             return null;
         }
         $first = $expr->getArgs()[0] ?? null;

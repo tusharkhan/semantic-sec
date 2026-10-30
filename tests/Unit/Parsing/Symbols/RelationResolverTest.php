@@ -122,6 +122,20 @@ final class RelationResolverTest extends TestCase
         self::assertNull($r->relatedClass('App\Models\Missing', 'invoices'));
     }
 
+    public function testTellsToOneFromToMany(): void
+    {
+        $r = self::resolver();
+        foreach (['account', 'parent', 'profile', 'owner'] as $relation) {
+            self::assertTrue($r->isToOne('App\Models\User', $relation), $relation);
+        }
+        foreach (['invoices', 'roles', 'children', 'viaThrough', 'orders', 'branchy', 'teams'] as $relation) {
+            self::assertFalse($r->isToOne('App\Models\User', $relation), $relation);
+        }
+        foreach (['notOnThis', 'scalar', 'missing', 'currentTeam', 'docInvoices'] as $relation) {
+            self::assertNull($r->isToOne('App\Models\User', $relation), $relation);
+        }
+    }
+
     public function testFollowsRelationChainsHopByHop(): void
     {
         $r = self::resolver();

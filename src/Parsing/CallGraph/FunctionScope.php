@@ -16,14 +16,15 @@ final class FunctionScope
     private array $docTypes = [];
 
     /** @var array<string, ?string> "name\0pos" => resolved type */
-    public array $memo = [];
+    private array $memo = [];
 
     /**
      * @param  array<string, ?string>  $params  name => class type
      * @param  array<Stmt>  $body
      * @param  array<int, array<string, string>>  $docVars  statement start position => var => type
+     * @param  array<string, true>  $scalarParams  parameters declared int, string or float
      */
-    public function __construct(public readonly AuthExpressions $auth, public readonly array $params, private readonly array $body, array $docVars)
+    public function __construct(public readonly AuthExpressions $auth, public readonly array $params, private readonly array $body, array $docVars, public readonly array $scalarParams = [])
     {
         if ($docVars === []) {
             return;
@@ -35,6 +36,21 @@ final class FunctionScope
                 $this->docTypes[spl_object_id($assign->expr)] = $docVars[$stmt->getStartFilePos()][$assign->var->name];
             }
         }
+    }
+
+    /**
+     * The memoised type of a variable read; a read already being resolved gives null, so self-references stop.
+     *
+     * @param  callable(): ?string  $resolve
+     */
+    public function remember(string $key, callable $resolve): ?string
+    {
+        if (! array_key_exists($key, $this->memo)) {
+            $this->memo[$key] = null;
+            $this->memo[$key] = $resolve();
+        }
+
+        return $this->memo[$key];
     }
 
     public function docType(Expr $assignedValue): ?string

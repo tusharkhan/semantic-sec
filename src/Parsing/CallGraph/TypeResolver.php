@@ -73,13 +73,9 @@ final class TypeResolver
         if ($scope === null) {
             return null;
         }
-        $key = $var->name."\0".$var->getStartFilePos();
-        if (! array_key_exists($key, $scope->memo)) {
-            $scope->memo[$key] = null;
-            $scope->memo[$key] = $this->assignedType($var->name, $var, $scope, $context);
-        }
+        $name = $var->name;
 
-        return $scope->memo[$key];
+        return $scope->remember($name."\0".$var->getStartFilePos(), fn (): ?string => $this->assignedType($name, $var, $scope, $context));
     }
 
     // Every assignment (and the parameter, if any) must give the same class, and one must run on every path.
@@ -123,7 +119,8 @@ final class TypeResolver
         if ($this->isModel($class)) {
             $related = $this->relations->relatedClass($class, $name);
             if ($related !== null) {
-                return $related;
+                // A to-many relation reads as a collection.
+                return $this->relations->isToOne($class, $name) === true ? $related : null;
             }
         }
         foreach ($this->symbols->lineage($class) as $symbol) {
@@ -142,13 +139,13 @@ final class TypeResolver
         }
         $scope = $this->scope($context);
         if ($scope !== null && $scope->auth->isAuthUser($expr)) {
-            return $this->authUserModel;
+            return self::defaultGuard($expr) ? $this->authUserModel : null;
         }
         $name = $expr->name->toLowerString();
         if (in_array($name, self::SINGLE, true)) {
             $model = $this->builderModel($expr->var, $context);
             if ($model !== null) {
-                return $this->findsMany($expr, $name) ? null : $model;
+                return $this->findsByScalar($expr, $name, $context) ? $model : null;
             }
         }
         // app()->make(X::class)
@@ -167,7 +164,7 @@ final class TypeResolver
         }
         $scope = $this->scope($context);
         if ($scope !== null && $scope->auth->isAuthUser($expr)) {
-            return $this->authUserModel;
+            return self::defaultGuard($expr) ? $this->authUserModel : null;
         }
         $name = $expr->name->toLowerString();
         if (in_array(ltrim($expr->class->toString(), '\\'), self::APP_FACADES, true)) {
@@ -177,12 +174,19 @@ final class TypeResolver
         if ($class === null || $this->symbols->isSubclassOf($class, self::FACADE)) {
             return null;
         }
+        $keyword = in_array($expr->class->toLowerString(), ['self', 'parent'], true);
         $method = $this->symbols->findMethod($class, $name);
         if ($method !== null) {
-            return $method->static ? $this->classLike($method->returnType) : null;
+            if ($method->static) {
+                // self::/parent:: forward the late-static class, which may be a subclass.
+                return $this->methodResult($method, $class, $keyword ? null : $class);
+            }
+
+            // self::m() / parent::m() on an instance method call it on $this.
+            return $keyword ? $this->methodResult($method, $class, null) : null;
         }
         if ($this->isModel($class) && in_array($name, self::SINGLE, true)) {
-            return $this->findsMany($expr, $name) ? null : $class;
+            return $this->findsByScalar($expr, $name, $context) ? $class : null;
         }
 
         return null;
@@ -195,7 +199,35 @@ final class TypeResolver
         }
         $scope = $this->scope($context);
 
-        return $scope !== null && $scope->auth->isAuthUser($expr) ? $this->authUserModel : null;
+        return $scope !== null && $scope->auth->isAuthUser($expr) && self::defaultGuard($expr) ? $this->authUserModel : null;
+    }
+
+    // Only the default guard is known to hold $authUserModel: auth()->user(), Auth::user(), Auth::guard()->user(), $request->user().
+    private static function defaultGuard(Expr $expr): bool
+    {
+        if (AuthExpressions::isFunc($expr, 'optional')) {
+            $args = AuthExpressions::args($expr);
+
+            return count($args) === 1 && self::defaultGuard($args[0]);
+        }
+        if ($expr instanceof Expr\StaticCall) {
+            return $expr->args === [];
+        }
+        if (! AuthExpressions::isCall($expr) || $expr->args !== []) {
+            return false;
+        }
+        $receiver = $expr->var;
+        while (AuthExpressions::isCall($receiver) || $receiver instanceof Expr\StaticCall || $receiver instanceof Expr\FuncCall) {
+            if ($receiver->args !== []) {
+                return false;
+            }
+            if ($receiver instanceof Expr\StaticCall || $receiver instanceof Expr\FuncCall) {
+                return true;
+            }
+            $receiver = $receiver->var;
+        }
+
+        return $receiver instanceof Expr\Variable;
     }
 
     // The model an Eloquent query or relation expression reads, when the chain keeps it a query on one model.
@@ -226,25 +258,61 @@ final class TypeResolver
             || $this->symbols->findMethod($model, 'scope'.$name) !== null;
     }
 
-    // find([..]) / findOrFail([..]) return a collection.
-    private function findsMany(Expr\CallLike $call, string $name): bool
+    // find()/findOrFail()/findOrNew() give one model only for a key proven scalar; an array (or anything unproven) gives a collection.
+    private function findsByScalar(Expr\CallLike $call, string $name, PathNode $context): bool
     {
-        $first = $call->getArgs()[0] ?? null;
+        if (! in_array($name, ['find', 'findorfail', 'findornew'], true)) {
+            return true;
+        }
+        $args = AuthExpressions::args($call);
 
-        return in_array($name, ['find', 'findorfail', 'findornew'], true) && $first !== null && $first->value instanceof Expr\Array_;
+        return $args !== [] && $this->isScalar($args[0], $context, 0);
+    }
+
+    private function isScalar(Expr $expr, PathNode $context, int $depth): bool
+    {
+        if ($expr instanceof Node\Scalar\Int_ || $expr instanceof Node\Scalar\Float_ || $expr instanceof Node\Scalar\String_
+            || $expr instanceof Node\Scalar\InterpolatedString || $expr instanceof Expr\BinaryOp\Concat
+            || $expr instanceof Expr\Cast\Int_ || $expr instanceof Expr\Cast\Double || $expr instanceof Expr\Cast\String_) {
+            return true;
+        }
+        $scope = $this->scope($context);
+        if ($scope === null || $depth > 4) {
+            return false;
+        }
+        if ($scope->auth->isAuthId($expr)) {
+            return true;
+        }
+        if (! $expr instanceof Expr\Variable || ! is_string($expr->name)) {
+            return false;
+        }
+        $name = $expr->name;
+        $pos = $expr->getStartFilePos();
+        if ($scope->auth->hasParam($name) && ! isset($scope->scalarParams[$name])) {
+            return false;
+        }
+        if ($scope->auth->isUntouchedParam($name, $pos)) {
+            return true;
+        }
+        $values = $scope->auth->assignedValues($expr);
+        foreach ($values ?? [] as $value) {
+            if (! $this->isScalar($value, $context, $depth + 1)) {
+                return false;
+            }
+        }
+
+        return $values !== null;
     }
 
     private function methodReturn(string $class, string $name): ?string
     {
-        if ($this->isModel($class)) {
-            $related = $this->relations->relatedClass($class, $name);
-            if ($related !== null) {
-                return $related;
-            }
+        // $model->relation() is a Relation builder, not a model.
+        if ($this->isModel($class) && $this->relations->relatedClass($class, $name) !== null) {
+            return null;
         }
         $method = $this->symbols->findMethod($class, $name);
         if ($method !== null) {
-            return $this->classLike($method->returnType);
+            return $this->methodResult($method, $class, $class);
         }
         foreach ($this->symbols->lineage($class) as $symbol) {
             if (isset($symbol->docMethods[$name])) {
@@ -253,6 +321,25 @@ final class TypeResolver
         }
 
         return null;
+    }
+
+    /**
+     * The class a call returns, given the receiver's class and the late-static class (null when unknown).
+     */
+    private function methodResult(MethodSymbol $method, string $receiver, ?string $static): ?string
+    {
+        if ($method->returnAmbiguous) {
+            return null;
+        }
+        if ($method->returnsStatic) {
+            return $static;
+        }
+        if ($method->returnsSelf) {
+            // `self` is the declaring class or a subclass; only the declaring class itself is proven.
+            return $method->class === $receiver && $this->symbols->getClass($receiver)?->kind !== 'trait' ? $receiver : null;
+        }
+
+        return $this->classLike($method->returnType);
     }
 
     // app(X::class), resolve(X::class), App::make(X::class)
@@ -294,8 +381,10 @@ final class TypeResolver
 
             return $static ? null : $context->closureClass;
         }
+        $class = $context->method?->class;
 
-        return $context->method?->class;
+        // In a trait, $this is the using class, known only when the caller names it.
+        return $class !== null && $this->symbols->getClass($class)?->kind === 'trait' ? $context->closureClass : $class;
     }
 
     private function isModel(string $class): bool
@@ -327,11 +416,30 @@ final class TypeResolver
             $body = $fn->getStmts() ?? [];
             $thisClass = $this->thisClass($context);
             $auth = new AuthExpressions($this->symbols, $params, $body, AuthExpressions::isFormRequest($this->symbols, $thisClass));
-            $cached[$key] = new FunctionScope($auth, $params, $body, $this->docVars($context));
+            $cached[$key] = new FunctionScope($auth, $params, $body, $this->docVars($context), self::scalarParams($fn));
             $this->scopes[$fn] = $cached;
         }
 
         return $cached[$key];
+    }
+
+    /** @return array<string, true> parameters declared int, string or float (optionally nullable) */
+    private static function scalarParams(Node\FunctionLike $fn): array
+    {
+        $out = [];
+        foreach ($fn->getParams() as $param) {
+            $type = $param->type instanceof Node\NullableType ? $param->type->type : $param->type;
+            $members = $type instanceof Node\UnionType ? $type->types : [$type];
+            $scalar = $type !== null && ! $param->variadic && ! $param->byRef;
+            foreach ($members as $member) {
+                $scalar = $scalar && $member instanceof Node\Identifier && in_array($member->toLowerString(), ['int', 'string', 'float', 'null'], true);
+            }
+            if ($scalar && $param->var instanceof Expr\Variable && is_string($param->var->name)) {
+                $out[$param->var->name] = true;
+            }
+        }
+
+        return $out;
     }
 
     /** @return array<string, ?string> */

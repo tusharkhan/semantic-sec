@@ -47,6 +47,9 @@ final class AuthExpressions
     /** @var array<string, true> variables written other than by a plain top-level assignment */
     private array $tainted = [];
 
+    /** @var list<array{int, int}> start and end positions of loops in this body */
+    private array $loops = [];
+
     /** @var array<string, list<Expr>> variable => expressions it iterates or aliases by reference */
     private array $derived = [];
 
@@ -75,6 +78,9 @@ final class AuthExpressions
             /** @var array<string, list<Expr>> */
             public array $derived = [];
 
+            /** @var list<array{int, int}> */
+            public array $loops = [];
+
             private int $depth = 0;
 
             public function enterNode(Node $node): null
@@ -82,6 +88,9 @@ final class AuthExpressions
                 if (($node instanceof Expr\Variable && ! is_string($node->name)) || AuthExpressions::isFunc($node, 'extract')
                     || (AuthExpressions::isFunc($node, 'parse_str') && $node instanceof Expr\FuncCall && count($node->args) === 1)) {
                     $this->taintsAll = true;
+                }
+                if ($this->depth === 0 && ($node instanceof Stmt\For_ || $node instanceof Stmt\Foreach_ || $node instanceof Stmt\While_ || $node instanceof Stmt\Do_)) {
+                    $this->loops[] = [$node->getStartFilePos(), $node->getEndFilePos()];
                 }
                 if (self::opensScope($node)) {
                     $this->depth++;
@@ -164,6 +173,7 @@ final class AuthExpressions
         $this->assignments = $visitor->assignments;
         $this->tainted = $visitor->tainted;
         $this->derived = $visitor->derived;
+        $this->loops = $visitor->loops;
         $this->taintsAll = $visitor->taintsAll;
     }
 
@@ -177,10 +187,10 @@ final class AuthExpressions
         return array_key_exists($name, $this->paramTypes);
     }
 
-    /** The last value assigned to $name that ends before $pos, or null. */
+    /** The last value assigned to $name that ends before $pos, or null; loop-carried values are not included. */
     public function lastAssignment(string $name, int $pos): ?Expr
     {
-        $values = $this->assignmentsBefore($name, $pos);
+        $values = $this->assignmentsBefore($name, $pos, false);
 
         return $values === [] ? null : $values[count($values) - 1];
     }
@@ -199,7 +209,7 @@ final class AuthExpressions
     /** True for an action parameter that is never reassigned or rebound before $pos. */
     public function isUntouchedParam(string $name, int $pos): bool
     {
-        return $this->hasParam($name) && ! $this->isTainted($name) && $this->lastAssignment($name, $pos) === null;
+        return $this->hasParam($name) && ! $this->isTainted($name) && $this->assignmentsBefore($name, $pos) === [];
     }
 
     private function isTainted(string $name): bool
@@ -434,17 +444,32 @@ final class AuthExpressions
         return $expr instanceof Expr\FuncCall && self::name($expr) === $function;
     }
 
-    /** @return list<Expr> */
-    private function assignmentsBefore(string $name, int $pos): array
+    /**
+     * Values assigned before $pos, plus (with $loops) those later in a loop that encloses $pos, which run before the next pass.
+     *
+     * @return list<Expr>
+     */
+    private function assignmentsBefore(string $name, int $pos, bool $loops = true): array
     {
         $found = [];
         foreach ($this->assignments[$name] ?? [] as [$end, $value]) {
-            if ($end < $pos) {
+            if ($end < $pos || ($loops && $this->sharesLoop($pos, $end))) {
                 $found[] = $value;
             }
         }
 
         return $found;
+    }
+
+    private function sharesLoop(int $pos, int $end): bool
+    {
+        foreach ($this->loops as [$start, $stop]) {
+            if ($start <= $pos && $pos <= $stop && $end <= $stop) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

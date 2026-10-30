@@ -28,7 +28,7 @@ final class LaravelContextTest extends TestCase
         self::assertGreaterThanOrEqual(5, count($lines));
         self::assertLessThanOrEqual(8, count($lines));
         self::assertSame($text, (new LaravelContext())->promptContext());
-        foreach (['route model binding', 'polic', 'FormRequest', 'middleware'] as $topic) {
+        foreach (['route model binding', 'polic', 'FormRequest', 'middleware', 'only', 'except', 'scopeBindings'] as $topic) {
             self::assertStringContainsStringIgnoringCase($topic, $text);
         }
     }

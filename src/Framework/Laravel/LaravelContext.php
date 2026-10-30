@@ -21,10 +21,10 @@ final class LaravelContext implements FrameworkContext
 
     private const PROMPT_CONTEXT = <<<'TXT'
         Laravel notes:
-        - Route model binding loads a type-hinted model by its route key only; it does not check that the current user may access it.
+        - Route model binding loads a type-hinted model by its route key only; it does not check that the current user may access it, and only scopeBindings() limits a child model to its parent.
         - Policies run only when called: $this->authorize(), Gate::authorize(), the `can:` middleware or authorizeResource(); Gate::allows() and ->can() just return a boolean.
         - A FormRequest's authorize() runs before the controller action; returning true allows every caller, and rules() only validates input.
-        - The `auth` middleware only proves someone is logged in; route-group and controller middleware apply to every route they wrap.
+        - The `auth` middleware only proves someone is logged in; route-group middleware applies to every route it wraps, controller middleware too unless limited with only()/except().
         - Model::find()/findOrFail() read any row; ownership needs a where on the owner column or a query through the user's relation.
         - Passing $request->all() to create(), update() or fill() writes every fillable attribute the client sends.
         TXT;
