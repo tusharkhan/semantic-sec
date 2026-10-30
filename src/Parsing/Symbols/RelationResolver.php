@@ -7,6 +7,7 @@ namespace TusharKhan\SemanticSec\Parsing\Symbols;
 use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
+use PhpParser\NodeFinder;
 
 /** Resolves an Eloquent relation name on a model to the related model class (SPEC §8); never guesses. */
 final class RelationResolver
@@ -54,23 +55,39 @@ final class RelationResolver
     {
         $method = $this->symbols->findMethod($model, $relation);
         if ($method !== null) {
+            // A polymorphic target is only known at runtime.
+            if ($this->callsMorphTo($method)) {
+                return null;
+            }
             $fromBody = $this->fromBody($method, $model);
             if ($fromBody !== null) {
                 return $fromBody;
             }
             if ($method->returnGeneric !== null) {
-                return $method->returnGeneric;
+                return $this->modelOrNull($method->returnGeneric);
             }
         }
         foreach ($this->symbols->lineage($model) as $symbol) {
             $type = $symbol->docProperties[$relation] ?? $symbol->docMethods[strtolower($relation)] ?? null;
             if ($type !== null) {
-                // A doc tag may name a collection or builder; only a model class is an answer.
-                return $this->symbols->isSubclassOf($type, self::ELOQUENT_MODEL) ? $type : null;
+                return $this->modelOrNull($type);
             }
         }
 
         return null;
+    }
+
+    // Doc types may name a collection, builder or the base Model; only a concrete model subclass is an answer.
+    private function modelOrNull(string $type): ?string
+    {
+        return $this->symbols->isSubclassOf($type, self::ELOQUENT_MODEL) ? $type : null;
+    }
+
+    private function callsMorphTo(MethodSymbol $method): bool
+    {
+        return (new NodeFinder())->findFirst($method->node->stmts ?? [], static fn (Node $n): bool => $n instanceof Expr\MethodCall
+            && $n->var instanceof Expr\Variable && $n->var->name === 'this' && $n->name instanceof Node\Identifier
+            && str_starts_with($n->name->toLowerString(), 'morphto') && $n->name->toLowerString() !== 'morphtomany') !== null;
     }
 
     // The class every return of `$this->hasMany(X::class, …)…` names, or null if any return differs.
@@ -112,10 +129,13 @@ final class RelationResolver
             return null;
         }
 
+        // In a trait, self and static mean the using class; parent is unknowable.
+        $inTrait = $this->symbols->getClass($method->class)?->kind === 'trait';
+
         return match ($value->class->toLowerString()) {
-            'self' => $method->class,
+            'self' => $inTrait ? $model : $method->class,
             'static' => $model,
-            'parent' => $this->symbols->getClass($method->class)?->parent,
+            'parent' => $inTrait ? null : $this->symbols->getClass($method->class)?->parent,
             default => ltrim($value->class->toString(), '\\'),
         };
     }

@@ -351,10 +351,16 @@ class C {
     private $documented;
     private $untypedParam;
     private $overwritten;
-    public function __construct(Repo $repo, ?Repo $maybe, Repo $b, Repo $r2, Other $o, Repo $d, $u, Repo $w)
+    private $nullFallback;
+    private $otherFallback;
+    private $callFallback;
+    public function __construct(Repo $repo, ?Repo $maybe, Repo $b, Repo $r2, Other $o, Repo $d, $u, Repo $w, ?Repo $n1, ?Repo $n2, ?Repo $n3)
     {
         $this->repo = $repo;
         $this->fallback = $maybe ?? new Repo();
+        $this->nullFallback = $n1 ?? null;
+        $this->otherFallback = $n2 ?? new Other();
+        $this->callFallback = $n3 ?? app(Repo::class);
         if ($b) {
             $this->branch = $b;
         }
@@ -382,6 +388,9 @@ class C {
         self::assertSame('App\Services\Other', $p['documented']->type);
         self::assertNull($p['untypedParam']->type);
         self::assertNull($p['overwritten']->type);
+        self::assertSame('App\Services\Repo', $p['nullFallback']->type);
+        self::assertNull($p['otherFallback']->type);
+        self::assertNull($p['callFallback']->type);
     }
 
     private function parsedFile(string $path, string $code): ParsedFile

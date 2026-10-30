@@ -343,8 +343,10 @@ final class SymbolTableBuilder
                 }
                 if ($target instanceof Node\Expr\PropertyFetch && $target->var instanceof Node\Expr\Variable && $target->var->name === 'this' && $target->name instanceof Identifier) {
                     $value = $write instanceof Node\Expr\Assign && isset($topLevel[spl_object_id($write)]) ? $write->expr : null;
+                    $fallback = $value instanceof Node\Expr\BinaryOp\Coalesce ? $value->right : null;
                     $value = $value instanceof Node\Expr\BinaryOp\Coalesce ? $value->left : $value;
-                    $types[$target->name->toString()][] = $value instanceof Node\Expr\Variable && is_string($value->name) && ! isset($variadic[$value->name]) ? $value->name : null;
+                    $source = $value instanceof Node\Expr\Variable && is_string($value->name) && ! isset($variadic[$value->name]) ? $value->name : null;
+                    $types[$target->name->toString()][] = $source === null ? null : [$source, $fallback];
                 }
             }
         }
@@ -353,7 +355,8 @@ final class SymbolTableBuilder
         foreach ($types as $property => $sources) {
             $resolved = [];
             foreach ($sources as $source) {
-                $resolved[] = $source === null || isset($written[$source]) ? null : ($ctor->params[$source] ?? null);
+                $type = $source === null || isset($written[$source[0]]) ? null : ($ctor->params[$source[0]] ?? null);
+                $resolved[] = $type !== null && self::fallbackKeepsType($source[1], $type) ? $type : null;
             }
             $unique = array_unique($resolved, SORT_REGULAR);
             if (count($unique) === 1 && $unique[0] !== null) {
@@ -468,6 +471,19 @@ final class SymbolTableBuilder
         }
 
         return $resolve($text);
+    }
+
+    // `?? null` or `?? new <same class>` keep the param's type; any other fallback could differ.
+    private static function fallbackKeepsType(?Node\Expr $fallback, string $type): bool
+    {
+        if ($fallback === null) {
+            return true;
+        }
+        if ($fallback instanceof Node\Expr\ConstFetch) {
+            return $fallback->name->toLowerString() === 'null';
+        }
+
+        return $fallback instanceof Node\Expr\New_ && $fallback->class instanceof Name && ltrim($fallback->class->toString(), '\\') === $type;
     }
 
     /** @return list<string> */

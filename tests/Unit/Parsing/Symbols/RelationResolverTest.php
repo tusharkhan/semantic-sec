@@ -27,6 +27,8 @@ final class RelationResolverTest extends TestCase
          * @property-read Collection<int, Invoice> $docInvoices
          * @property-read \Vendor\Thing $thing
          * @method Team currentTeam()
+         * @method \Vendor\Thing vendorThing()
+         * @method Model baseModel()
          */
         class User extends Model
         {
@@ -49,13 +51,29 @@ final class RelationResolverTest extends TestCase
             public function dynamic() { return $this->hasMany($this->related); }
             public function morph() { return $this->morphTo(); }
             public function scalar() { return 1; }
+            /** @return \Illuminate\Database\Eloquent\Relations\MorphTo<Model, $this> */
+            public function commentable() { return $this->morphTo(); }
+            /** @return \Illuminate\Database\Eloquent\Relations\MorphTo<Profile, $this> */
+            public function owner() { return $this->morphTo('owner', 'owner_type', 'owner_id'); }
+            /** @return Collection<int, Invoice> */
+            public function invoiceList() { return $this->invoices()->get(); }
+            /** @return HasMany<\Vendor\Thing> */
+            public function vendorThings() { return $this->things(); }
+            /** @return HasMany<Model> */
+            public function anyModel() { return $this->things(); }
         }
         PHP;
 
     private const FILES = [
-        'app/Models/HasTeams.php' => '<?php namespace App\Models; trait HasTeams { public function teams() { return $this->belongsToMany(Team::class); } }',
+        'app/Models/HasTeams.php' => '<?php namespace App\Models; trait HasTeams {
+            public function teams() { return $this->belongsToMany(Team::class); }
+            public function selfRef() { return $this->belongsTo(self::class); }
+            public function staticRef() { return $this->hasMany(static::class); }
+            public function parentRef() { return $this->belongsTo(parent::class); }
+        }',
         'app/Models/Admin.php' => '<?php namespace App\Models; class Admin extends User {}',
         'app/Models/Profile.php' => '<?php namespace App\Models; class Profile extends \Illuminate\Database\Eloquent\Model {}',
+        'app/Models/Order.php' => '<?php namespace App\Models; class Order extends \Illuminate\Database\Eloquent\Model {}',
         'app/Models/Team.php' => '<?php namespace App\Models; class Team extends \Illuminate\Database\Eloquent\Model {}',
     ];
 
@@ -109,6 +127,23 @@ final class RelationResolverTest extends TestCase
         self::assertSame('App\Models\User', $r->followChain('App\Models\User', []));
         self::assertNull($r->followChain('App\Models\User', ['dynamic', 'teams']));
         self::assertNull($r->followChain('App\Models\User', ['teams', 'missing']));
+    }
+
+    public function testMorphToAndNonModelFallbacksAreNull(): void
+    {
+        $r = self::resolver();
+        foreach (['commentable', 'owner', 'invoiceList', 'vendorThings', 'anyModel', 'vendorThing', 'baseModel'] as $relation) {
+            self::assertNull($r->relatedClass('App\Models\User', $relation), $relation);
+        }
+    }
+
+    public function testSelfAndStaticInATraitMeanTheUsingClass(): void
+    {
+        $r = self::resolver();
+        self::assertSame('App\Models\User', $r->relatedClass('App\Models\User', 'selfRef'));
+        self::assertSame('App\Models\Admin', $r->relatedClass('App\Models\Admin', 'selfRef'));
+        self::assertSame('App\Models\Admin', $r->relatedClass('App\Models\Admin', 'staticRef'));
+        self::assertNull($r->relatedClass('App\Models\User', 'parentRef'));
     }
 
     public function testCachesPerModelAndRelation(): void
