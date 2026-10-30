@@ -174,6 +174,70 @@ final class RouteCollectorResourceTest extends TestCase
         self::assertCount(7, $routes);
     }
 
+    public function testPerMethodMiddleware(): void
+    {
+        [$routes, $warnings] = $this->snippet(<<<'PHP'
+            Route::resource('a', FooController::class)->only(['index', 'show'])->middleware('auth')->withoutMiddlewareFor('show', 'auth');
+            Route::resource('b', FooController::class)->only(['index', 'show', 'update'])
+                ->middleware('auth')
+                ->middlewareFor(['show', 'update'], 'can:view,b')
+                ->middleware(['auth', 'verified'])
+                ->withoutMiddleware('web')
+                ->withoutMiddlewareFor('update', ['throttle']);
+            Route::resource('c', FooController::class, [
+                'only' => ['index', 'show'],
+                'middleware_for' => ['show' => 'signed'],
+                'excluded_middleware_for' => ['index' => ['web']],
+            ]);
+            Route::resource('d', FooController::class)->only('show')->middlewareFor($methods, 'auth')->withoutMiddlewareFor('show', [$mw]);
+            PHP);
+
+        self::assertSame([
+            'routes/web.php:18: route middleware could not be resolved',
+            'routes/web.php:18: route middleware could not be resolved',
+        ], $warnings);
+        $show = $this->find($routes, 'GET /a/{a}');
+        self::assertSame(['web', 'auth'], $show->middleware);
+        self::assertSame(['auth'], $show->withoutMiddleware);
+        self::assertSame([], $this->find($routes, 'GET /a')->withoutMiddleware);
+
+        self::assertSame(['web', 'auth', 'verified'], $this->find($routes, 'GET /b')->middleware);
+        self::assertSame(['web', 'auth', 'can:view,b', 'verified'], $this->find($routes, 'GET /b/{b}')->middleware);
+        self::assertSame(['web'], $this->find($routes, 'GET /b/{b}')->withoutMiddleware);
+        self::assertSame(['web', 'throttle'], $this->find($routes, 'PUT /b/{b}')->withoutMiddleware);
+
+        self::assertSame(['web'], $this->find($routes, 'GET /c')->middleware);
+        self::assertSame(['web'], $this->find($routes, 'GET /c')->withoutMiddleware);
+        self::assertSame(['web', 'signed'], $this->find($routes, 'GET /c/{c}')->middleware);
+        self::assertSame(['web'], $this->find($routes, 'GET /d/{d}')->middleware);
+    }
+
+    public function testLaterNamesAndParametersReplaceEarlierOnes(): void
+    {
+        [$routes, $warnings] = $this->snippet(<<<'PHP'
+            Route::resource('photos', FooController::class)->only(['index', 'show'])->names(['show' => 'p.view'])->names('foo');
+            Route::resource('tags', FooController::class)->only(['index', 'show'])->names('foo')->names(['index' => 't.list']);
+            Route::resource('users', FooController::class)->only('show')->parameters(['users' => 'member'])->parameters(['photos' => 'pic']);
+            PHP);
+
+        self::assertSame([], $warnings);
+        self::assertSame('foo.show', $this->find($routes, 'GET /photos/{photo}')->name);
+        self::assertSame('t.list', $this->find($routes, 'GET /tags')->name);
+        self::assertSame('tags.show', $this->find($routes, 'GET /tags/{tag}')->name);
+        self::assertSame(['GET /photos', 'GET /photos/{photo}', 'GET /tags', 'GET /tags/{tag}', 'GET /users/{user}'], $this->keys($routes));
+    }
+
+    public function testFullyDynamicOnlyKeepsAllRoutes(): void
+    {
+        [$routes, $warnings] = $this->snippet(<<<'PHP'
+            Route::apiResource('photos', FooController::class)->only($methods);
+            Route::resource('tags', FooController::class)->only([]);
+            PHP);
+
+        self::assertSame(['routes/web.php:6: route resource methods could not be resolved'], $warnings);
+        self::assertSame(['GET /photos', 'POST /photos', 'GET /photos/{photo}', 'PUT /photos/{photo}', 'PATCH /photos/{photo}', 'DELETE /photos/{photo}'], $this->keys($routes));
+    }
+
     public function testUnsupportedResourcePartsWarn(): void
     {
         [$routes, $warnings] = $this->snippet(<<<'PHP'
@@ -181,7 +245,7 @@ final class RouteCollectorResourceTest extends TestCase
             Route::resource('a', $controller)->only('show');
             Route::resource('b', FooController::class)->only(['show', $more])->missing(fn () => null);
             Route::resources($map);
-            Route::resource('c', FooController::class, ['only' => ['show'], 'scoped' => true]);
+            Route::resource('c', FooController::class, ['only' => ['show'], 'trashed' => ['show']]);
             Route::singleton('profile', FooController::class);
             PHP);
 
@@ -191,7 +255,7 @@ final class RouteCollectorResourceTest extends TestCase
             'routes/web.php:8: route resource methods could not be resolved',
             'routes/web.php:8: route method missing is not analysed',
             'routes/web.php:9: route resources could not be resolved',
-            'routes/web.php:10: route resource option scoped is not analysed',
+            'routes/web.php:10: route resource option trashed is not analysed',
             'routes/web.php:11: Route::singleton is not analysed yet',
         ], $warnings);
         self::assertNull($this->find($routes, 'GET /a/{a}')->action->symbol());

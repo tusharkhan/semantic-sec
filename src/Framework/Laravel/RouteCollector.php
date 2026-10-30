@@ -468,6 +468,16 @@ final class RouteCollector
         }
         foreach ($options->items as $item) {
             $key = $item->key === null || $item->unpack ? null : $this->eval->string($item->key, $file);
+            if ($key !== null && in_array(strtolower($key), ['middleware_for', 'excluded_middleware_for'], true)) {
+                $map = $this->perMethodMiddleware($item->value, $file, $line);
+                if (strtolower($key) === 'middleware_for') {
+                    $resource->middlewareFor = $map;
+                } else {
+                    $resource->withoutMiddlewareFor = $map;
+                }
+
+                continue;
+            }
             $method = $key === null ? null : (self::RESOURCE_OPTIONS[strtolower($key)] ?? null);
             if ($method === null) {
                 $this->warn($file, $line, $key === null ? 'route resource options could not be resolved' : sprintf('route resource option %s is not analysed', $key));
@@ -486,20 +496,26 @@ final class RouteCollector
         }
         switch ($m) {
             case 'only':
-                $resource->only = $this->lists->stringList($args, $file, $line, 'resource methods', $this->warnings);
+                $before = count($this->warnings);
+                $only = $this->lists->stringList($args, $file, $line, 'resource methods', $this->warnings);
+                if ($only !== [] || count($this->warnings) === $before) {
+                    $resource->only = $only;
+                }
                 break;
             case 'except':
                 $resource->except = $this->lists->stringList($args, $file, $line, 'resource methods', $this->warnings);
                 break;
             case 'names':
                 if (isset($args[0]) && $args[0] instanceof Expr\Array_) {
-                    $resource->methodNames = [...$resource->methodNames, ...$this->stringMap($args[0], $file, $line, 'names')];
+                    $resource->methodNames = $this->stringMap($args[0], $file, $line, 'names');
+                    $resource->names = null;
                 } else {
                     $names = isset($args[0]) ? $this->eval->string($args[0], $file) : null;
                     if ($names === null) {
                         $this->warn($file, $line, 'route resource names could not be resolved');
                     } else {
                         $resource->names = $names;
+                        $resource->methodNames = [];
                     }
                 }
                 break;
@@ -514,8 +530,10 @@ final class RouteCollector
                 break;
             case 'parameters':
                 if (isset($args[0]) && $args[0] instanceof Expr\Array_) {
-                    $resource->parameters = [...$resource->parameters, ...$this->stringMap($args[0], $file, $line, 'parameters')];
-                } elseif (! isset($args[0]) || $this->eval->string($args[0], $file) !== 'singular') {
+                    $resource->parameters = $this->stringMap($args[0], $file, $line, 'parameters');
+                } elseif (isset($args[0]) && $this->eval->string($args[0], $file) === 'singular') {
+                    $resource->parameters = [];
+                } else {
                     $this->warn($file, $line, 'route resource parameters could not be resolved');
                 }
                 break;
@@ -530,6 +548,27 @@ final class RouteCollector
                 break;
             case 'middleware':
                 $resource->middleware = $this->stringList($args, $file, $line);
+                foreach ($resource->middlewareFor as $method => $middleware) {
+                    $resource->middlewareFor[$method] = PendingResource::unique([...$middleware, ...$resource->middleware]);
+                }
+                break;
+            case 'middlewarefor':
+            case 'withoutmiddlewarefor':
+                $methods = $this->strictList($args[0] ?? null, $file, $line);
+                $middleware = $this->strictList($args[1] ?? null, $file, $line);
+                if ($methods === null || $middleware === null) {
+                    break;
+                }
+                if ($m === 'middlewarefor' && $resource->middleware !== null) {
+                    $middleware = PendingResource::unique([...$resource->middleware, ...$middleware]);
+                }
+                foreach ($methods as $method) {
+                    if ($m === 'middlewarefor') {
+                        $resource->middlewareFor[$method] = $middleware;
+                    } else {
+                        $resource->withoutMiddlewareFor[$method] = $middleware;
+                    }
+                }
                 break;
             case 'withoutmiddleware':
                 $resource->withoutMiddleware = [...$resource->withoutMiddleware, ...$this->stringList($args, $file, $line)];
@@ -555,6 +594,40 @@ final class RouteCollector
             default:
                 $this->warn($file, $line, sprintf('route method %s is not analysed', $name));
         }
+    }
+
+    /** @return list<string>|null a string or list argument; null (with a warning) if missing or not fully resolvable */
+    private function strictList(?Expr $arg, string $file, int $line): ?array
+    {
+        if ($arg === null) {
+            $this->warn($file, $line, 'route middleware could not be resolved');
+
+            return null;
+        }
+
+        return $this->lists->strictStringList([$arg], $file, $line, 'middleware', $this->warnings);
+    }
+
+    /** @return array<string, list<string>> an action => middleware option map; unresolvable entries are dropped with a warning */
+    private function perMethodMiddleware(Expr $value, string $file, int $line): array
+    {
+        if (! $value instanceof Expr\Array_) {
+            $this->warn($file, $line, 'route middleware could not be resolved');
+
+            return [];
+        }
+        $out = [];
+        foreach ($value->items as $item) {
+            $method = $item->key === null || $item->unpack ? null : $this->eval->string($item->key, $file);
+            $middleware = $method === null ? null : $this->strictList($item->value, $file, $line);
+            if ($method === null) {
+                $this->warn($file, $line, 'route middleware could not be resolved');
+            } elseif ($middleware !== null) {
+                $out[$method] = $middleware;
+            }
+        }
+
+        return $out;
     }
 
     /** @return array<string, string> string-keyed array literal; unresolvable pairs are dropped with a warning */

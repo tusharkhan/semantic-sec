@@ -36,11 +36,17 @@ final class PendingResource
     /** @var array<string, string> resource segment => wildcard */
     public array $parameters = [];
 
-    /** @var list<string> */
-    public array $middleware = [];
+    /** @var list<string>|null null until middleware() is called, as Laravel's isset() check needs */
+    public ?array $middleware = null;
 
     /** @var list<string> */
     public array $withoutMiddleware = [];
+
+    /** @var array<string, list<string>> action => middleware replacing $middleware */
+    public array $middlewareFor = [];
+
+    /** @var array<string, list<string>> action => middleware added to $withoutMiddleware */
+    public array $withoutMiddlewareFor = [];
 
     public ?bool $scopeBindings = null;
 
@@ -82,8 +88,10 @@ final class PendingResource
             $route = new PendingRoute($verbs, RouteContext::joinPath($prefix, $path), $this->ctx, $this->file, $this->line);
             $route->action = new RouteAction($this->controller, $this->controller === null ? null : $method);
             $route->name = $this->methodNames[$method] ?? trim(($this->names ?? $name).'.'.$method, '.');
-            $route->middleware = $this->middleware;
-            $route->withoutMiddleware = $this->withoutMiddleware;
+            $route->middleware = $this->middlewareFor[$method] ?? $this->middleware ?? [];
+            $route->withoutMiddleware = isset($this->withoutMiddlewareFor[$method])
+                ? self::unique([...$this->withoutMiddleware, ...$this->withoutMiddlewareFor[$method]])
+                : $this->withoutMiddleware;
             $route->scopeBindings = $this->scopeBindings;
             $route->bindingFields = $this->bindingFields;
             $out[] = $route;
@@ -110,6 +118,17 @@ final class PendingResource
         self::$inflector ??= InflectorFactory::create()->build();
 
         return str_replace('-', '_', $this->parameters[$segment] ?? self::$inflector->singularize($segment));
+    }
+
+    /**
+     * Mirrors Router::uniqueMiddleware.
+     *
+     * @param  list<string>  $middleware
+     * @return list<string>
+     */
+    public static function unique(array $middleware): array
+    {
+        return array_values(array_unique($middleware));
     }
 
     private static function last(string $dotted): string
