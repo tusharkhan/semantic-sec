@@ -9,6 +9,7 @@ use TusharKhan\SemanticSec\Analysis\Category;
 use TusharKhan\SemanticSec\Analysis\Confidence;
 use TusharKhan\SemanticSec\Analysis\Severity;
 use TusharKhan\SemanticSec\Candidates\Candidate;
+use TusharKhan\SemanticSec\Candidates\CandidateSelector;
 use TusharKhan\SemanticSec\Candidates\Exclusion;
 use TusharKhan\SemanticSec\Config\Config;
 use TusharKhan\SemanticSec\Framework\DetectedFramework;
@@ -372,7 +373,7 @@ final class CandidateSelectorTest extends TestCase
             [, $exclusions] = self::selectAll($deep);
             self::assertNotSame([], $exclusions);
             foreach ($exclusions as $exclusion) {
-                if ($exclusion->reason === 'no identifier / no state change') {
+                if ($exclusion->reason === CandidateSelector::NO_TRIGGER || str_starts_with($exclusion->reason, CandidateSelector::NO_TRIGGER_PREFIX)) {
                     continue;
                 }
                 self::assertNotSame('', trim($exclusion->checkSource), $exclusion->routeKey.' '.($exclusion->category->value ?? '*').': '.$exclusion->reason);

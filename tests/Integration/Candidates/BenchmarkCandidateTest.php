@@ -7,6 +7,7 @@ namespace TusharKhan\SemanticSec\Tests\Integration\Candidates;
 use PHPUnit\Framework\TestCase;
 use TusharKhan\SemanticSec\Analysis\Category;
 use TusharKhan\SemanticSec\Candidates\Candidate;
+use TusharKhan\SemanticSec\Candidates\CandidateSelector;
 use TusharKhan\SemanticSec\Candidates\Exclusion;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkCorpus;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkMaps;
@@ -56,7 +57,7 @@ final class BenchmarkCandidateTest extends TestCase
                 [, $exclusions] = self::selected($app, $deep);
                 self::assertNotSame([], $exclusions);
                 foreach ($exclusions as $exclusion) {
-                    if ($exclusion->reason === 'no identifier / no state change') {
+                    if ($exclusion->reason === CandidateSelector::NO_TRIGGER || str_starts_with($exclusion->reason, CandidateSelector::NO_TRIGGER_PREFIX)) {
                         continue;
                     }
                     self::assertNotSame('', trim($exclusion->checkSource), sprintf('%s %s %s: %s', $app, $exclusion->routeKey, $exclusion->category->value ?? '*', $exclusion->reason));

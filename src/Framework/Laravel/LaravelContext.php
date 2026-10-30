@@ -105,7 +105,7 @@ final class LaravelContext implements FrameworkContext
         $types = new TypeResolver($symbols, $relations, AuthUserModel::resolve($parsed, $symbols, $eval));
         $graphs = new CallGraphBuilder($symbols, $types, $this->facadeMap(), $config->maxDepth);
 
-        return new CandidateSelector($symbols, $graphs, $extractor, $types, $config);
+        return new CandidateSelector($symbols, $graphs, $extractor, $types, $relations, $config);
     }
 
     /** @return array{AuthCheckExtractor, list<string>} */
