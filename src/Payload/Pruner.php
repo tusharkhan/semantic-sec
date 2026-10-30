@@ -49,14 +49,17 @@ final class Pruner
         }
 
         $keep = [];
-        $drop = [];
+        $all = [];
         foreach ($stmts as $stmt) {
             if ($this->isProtected($stmt, $helpers)) {
                 $this->mark($keep, $stmt->getStartLine(), $stmt->getEndLine());
-            } else {
-                $this->collectDebug($stmt, $fn, $drop);
             }
+            if ($stmt instanceof Stmt) {
+                $all[] = $stmt;
+            }
+            array_push($all, ...$this->finder->findInstanceOf($stmt, Stmt::class));
         }
+        $drop = $this->debugLines($all, $fn, $keep);
 
         $first = $node->startLine;
         $doc = $fn instanceof Stmt\ClassMethod ? $fn->getDocComment() : null;
@@ -165,28 +168,45 @@ final class Pruner
     }
 
     /**
-     * Lines of debug statements that sit alone on their lines.
+     * Lines of debug statements, unless anything else in the method (or a protected statement) occupies them.
      *
-     * @param  array<int, true>  $drop
+     * @param  list<Stmt>  $all  every statement in the body, nested ones included
+     * @param  array<int, true>  $keep
+     * @return array<int, true>
      */
-    private function collectDebug(Node $root, Node $fn, array &$drop): void
+    private function debugLines(array $all, Node $fn, array $keep): array
     {
-        $nodes = $this->finder->findInstanceOf($root, Stmt::class);
-        $stmts = $root instanceof Stmt ? array_merge([$root], $nodes) : $nodes;
-        foreach ($stmts as $stmt) {
-            if (! $stmt instanceof Stmt\Expression || ! $this->isDebug($stmt->expr)) {
+        $debug = [];
+        $others = [];
+        foreach ($all as $stmt) {
+            if ($stmt instanceof Stmt\Nop) {
                 continue;
             }
+            if ($stmt instanceof Stmt\Expression && $this->isDebug($stmt->expr)) {
+                $debug[] = $stmt;
+            } else {
+                $others[] = $stmt;
+            }
+        }
+        $others[] = $fn;
+
+        $drop = [];
+        foreach ($debug as $stmt) {
             $s = $stmt->getStartLine();
             $e = $stmt->getEndLine();
-            $shared = $this->touches($fn, $s, $e);
-            foreach ($stmts as $other) {
-                $shared = $shared || ($other !== $stmt && $this->touches($other, $s, $e));
+            $shared = false;
+            for ($n = $s; $n <= $e; $n++) {
+                $shared = $shared || isset($keep[$n]);
+            }
+            foreach ($others as $other) {
+                $shared = $shared || $this->touches($other, $s, $e);
             }
             if (! $shared) {
                 $this->mark($drop, $s, $e);
             }
         }
+
+        return $drop;
     }
 
     // True when another construct starts or ends on those lines, so they hold more than the debug call.
@@ -201,16 +221,28 @@ final class Pruner
         return false;
     }
 
+    // A debug call whose arguments could have side effects (calls, assignments) is real code and stays.
     private function isDebug(Expr $expr): bool
     {
+        $args = [];
         while ($expr instanceof Expr\MethodCall || $expr instanceof Expr\NullsafeMethodCall) {
+            array_push($args, ...$expr->args);
             $expr = $expr->var;
         }
         if ($expr instanceof Expr\FuncCall && $expr->name instanceof Node\Name) {
-            return in_array(strtolower($expr->name->getLast()), self::DEBUG_FUNCS, true);
+            $debug = in_array(strtolower($expr->name->getLast()), self::DEBUG_FUNCS, true);
+            $args = array_merge($args, $expr->args);
+        } elseif ($expr instanceof Expr\StaticCall && $expr->class instanceof Node\Name) {
+            $debug = strtolower($expr->class->getLast()) === 'log';
+            $args = array_merge($args, $expr->args);
+        } else {
+            return false;
         }
 
-        return $expr instanceof Expr\StaticCall && $expr->class instanceof Node\Name && strtolower($expr->class->getLast()) === 'log';
+        return $debug && $this->finder->findFirst($args, static fn (Node $n): bool => $n instanceof Expr\CallLike
+            || $n instanceof Expr\Assign || $n instanceof Expr\AssignOp || $n instanceof Expr\AssignRef
+            || $n instanceof Expr\PreInc || $n instanceof Expr\PostInc || $n instanceof Expr\PreDec || $n instanceof Expr\PostDec
+            || $n instanceof Expr\Include_ || $n instanceof Expr\Yield_ || $n instanceof Expr\YieldFrom) === null;
     }
 
     /**

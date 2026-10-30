@@ -109,6 +109,37 @@ final class PrunerTest extends TestCase
         self::assertContains('if ($x) dd($x);', self::texts($p));
     }
 
+    public function testDebugSharingALineWithAnAssignmentKeepsTheAssignment(): void
+    {
+        $p = $this->pruneMethod($this->wrap("    public function f()\n    {\n        \$a = 1; dump(\$a);\n        return \$a;\n    }"), 'f');
+
+        self::assertContains('$a = 1; dump($a);', self::texts($p));
+    }
+
+    public function testDebugAfterMultiLineStatementKeepsItsClosingLine(): void
+    {
+        $p = $this->pruneMethod($this->wrap("    public function f()\n    {\n        \$q = [\n            'a' => 1,\n        ]; dump(1);\n    }"), 'f');
+
+        self::assertContains(']; dump(1);', self::texts($p));
+    }
+
+    public function testDebugWithSideEffectingArgumentsIsKept(): void
+    {
+        $p = $this->pruneMethod($this->wrap("    public function f()\n    {\n        dump(\$this->save());\n        dd(\$i++);\n        Log::info('x', [\$o->touch()]);\n    }"), 'f');
+
+        self::assertContains('dump($this->save());', self::texts($p));
+        self::assertContains('dd($i++);', self::texts($p));
+        self::assertContains("Log::info('x', [\$o->touch()]);", self::texts($p));
+    }
+
+    public function testDocblockLinesPrecedeStartLine(): void
+    {
+        $p = $this->pruneMethod($this->wrap("    public function f(\$id)\n    {\n        return 1;\n    }", "    /** @param int \$id */\n"), 'f');
+
+        self::assertSame(6, $p->lines[0]['line']);
+        self::assertSame(7, $p->startLine);
+    }
+
     public function testProtectedHelpersKept(): void
     {
         $calls = [
