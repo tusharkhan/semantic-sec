@@ -61,6 +61,40 @@ final class TypeResolver
         };
     }
 
+    /** The model a query, relation or model expression reads (`X::where(..)`, `$user->posts()`, `$post`); null when unproven. */
+    public function queryModel(Expr $expr, PathNode $context): ?string
+    {
+        $model = $this->builderModel($expr, $context);
+        if ($model !== null) {
+            return $model;
+        }
+        $type = $this->typeOf($expr, $context);
+
+        return $type !== null && $this->isModel($type) ? $type : null;
+    }
+
+    // The class of a static call `X::m()` when X is a model, null otherwise.
+    public function staticModel(Expr\StaticCall $call, PathNode $context): ?string
+    {
+        if (! $call->class instanceof Node\Name) {
+            return null;
+        }
+        $class = $this->className($call->class, $context);
+
+        return $class !== null && $this->isModel($class) ? $class : null;
+    }
+
+    public function isModel(string $class): bool
+    {
+        foreach (self::MODEL_BASES as $base) {
+            if ($this->symbols->isSubclassOf($class, $base)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function variableType(Expr\Variable $var, PathNode $context): ?string
     {
         if (! is_string($var->name)) {
@@ -385,17 +419,6 @@ final class TypeResolver
 
         // In a trait, $this is the using class, known only when the caller names it.
         return $class !== null && $this->symbols->getClass($class)?->kind === 'trait' ? $context->closureClass : $class;
-    }
-
-    private function isModel(string $class): bool
-    {
-        foreach (self::MODEL_BASES as $base) {
-            if ($this->symbols->isSubclassOf($class, $base)) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private function classLike(?string $type): ?string

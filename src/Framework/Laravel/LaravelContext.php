@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Framework\Laravel;
 
+use TusharKhan\SemanticSec\Candidates\CandidateSelector;
 use TusharKhan\SemanticSec\Config\Config;
 use TusharKhan\SemanticSec\Framework\DetectedFramework;
 use TusharKhan\SemanticSec\Framework\FrameworkContext;
+use TusharKhan\SemanticSec\Parsing\CallGraph\CallGraphBuilder;
+use TusharKhan\SemanticSec\Parsing\CallGraph\TypeResolver;
 use TusharKhan\SemanticSec\Parsing\ParseResult;
 use TusharKhan\SemanticSec\Parsing\Symbols\AuthUserModel;
 use TusharKhan\SemanticSec\Parsing\Symbols\RelationResolver;
@@ -80,12 +83,8 @@ final class LaravelContext implements FrameworkContext
             }
         }
 
-        $controllerMiddleware = new ControllerMiddlewareReader($symbols, $eval);
-        [$policies, $w] = PolicyRegistry::fromProject($symbols, $eval);
+        [$extractor, $w] = $this->extractor($parsed, $symbols, $config, $registry, $eval);
         array_push($warnings, ...$w);
-
-        $authUser = AuthUserModel::resolve($parsed, $symbols, $eval);
-        $extractor = new AuthCheckExtractor($symbols, $registry, $policies, $controllerMiddleware, $config->authHelpers, new RelationResolver($symbols), $authUser);
         $out = [];
         foreach ($routes as $route) {
             [$entry, $w] = $extractor->extract($route);
@@ -94,5 +93,27 @@ final class LaravelContext implements FrameworkContext
         }
 
         return new AuthorizationMap($out, array_values(array_unique($warnings)));
+    }
+
+    /** The SPEC §7 selector for this project; its warnings were already reported by buildAuthorizationMap(). */
+    public function candidateSelector(ParseResult $parsed, SymbolTable $symbols, Config $config, DetectedFramework $framework): CandidateSelector
+    {
+        $eval = new ConstantEvaluator();
+        [$registry] = MiddlewareRegistry::fromProject($parsed, $symbols, $framework, $eval, $config->authMiddleware);
+        [$extractor] = $this->extractor($parsed, $symbols, $config, $registry, $eval);
+        $relations = new RelationResolver($symbols);
+        $types = new TypeResolver($symbols, $relations, AuthUserModel::resolve($parsed, $symbols, $eval));
+        $graphs = new CallGraphBuilder($symbols, $types, $this->facadeMap(), $config->maxDepth);
+
+        return new CandidateSelector($symbols, $graphs, $extractor, $types, $config);
+    }
+
+    /** @return array{AuthCheckExtractor, list<string>} */
+    private function extractor(ParseResult $parsed, SymbolTable $symbols, Config $config, MiddlewareRegistry $registry, ConstantEvaluator $eval): array
+    {
+        [$policies, $warnings] = PolicyRegistry::fromProject($symbols, $eval);
+        $authUser = AuthUserModel::resolve($parsed, $symbols, $eval);
+
+        return [new AuthCheckExtractor($symbols, $registry, $policies, new ControllerMiddlewareReader($symbols, $eval), $config->authHelpers, new RelationResolver($symbols), $authUser), $warnings];
     }
 }
