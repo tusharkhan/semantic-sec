@@ -12,6 +12,7 @@ final readonly class AuthCheck
         public string $source,
         public string $file,
         public int $line,
+        public ?string $covers = null, // route parameter this check is proven to protect; null = route-wide or unknown
     ) {
     }
 }

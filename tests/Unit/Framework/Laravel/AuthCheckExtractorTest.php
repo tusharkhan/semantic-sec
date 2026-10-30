@@ -948,4 +948,45 @@ final class AuthCheckExtractorTest extends TestCase
         self::assertSame([], self::checks($out['PUT /b']));
         self::assertNull($out['PUT /c/{post}']->parameters[0]->boundModel);
     }
+
+    public function testChecksRecordTheParameterTheyCover(): void
+    {
+        $body = <<<'PHP'
+                public function a(Post $post) {}
+                public function b() {}
+                public function c(Post $post) { $this->authorize('update', $post); Gate::authorize('view', [$post]); }
+                public function d(Post $post) { $this->authorize('update', Post::class); abort_if($post->user_id !== auth()->id(), 403); }
+                public function f(User $user, Post $post) {}
+                public function g(SaveRequest $request, Post $post) {}
+                public function i(Post $post) { $p = $post; $this->authorize('update', $p); }
+            PHP;
+        $resource = <<<'PHP'
+                public function __construct() { $this->authorizeResource(Post::class, 'post'); }
+                public function show(Post $post) {}
+                public function index() {}
+            PHP;
+        [$out] = $this->analyse(
+            "Route::get('a/{post}', [C::class, 'a'])->middleware(['auth', 'can:update,post']);\n"
+            ."Route::get('b', [C::class, 'b'])->can('viewAny', Post::class);\n"
+            ."Route::put('c/{post}', [C::class, 'c']);\n"
+            ."Route::put('d/{post}', [C::class, 'd']);\n"
+            ."Route::get('posts/{post}', [D::class, 'show']);\n"
+            ."Route::get('posts', [D::class, 'index']);\n"
+            ."Route::get('f/{user}/posts/{post:slug}', [C::class, 'f'])->can('view', 'user');\n"
+            ."Route::put('g/{post}', [C::class, 'g']);\n"
+            ."Route::put('i/{post}', [C::class, 'i']);",
+            $this->controller($body) + $this->controller($resource, 'D')
+                + $this->formRequest("public function authorize(): bool { return \$this->user()->can('update', \$this->route('post')); }"),
+        );
+        $covers = static fn (string $key): array => array_map(static fn (AuthCheck $c): ?string => $c->covers, $out[$key]->checks);
+        self::assertSame([null, 'post'], $covers('GET /a/{post}'));
+        self::assertSame([null], $covers('GET /b'));
+        self::assertSame(['post', 'post'], $covers('PUT /c/{post}'));
+        self::assertSame([null, null], $covers('PUT /d/{post}'));
+        self::assertSame(['post'], $covers('GET /posts/{post}'));
+        self::assertSame([null], $covers('GET /posts'));
+        self::assertSame(['user', 'post'], $covers('GET /f/{user}/posts/{post:slug}'));
+        self::assertSame(['post'], $covers('PUT /g/{post}'));
+        self::assertSame([null], $covers('PUT /i/{post}'));
+    }
 }
