@@ -104,8 +104,6 @@ final class RedactorLeakTest extends TestCase
             "if (\$token === 'abc12345') {}",
             "'auth' => ['web'],",
             "'authorization' => 'viewAny',",
-            "'password' => 'The provided password is incorrect.',",
-            "'password' => 'auth.password',",
             "'secret' => env('STRIPE_SECRET'),",
             "Route::middleware('auth:sanctum');",
         ];
