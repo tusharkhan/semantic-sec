@@ -47,6 +47,12 @@ final class AuthExpressions
     /** @var array<string, true> variables written other than by a plain top-level assignment */
     private array $tainted = [];
 
+    /** @var array<string, list<Expr>> variable => expressions it iterates or aliases by reference */
+    private array $derived = [];
+
+    /** @var array<string, true> */
+    private array $resolving = [];
+
     // extract(), one-argument parse_str() or $$var may write any variable.
     private bool $taintsAll = false;
 
@@ -65,6 +71,9 @@ final class AuthExpressions
             public array $tainted = [];
 
             public bool $taintsAll = false;
+
+            /** @var array<string, list<Expr>> */
+            public array $derived = [];
 
             private int $depth = 0;
 
@@ -91,13 +100,16 @@ final class AuthExpressions
                 } elseif ($node instanceof Expr\AssignRef) {
                     $this->taint($node->var);
                     $this->taint($node->expr);
+                    $this->derive($node->var, $node->expr);
                 } elseif ($node instanceof Expr\AssignOp || $node instanceof Expr\PreInc || $node instanceof Expr\PostInc
                     || $node instanceof Expr\PreDec || $node instanceof Expr\PostDec) {
                     $this->taint($node->var);
                 } elseif ($node instanceof Stmt\Foreach_) {
                     $this->taint($node->valueVar);
+                    $this->derive($node->valueVar, $node->expr);
                     if ($node->keyVar !== null) {
                         $this->taint($node->keyVar);
+                        $this->derive($node->keyVar, $node->expr);
                     }
                 } elseif ($node instanceof Stmt\Global_ || $node instanceof Stmt\Unset_) {
                     foreach ($node->vars as $var) {
@@ -128,6 +140,16 @@ final class AuthExpressions
                 return $node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction || $node instanceof Stmt\Function_ || $node instanceof Stmt\ClassLike;
             }
 
+            private function derive(Node $target, Expr $source): void
+            {
+                $vars = $target instanceof Expr\Variable ? [$target] : (new NodeFinder())->findInstanceOf([$target], Expr\Variable::class);
+                foreach ($vars as $var) {
+                    if (is_string($var->name)) {
+                        $this->derived[$var->name][] = $source;
+                    }
+                }
+            }
+
             private function taint(Node $target): void
             {
                 $vars = $target instanceof Expr\Variable ? [$target] : (new NodeFinder())->findInstanceOf([$target], Expr\Variable::class);
@@ -141,6 +163,7 @@ final class AuthExpressions
         (new NodeTraverser($visitor))->traverse($body);
         $this->assignments = $visitor->assignments;
         $this->tainted = $visitor->tainted;
+        $this->derived = $visitor->derived;
         $this->taintsAll = $visitor->taintsAll;
     }
 
@@ -473,7 +496,7 @@ final class AuthExpressions
                 return true;
             }
 
-            return ($this->taintsAll && $expr->name !== 'this') || $this->variableAny($expr, $this->isRequestInput(...));
+            return ($this->taintsAll && $expr->name !== 'this') || $this->variableAny($expr, $this->isRequestInput(...)) || $this->derivedFromInput($expr);
         }
         if ($expr instanceof Expr\BinaryOp\Coalesce) {
             return $this->isRequestInput($expr->left) || $this->isRequestInput($expr->right);
@@ -509,6 +532,26 @@ final class AuthExpressions
         }
 
         return $this->isRequestInput($var);
+    }
+
+    // A foreach value/key over input, or a reference to input, is input.
+    private function derivedFromInput(Expr\Variable $var): bool
+    {
+        if (! is_string($var->name) || $var->name === 'this' || isset($this->resolving[$var->name])) {
+            return false;
+        }
+        $this->resolving[$var->name] = true;
+        try {
+            foreach ($this->derived[$var->name] ?? [] as $source) {
+                if ($this->isRequestInput($source)) {
+                    return true;
+                }
+            }
+        } finally {
+            unset($this->resolving[$var->name]);
+        }
+
+        return false;
     }
 
     private function anyArgIsInput(Expr\CallLike $call): bool
