@@ -128,22 +128,61 @@ final class RedactorKeyTest extends TestCase
         self::assertSame("'DEFAULT_PAYMENT_METHOD_IDENTIFIER'", $r->redact("'DEFAULT_PAYMENT_METHOD_IDENTIFIER'"));
     }
 
+    /** @return array<string, array{string}> */
+    public static function slashLeadingSecrets(): array
+    {
+        return [
+            'ci sample' => ['//pIzilO8qogbys7avHk09d1VTORUrOk9PckSzkb'],
+            'plus slash' => ['//K9d+Zq8vX2mR7tB1wY6cH3jF5sD0gAeU2iO4kLm'],
+            'digits first' => ['//4Xk9mQ2vL7pR4nZ8wT3yBq6Nc1HdE5aS0uVfG7j'],
+            'trailing plus' => ['//aB3dE5gH7jK9mN1pQ2sT4uW6yZ8bC0eF2hJ4kM+'],
+            'inner slash' => ['//Zq8vK2mX9pL4nR7t/B1wY6cH3jF5sD0gAeU2iO4k'],
+            'host-less dot' => ['//Zq8vK2mX9pL4nR7tB1wY6cH3jF5s.D0gAeU2iO4k'],
+            'base64 triple slash' => ['base64:///I6sGBmXTDxVapQ3kLm8Np2wR7tY4uZ9bC1dE5fH0jK='],
+            'base64 plain' => ['base64:/Zq8vK2mX9pL4nR7tB1wY6cH3jF5sD0gAeU2iO4kLm8='],
+        ];
+    }
+
+    #[DataProvider('slashLeadingSecrets')]
+    public function testSlashLeadingBase64IsNotAUrl(string $s): void
+    {
+        self::assertSame("\$k = '<redacted>';", (new Redactor())->redact("\$k = '{$s}';"), $s);
+        self::assertStringNotContainsString(substr($s, 8, 20), (new Redactor())->redact("X_SECRET={$s}"));
+    }
+
+    public function testRealProtocolRelativeAndFullUrlsAreKept(): void
+    {
+        $keep = [
+            "\$a = '//cdn.example.com/assets/app.bundle.min.js';",
+            "\$a = '//cdn.example.com/Zq8vK2mX9pL4nR7tB1wY6c/x.js';",
+            "\$a = '//localhost:8000/storage/invoice-attachments/file.pdf';",
+            "\$a = '//127.0.0.1:8080/api/v1/invoices/download';",
+            "\$a = '//[::1]:3000/some/long/path/for/testing/only';",
+            "\$a = 'https://user@api.example.com:8443/v1/customers/list?page=2';",
+            "\$a = 'http://localhost/some/long/path/for/testing/only';",
+        ];
+        foreach ($keep as $l) {
+            self::assertSame($l, (new Redactor())->redact($l), $l);
+        }
+    }
+
     public function testRandomUpperAlphabetsAreNeverLeaked(): void
     {
+        mt_srand(20261101);
         $gens = [
-            'upper hex' => fn () => strtoupper(bin2hex(random_bytes(16))),
+            'upper hex' => fn () => strtoupper($this->pick('0123456789abcdef', 32)),
             'upper alnum 32' => fn () => $this->pick('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', 32),
             'base32' => fn () => $this->pick('ABCDEFGHIJKLMNOPQRSTUVWXYZ234567', 32),
         ];
         foreach ($gens as $name => $gen) {
             $leaks = 0;
-            for ($i = 0; $i < 300; $i++) {
+            for ($i = 0; $i < 2000; $i++) {
                 $s = $gen();
                 if (str_contains((new Redactor())->redact("\$k = '{$s}';"), $s)) {
                     $leaks++;
                 }
             }
-            self::assertLessThanOrEqual(1, $leaks, $name);
+            self::assertSame(0, $leaks, $name);
         }
     }
 
@@ -151,7 +190,7 @@ final class RedactorKeyTest extends TestCase
     {
         $s = '';
         for ($i = 0; $i < $len; $i++) {
-            $s .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+            $s .= $alphabet[mt_rand(0, strlen($alphabet) - 1)];
         }
 
         return $s;

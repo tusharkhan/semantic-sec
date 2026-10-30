@@ -258,20 +258,22 @@ final class RedactorLeakTest extends TestCase
     {
         $b62 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
         $low = 'abcdefghijklmnopqrstuvwxyz0123456789';
+        mt_srand(20261101);
+        $hex = '0123456789abcdef';
         $gens = [
-            'hex32' => fn () => bin2hex(random_bytes(16)),
-            'hex40' => fn () => bin2hex(random_bytes(20)),
-            'hex64' => fn () => bin2hex(random_bytes(32)),
+            'hex32' => fn () => $this->pick($hex, 16, 32),
+            'hex40' => fn () => $this->pick($hex, 16, 40),
+            'hex64' => fn () => $this->pick($hex, 16, 64),
             'b62-20' => fn () => $this->pick($b62, 62, 20),
             'b62-32' => fn () => $this->pick($b62, 62, 32),
             'low-32' => fn () => $this->pick($low, 36, 32),
             'low-40' => fn () => $this->pick($low, 36, 40),
             'b64-40' => fn () => $this->pick($b62 . '+/', 64, 40),
-            'app-key' => fn () => 'base64:' . base64_encode(random_bytes(32)),
+            'app-key' => fn () => 'base64:' . base64_encode($this->pick(implode('', array_map('chr', range(0, 255))), 256, 32)),
         ];
         $leaks = [];
         foreach ($gens as $name => $gen) {
-            for ($i = 0; $i < 300; $i++) {
+            for ($i = 0; $i < 2000; $i++) {
                 $s = $gen();
                 if (str_contains((new Redactor())->redact("\$k = '{$s}';"), $s) || str_contains((new Redactor())->redact("X_SECRET={$s}"), $s)) {
                     $leaks[$name] = ($leaks[$name] ?? 0) + 1;
@@ -279,14 +281,15 @@ final class RedactorLeakTest extends TestCase
             }
         }
         self::assertSame([], array_diff_key($leaks, ['b62-20' => 1]));
-        self::assertLessThanOrEqual(6, $leaks['b62-20'] ?? 0);
+        // 20-char base62 with many repeats can fall under the entropy bar (about 0.2%); fixed seed keeps this stable
+        self::assertLessThanOrEqual(10, $leaks['b62-20'] ?? 0);
     }
 
     private function pick(string $alphabet, int $n, int $len): string
     {
         $s = '';
         for ($i = 0; $i < $len; $i++) {
-            $s .= $alphabet[random_int(0, $n - 1)];
+            $s .= $alphabet[mt_rand(0, $n - 1)];
         }
 
         return $s;

@@ -17,7 +17,8 @@ namespace TusharKhan\SemanticSec\Payload;
  * is redacted when length >= 20, it has no whitespace, it is NOT excluded, and its Shannon
  * entropy (bits per byte) exceeds a threshold chosen by alphabet:
  *  - pure hex of length >= 32: 2.8
- *  - `[a-z0-9]` with letters and digits, length >= 24: 3.5
+ *  - `[a-z0-9]` with letters and digits, length >= 24: 3.3
+ *  - uppercase letters only, length >= 24: 3.6
  *  - `[A-Za-z0-9+/=_-]` with lower and upper: 3.2 with a digit, 3.5 without
  *  - uppercase/digits with a letter and a digit, length >= 20: 3.5
  *  - three or more of lower, upper, digit, symbol: 3.3
@@ -357,11 +358,14 @@ final class Redactor
         if ($len >= 32 && preg_match('~^[0-9a-fA-F]+$~', $c) === 1) {
             return 2.8;
         }
+        if ($len >= 24 && preg_match('~^[A-Z]+$~', $c) === 1) {
+            return 3.6;
+        }
         if ($len >= 20 && preg_match('~^[A-Z0-9]+$~', $c) === 1 && preg_match('~\d~', $c) === 1 && preg_match('~[A-Z]~', $c) === 1) {
             return 3.5;
         }
         if ($len >= 24 && preg_match('~^[a-z0-9]+$~', $c) === 1 && preg_match('~\d~', $c) === 1 && preg_match('~[a-z]~', $c) === 1) {
-            return 3.5;
+            return 3.3;
         }
         if (preg_match('~^[A-Za-z0-9+/=_-]+$~', $c) === 1 && preg_match('~[a-z]~', $c) === 1 && preg_match('~[A-Z]~', $c) === 1) {
             return preg_match('~\d~', $c) === 1 ? 3.2 : 3.5;
@@ -377,7 +381,7 @@ final class Redactor
         if ($this->isClassName($c) || $this->isUpperSnake($c) || $this->isCamelIdentifier($c)) {
             return true;
         }
-        if (preg_match('~^(?:[A-Za-z][A-Za-z0-9+.-]*:)?//~', $c) === 1) {
+        if ($this->isUrl($c)) {
             return true;
         }
         if ((str_contains($c, '/') || str_contains($c, '{')) && $this->isPathLike($c)) {
@@ -516,6 +520,17 @@ final class Redactor
         }
 
         return true;
+    }
+
+    /** `[scheme:]//[user@]host[:port]` then end, `/`, `?` or `#`; host is dotted, localhost, an IPv4 or `[ipv6]`; never after `base64:`. */
+    private function isUrl(string $c): bool
+    {
+        $host = '(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)';
+        if (preg_match('~^((?:[A-Za-z][A-Za-z0-9+.-]*:)?)//(?:[^/@\s]*@)?(' . $host . ')(?::\d+)?(?:[/?#]|$)~', $c, $m) !== 1) {
+            return false;
+        }
+
+        return strtolower($m[1]) !== 'base64:' && $this->entropy($m[2]) <= 4.0;
     }
 
     private function isWordishList(string $c): bool
