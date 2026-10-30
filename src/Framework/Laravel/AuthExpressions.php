@@ -19,6 +19,9 @@ final class AuthExpressions
     // Calls on the user that are not relations.
     private const NOT_RELATIONS = ['can', 'cannot', 'cant', 'getkey', 'tokencan', 'fresh', 'refresh', 'load', 'tojson', 'toarray', 'only', 'getattribute'];
 
+    // Calls that leave the user's relation scope.
+    private const SCOPE_RESETS = ['newquery', 'query', 'newmodelquery', 'with', 'without', 'replicate', 'getmodel'];
+
     private const AUTH_FACADES = ['Illuminate\\Support\\Facades\\Auth', 'Auth'];
 
     private const REQUEST = 'Illuminate\\Http\\Request';
@@ -32,7 +35,7 @@ final class AuthExpressions
      * @param  array<string, ?string>  $paramTypes  action parameter name => type
      * @param  array<Node>  $body
      */
-    public function __construct(private readonly SymbolTable $symbols, private readonly array $paramTypes, array $body, private readonly bool $thisIsRequest = false)
+    public function __construct(private readonly SymbolTable $symbols, private readonly array $paramTypes, array $body)
     {
         foreach ((new NodeFinder())->findInstanceOf($body, Expr\Assign::class) as $assign) {
             if ($assign->var instanceof Expr\Variable && is_string($assign->var->name)) {
@@ -103,10 +106,17 @@ final class AuthExpressions
         return ($name === 'id' && self::isGuard($expr->var)) || ($name === 'getkey' && $this->isAuthUser($expr->var));
     }
 
-    /** True when the subtree holds an authenticated-user or auth-id expression. */
-    public function containsAuth(Node $node): bool
+    /** True when the subtree holds an (in)equality comparison with an auth-user or auth-id operand. */
+    public function comparesAuth(Node $node): bool
     {
-        return (new NodeFinder())->findFirst([$node], fn (Node $n): bool => $n instanceof Expr && ($this->isAuthUser($n) || $this->isAuthId($n))) !== null;
+        return (new NodeFinder())->findFirst([$node], fn (Node $n): bool => ($n instanceof Expr\BinaryOp\Identical || $n instanceof Expr\BinaryOp\NotIdentical
+            || $n instanceof Expr\BinaryOp\Equal || $n instanceof Expr\BinaryOp\NotEqual)
+            && ($this->isAuth($n->left) || $this->isAuth($n->right))) !== null;
+    }
+
+    private function isAuth(Expr $expr): bool
+    {
+        return $this->isAuthUser($expr) || $this->isAuthId($expr);
     }
 
     /** A chain rooted at the auth user whose first call is a relation and a later call is a read. */
@@ -125,6 +135,9 @@ final class AuthExpressions
             array_unshift($calls, $name);
             $node = $node->var;
         }
+        if (array_intersect($calls, self::SCOPE_RESETS) !== []) {
+            return false;
+        }
         $relation = array_shift($calls);
         if ($relation === null || in_array($relation, [...self::READS, ...self::WRITES, ...self::NOT_RELATIONS], true) || str_starts_with($relation, 'where')) {
             return false;
@@ -138,7 +151,7 @@ final class AuthExpressions
         return false;
     }
 
-    /** `where|orWhere(col, [op,] <auth id>)` or `whereBelongsTo(<auth user>)`. */
+    /** `where(col, [=,] <auth id>)` or `whereBelongsTo(<auth user>)`. */
     public function isWhereScope(Expr $expr): bool
     {
         if (! self::isCall($expr) && ! $expr instanceof Expr\StaticCall) {
@@ -149,36 +162,21 @@ final class AuthExpressions
         if ($name === 'wherebelongsto') {
             return isset($args[0]) && $this->isAuthUser($args[0]);
         }
-        if ($name !== 'where' && $name !== 'orwhere') {
+        if ($name !== 'where') {
             return false;
         }
         $value = match (count($args)) {
             2 => $args[1],
-            3 => $args[2],
+            3 => $args[1] instanceof Node\Scalar\String_ && $args[1]->value === '=' ? $args[2] : null,
             default => null,
         };
 
         return $value !== null && $this->isAuthId($value);
     }
 
-    public function descendsFrom(?string $class, string $base): bool
+    public static function isFormRequest(SymbolTable $symbols, ?string $class): bool
     {
-        $seen = [];
-        while ($class !== null && ! isset($seen[$class])) {
-            $class = ltrim($class, '\\');
-            if ($class === $base) {
-                return true;
-            }
-            $seen[$class] = true;
-            $class = $this->symbols->getClass($class)?->parent;
-        }
-
-        return false;
-    }
-
-    public function isFormRequest(?string $class): bool
-    {
-        return $this->descendsFrom($class, self::FORM_REQUEST);
+        return Ancestry::descendsFrom($symbols, $class, [self::FORM_REQUEST]);
     }
 
     /** @phpstan-assert-if-true Expr\MethodCall|Expr\NullsafeMethodCall $expr */
@@ -248,10 +246,9 @@ final class AuthExpressions
             return false;
         }
         if ($var->name === 'this') {
-            return $this->thisIsRequest;
+            return false;
         }
-        $type = $this->paramTypes[$var->name] ?? null;
 
-        return $var->name === 'request' || $this->descendsFrom($type, self::REQUEST) || $this->isFormRequest($type);
+        return $var->name === 'request' || Ancestry::descendsFrom($this->symbols, $this->paramTypes[$var->name] ?? null, [self::REQUEST, self::FORM_REQUEST]);
     }
 }

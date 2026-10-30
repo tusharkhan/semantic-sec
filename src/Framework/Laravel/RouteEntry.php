@@ -21,7 +21,7 @@ final readonly class RouteEntry
         public array $middleware,
         public array $withoutMiddleware,
         public array $parameters,
-        public bool $scopeBindings,
+        public ?bool $scopeBindings, // null default, true scopeBindings(), false withoutScopedBindings()
         public string $file,
         public int $line,
         public array $checks = [],

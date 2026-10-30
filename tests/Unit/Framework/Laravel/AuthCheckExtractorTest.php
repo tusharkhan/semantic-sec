@@ -315,9 +315,10 @@ final class AuthCheckExtractorTest extends TestCase
             $routes .= "Route::get('{$m}', [C::class, '{$m}']);\n";
         }
         [$out] = $this->analyse($routes, $this->controller($body));
-        foreach (['a', 'b', 'c', 'd'] as $m) {
+        foreach (['a', 'b', 'd'] as $m) {
             self::assertSame(['query_scope/authorization'], self::checks($out['GET /'.$m]), $m);
         }
+        self::assertSame([], self::checks($out['GET /c']));
         self::assertSame([], self::checks($out['GET /e']));
     }
 
@@ -447,24 +448,49 @@ final class AuthCheckExtractorTest extends TestCase
     public function testScopeBindingsIsQueryScope(): void
     {
         [$out] = $this->analyse(
-            "Route::get('users/{user}/posts/{post}', [C::class, 'a'])->scopeBindings();",
-            $this->controller('public function a(User $user, Post $post) {}'),
+            "Route::get('users/{user}/posts/{post}', [C::class, 'a'])->scopeBindings();\n"
+            ."Route::get('owners/{user}/posts/{post}', [C::class, 'a'])->scopeBindings()->can('view', 'user');\n"
+            ."Route::get('posts/{post}', [C::class, 'b'])->scopeBindings();",
+            $this->controller('public function a(User $user, Post $post) {} public function b(Post $post) {}'),
         );
-        self::assertSame(['query_scope/authorization'], self::checks($out['GET /users/{user}/posts/{post}']));
+        self::assertSame(['query_scope/none'], self::checks($out['GET /users/{user}/posts/{post}']));
+        self::assertSame(['scoped to URL parent {user}'], self::sources($out['GET /users/{user}/posts/{post}']));
+        self::assertSame(['route_ability/authorization', 'query_scope/authorization'], self::checks($out['GET /owners/{user}/posts/{post}']));
+        self::assertSame([], self::checks($out['GET /posts/{post}']));
     }
 
     public function testImplicitChildBindingIsScoped(): void
     {
+        $body = <<<'PHP'
+                public function a(User $user, Post $post) {}
+                public function b(Post $post) {}
+                public function c(int $id, Post $post) {}
+                public function d(User $user, Post $post) { $this->authorize('view', $user); }
+                public function e(User $user, Post $post) { $this->authorize('view', [$user]); }
+                public function f(User $user, Post $post) { $this->authorize('view', $post); }
+            PHP;
         [$out] = $this->analyse(
             "Route::get('users/{user}/posts/{post:slug}', [C::class, 'a']);\n"
             ."Route::get('posts/{post:slug}', [C::class, 'b']);\n"
-            ."Route::get('ids/{id}/posts/{post:slug}', [C::class, 'c']);",
-            $this->controller('public function a(User $user, Post $post) {} public function b(Post $post) {} public function c(int $id, Post $post) {}'),
+            ."Route::get('ids/{id}/posts/{post:slug}', [C::class, 'c']);\n"
+            ."Route::get('free/{user}/posts/{post:slug}', [C::class, 'a'])->withoutScopedBindings();\n"
+            ."Route::get('can/{user}/posts/{post:slug}', [C::class, 'a'])->middleware('can:view,user');\n"
+            ."Route::get('d/{user}/posts/{post:slug}', [C::class, 'd']);\n"
+            ."Route::get('e/{user}/posts/{post:slug}', [C::class, 'e']);\n"
+            ."Route::get('f/{user}/posts/{post:slug}', [C::class, 'f']);",
+            $this->controller($body),
         );
-        self::assertSame(['query_scope/authorization'], self::checks($out['GET /users/{user}/posts/{post:slug}']));
-        self::assertSame(['implicit scoped binding {post:slug}'], self::sources($out['GET /users/{user}/posts/{post:slug}']));
+        self::assertSame(['query_scope/none'], self::checks($out['GET /users/{user}/posts/{post:slug}']));
+        self::assertSame(['scoped to URL parent {user}'], self::sources($out['GET /users/{user}/posts/{post:slug}']));
         self::assertSame([], self::checks($out['GET /posts/{post:slug}']));
         self::assertSame([], self::checks($out['GET /ids/{id}/posts/{post:slug}']));
+        self::assertSame([], self::checks($out['GET /free/{user}/posts/{post:slug}']));
+        self::assertSame(['route_ability/authorization', 'query_scope/authorization'], self::checks($out['GET /can/{user}/posts/{post:slug}']));
+        self::assertSame('implicit scoped binding {post:slug}', self::sources($out['GET /can/{user}/posts/{post:slug}'])[1]);
+        self::assertSame(['query_scope/authorization', 'controller_ability/authorization'], self::checks($out['GET /d/{user}/posts/{post:slug}']));
+        self::assertSame(['query_scope/authorization', 'controller_ability/authorization'], self::checks($out['GET /e/{user}/posts/{post:slug}']));
+        // Authorizing the child says nothing about the URL parent.
+        self::assertSame(['query_scope/none', 'controller_ability/authorization'], self::checks($out['GET /f/{user}/posts/{post:slug}']));
     }
 
     public function testChecksComeOutInStableOrder(): void
@@ -472,17 +498,17 @@ final class AuthCheckExtractorTest extends TestCase
         $body = <<<'PHP'
                 public function __construct()
                 {
-                    $this->middleware('can:view,post');
+                    $this->middleware('can:view,user');
                     $this->authorizeResource(Post::class, 'post');
                 }
-                public function update(SaveRequest $request, Post $post)
+                public function update(SaveRequest $request, User $user, Post $post)
                 {
                     abort_if($post->user_id !== auth()->id(), 403);
                     $this->authorize('update', $post);
                 }
             PHP;
         [$out] = $this->analyse(
-            "Route::put('posts/{post}', [C::class, 'update'])->middleware('auth')->scopeBindings();",
+            "Route::put('users/{user}/posts/{post}', [C::class, 'update'])->middleware('auth')->scopeBindings();",
             $this->controller($body) + $this->formRequest('public function authorize(): bool { return $this->user() !== null; }'),
         );
         self::assertSame([
@@ -493,6 +519,143 @@ final class AuthCheckExtractorTest extends TestCase
             'form_request/authorization',
             'abort_guard/authorization',
             'controller_ability/authorization',
-        ], self::checks($out['PUT /posts/{post}']));
+        ], self::checks($out['PUT /users/{user}/posts/{post}']));
+    }
+
+    public function testQueriedModelStopsAtRelationHop(): void
+    {
+        $body = <<<'PHP'
+                public function a(int $id) { $c = Post::findOrFail($id)->comments()->firstOrFail(); $this->authorize('delete', $c); }
+                public function b(int $id) { $c = Post::where('id', $id)->first()->comments()->first(); $this->authorize('delete', $c); }
+                public function c(int $id) { $c = Post::query()->where('id', $id)->first(); $this->authorize('delete', $c); }
+            PHP;
+        [$out] = $this->analyse("Route::delete('a', [C::class, 'a']);\nRoute::delete('b', [C::class, 'b']);\nRoute::delete('c', [C::class, 'c']);", $this->controller($body));
+        self::assertSame(['controller_ability/authorization'], self::checks($out['DELETE /a']));
+        self::assertSame(['controller_ability/authorization'], self::checks($out['DELETE /b']));
+        self::assertSame(['controller_ability/none'], self::checks($out['DELETE /c']));
+    }
+
+    public function testBindingNamesMatchLaravelSnakeCase(): void
+    {
+        $files = $this->controller('public function a(BlogPost $blogPost) {} public function b(\App\Models\BlogPost $blogPost) { $this->authorize(\'update\', $blogPost); }')
+            + [
+                'app/Models/BlogPost.php' => '<?php namespace App\Models; class BlogPost extends \Illuminate\Database\Eloquent\Model {}',
+                'app/Policies/BlogPostPolicy.php' => '<?php namespace App\Policies; class BlogPostPolicy { public function update($u, $p) { return true; } }',
+            ];
+        $files['app/Http/Controllers/C.php'] = str_replace('use App\Models\User;', "use App\\Models\\User;\nuse App\\Models\\BlogPost;", $files['app/Http/Controllers/C.php']);
+        [$out] = $this->analyse(
+            "Route::put('posts/{blog_post}', [C::class, 'a'])->middleware('can:update,blog_post');\n"
+            ."Route::patch('posts/{blog_post}', [C::class, 'a'])->middleware('can:update,blogPost');\n"
+            ."Route::post('posts/{blog_post}', [C::class, 'b']);",
+            $files,
+        );
+        self::assertSame('App\Models\BlogPost', $out['PUT /posts/{blog_post}']->parameters[0]->boundModel);
+        self::assertSame(['route_ability/none'], self::checks($out['PUT /posts/{blog_post}']));
+        self::assertSame(['route_ability/none'], self::checks($out['PATCH /posts/{blog_post}']));
+        self::assertSame(['controller_ability/none'], self::checks($out['POST /posts/{blog_post}']));
+    }
+
+    public function testDiscardedNonThrowingAbilityCallsGiveNothing(): void
+    {
+        $body = <<<'PHP'
+                public function a(Post $post) { Gate::allows('update', $post); }
+                public function b(Request $request, Post $post) { $request->user()->can('update', $post); }
+                public function c(Post $post) { Gate::inspect('update', $post); }
+                public function d(Post $post) { Gate::authorize('update', $post); }
+                public function e(Post $post) { $this->authorize('update', $post); }
+                public function f(Post $post) { $ok = Gate::check('update', $post); return $ok; }
+            PHP;
+        $routes = '';
+        foreach (['a', 'b', 'c', 'd', 'e', 'f'] as $m) {
+            $routes .= "Route::put('{$m}/{post}', [C::class, '{$m}']);\n";
+        }
+        [$out] = $this->analyse($routes, $this->controller($body));
+        foreach (['a', 'b', 'c'] as $m) {
+            self::assertSame([], self::checks($out['PUT /'.$m.'/{post}']), $m);
+        }
+        foreach (['d', 'e', 'f'] as $m) {
+            self::assertSame(['controller_ability/authorization'], self::checks($out['PUT /'.$m.'/{post}']), $m);
+        }
+    }
+
+    public function testWhereScopeNeedsEquality(): void
+    {
+        $body = <<<'PHP'
+                public function a() { return Post::where('user_id', '!=', auth()->id())->get(); }
+                public function b() { return Post::where('user_id', '<>', Auth::id())->get(); }
+                public function c() { return Post::where('user_id', '=', auth()->id())->get(); }
+                public function d() { return Post::orWhere('user_id', auth()->id())->get(); }
+            PHP;
+        [$out] = $this->analyse("Route::get('a', [C::class, 'a']);\nRoute::get('b', [C::class, 'b']);\nRoute::get('c', [C::class, 'c']);\nRoute::get('d', [C::class, 'd']);", $this->controller($body));
+        self::assertSame([], self::checks($out['GET /a']));
+        self::assertSame([], self::checks($out['GET /b']));
+        self::assertSame(['query_scope/authorization'], self::checks($out['GET /c']));
+        self::assertSame([], self::checks($out['GET /d']));
+    }
+
+    public function testRelationChainStopsAtQueryReset(): void
+    {
+        $body = <<<'PHP'
+                public function a(Request $r, int $id) { return $r->user()->posts()->newQuery()->find($id); }
+                public function b(Request $r, int $id) { return $r->user()->posts()->getModel()->find($id); }
+                public function c(Request $r, int $id) { return $r->user()->newModelQuery()->find($id); }
+                public function d(Request $r, int $id) { return $r->user()->posts()->with('tags')->find($id); }
+                public function e(Request $r, int $id) { return $r->user()->posts()->without('tags')->find($id); }
+                public function f(Request $r, int $id) { return $r->user()->replicate()->posts()->find($id); }
+                public function g(Request $r, int $id) { return $r->user()->posts()->query()->find($id); }
+            PHP;
+        $routes = '';
+        foreach (['a', 'b', 'c', 'd', 'e', 'f', 'g'] as $m) {
+            $routes .= "Route::get('{$m}', [C::class, '{$m}']);\n";
+        }
+        [$out] = $this->analyse($routes, $this->controller($body));
+        foreach (['a', 'b', 'c', 'd', 'e', 'f', 'g'] as $m) {
+            self::assertSame([], self::checks($out['GET /'.$m]), $m);
+        }
+    }
+
+    public function testAbortGuardNeedsComparisonWithAuth(): void
+    {
+        $body = <<<'PHP'
+                public function a(Request $request) { abort_unless($request->user(), 401); }
+                public function b(Request $request) { abort_unless($request->user()->isAdmin(), 403); }
+                public function c(Post $post) { abort_if($post->user_id != auth()->id(), 403); }
+                public function d(Request $request, Post $post) { abort_unless($request->user() == $post->owner, 403); }
+                public function e(Request $request, Post $post) { abort_if($post->user_id !== $post->editor_id && $request->user(), 403); }
+            PHP;
+        $routes = '';
+        foreach (['a', 'b', 'c', 'd', 'e'] as $m) {
+            $routes .= "Route::get('{$m}/{post}', [C::class, '{$m}']);\n";
+        }
+        [$out] = $this->analyse($routes, $this->controller($body));
+        self::assertSame([], self::checks($out['GET /a/{post}']));
+        self::assertSame([], self::checks($out['GET /b/{post}']));
+        self::assertSame(['abort_guard/authorization'], self::checks($out['GET /c/{post}']));
+        self::assertSame(['abort_guard/authorization'], self::checks($out['GET /d/{post}']));
+        self::assertSame([], self::checks($out['GET /e/{post}']));
+    }
+
+    public function testClosureFormRequestIsChecked(): void
+    {
+        [$out] = $this->analyse(
+            "Route::put('x', function (\\App\\Http\\Requests\\SaveRequest \$request) { return 1; });",
+            $this->formRequest('public function authorize(): bool { return true; }'),
+        );
+        self::assertSame(['form_request/none'], self::checks($out['PUT /x']));
+        self::assertSame('routes/web.php', $out['PUT /x']->checks[0]->file);
+    }
+
+    public function testUnresolvableAuthorizeResourceOptionsWarn(): void
+    {
+        $body = <<<'PHP'
+                public function __construct()
+                {
+                    $this->authorizeResource(Post::class, 'post', ['except' => $this->skipped]);
+                }
+                public function show(Post $post) {}
+            PHP;
+        [$out, $warnings] = $this->analyse("Route::get('posts/{post}', [C::class, 'show']);", $this->controller($body));
+        self::assertSame([], self::checks($out['GET /posts/{post}']));
+        self::assertSame(['app/Http/Controllers/C.php:15: authorizeResource options could not be resolved'], $warnings);
     }
 }

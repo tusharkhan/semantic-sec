@@ -157,7 +157,7 @@ final class RouteCollectorResourceTest extends TestCase
         self::assertTrue($comment->scopeBindings);
         self::assertEquals([new RouteParameter('post', null, false), new RouteParameter('comment', 'slug', false)], $comment->parameters);
         self::assertTrue($this->find($routes, 'GET /files/{file}')->scopeBindings);
-        self::assertFalse($this->find($routes, 'GET /tags/{tag}')->scopeBindings);
+        self::assertNull($this->find($routes, 'GET /tags/{tag}')->scopeBindings);
     }
 
     public function testResourcesArrayAndNamespace(): void

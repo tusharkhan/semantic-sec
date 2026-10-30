@@ -248,8 +248,8 @@ final class RouteCollector
             }
             $key = $item->key->value;
             if (strtolower($key) === 'scope_bindings') {
-                if (self::isConst($item->value, 'true')) {
-                    $ctx = $ctx->merge(new RouteContext(scopeBindings: true));
+                if (self::isConst($item->value, 'true') || self::isConst($item->value, 'false')) {
+                    $ctx = $ctx->merge(new RouteContext(scopeBindings: self::isConst($item->value, 'true')));
                 } elseif (! self::isConst($item->value, 'false')) {
                     $this->warn($file, $line, 'route group attributes could not be resolved');
                 }
@@ -285,6 +285,8 @@ final class RouteCollector
                 return $can === null ? $ctx : $ctx->merge(new RouteContext(middleware: [$can]));
             case 'scopebindings':
                 return $ctx->merge(new RouteContext(scopeBindings: true));
+            case 'withoutscopedbindings':
+                return $ctx->merge(new RouteContext(scopeBindings: false));
             case 'namespace':
                 if (! isset($args[0]) || self::isConst($args[0], 'null')) {
                     return $ctx;

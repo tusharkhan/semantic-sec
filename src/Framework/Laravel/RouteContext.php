@@ -18,7 +18,7 @@ final readonly class RouteContext
         public string $namePrefix = '',
         public ?string $controller = null,
         public ?string $namespace = null,
-        public bool $scopeBindings = false,
+        public ?bool $scopeBindings = null,
     ) {
     }
 
@@ -44,7 +44,7 @@ final readonly class RouteContext
             $this->namePrefix.$inner->namePrefix,
             $inner->controller ?? $this->controller,
             $namespace,
-            $this->scopeBindings || $inner->scopeBindings,
+            $inner->scopeBindings ?? $this->scopeBindings,
         );
     }
 

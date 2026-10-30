@@ -137,7 +137,7 @@ final class RouteCollectorTest extends TestCase
         self::assertTrue($b->scopeBindings);
         self::assertSame(10, $b->line);
         self::assertSame(['web', 'can:view-any'], $this->find($routes, 'GET /c/{c}')->middleware);
-        self::assertFalse($this->find($routes, 'GET /c/{c}')->scopeBindings);
+        self::assertNull($this->find($routes, 'GET /c/{c}')->scopeBindings);
     }
 
     public function testClosureActionIsKept(): void
@@ -270,5 +270,21 @@ final class RouteCollectorTest extends TestCase
 
         self::assertSame([], $routes);
         self::assertSame(['route file routes/nope.php not found'], $warnings);
+    }
+
+    public function testGroupWithoutScopedBindingsIsExplicitFalse(): void
+    {
+        [$routes, $warnings] = $this->snippet(<<<'PHP'
+            Route::withoutScopedBindings()->group(function () {
+                Route::get('g/{user}/p/{post:slug}', [FooController::class, 'a']);
+            });
+            Route::group(['scope_bindings' => false], function () {
+                Route::get('h/{user}/p/{post:slug}', [FooController::class, 'a']);
+            });
+            PHP);
+
+        self::assertSame([], $warnings);
+        self::assertFalse($this->find($routes, 'GET /g/{user}/p/{post:slug}')->scopeBindings);
+        self::assertFalse($this->find($routes, 'GET /h/{user}/p/{post:slug}')->scopeBindings);
     }
 }

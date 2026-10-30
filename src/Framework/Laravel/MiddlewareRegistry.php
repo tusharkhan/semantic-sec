@@ -156,17 +156,7 @@ final class MiddlewareRegistry
     {
         // An unaliased name is taken as a class FQN.
         $class = isset($this->aliases[$alias]) ? ltrim(explode(':', $this->aliases[$alias])[0], '\\') : ltrim($alias, '\\');
-        $seen = [];
-        while ($class !== null && ! isset($seen[$class])) {
-            $seen[$class] = true;
-            if (in_array($class, $bases, true)) {
-                return true;
-            }
-            $class = $this->symbols->getClass($class)?->parent;
-            $class = $class === null ? null : ltrim($class, '\\');
-        }
-
-        return false;
+        return Ancestry::descendsFrom($this->symbols, $class, $bases);
     }
 
     /**
