@@ -207,6 +207,14 @@ PHP,
         self::assertSame([], $warnings);
     }
 
+    public function testDynamicGroupAttributesWarn(): void
+    {
+        $root = $this->provider("        Route::group(\$attrs, base_path('routes/admin.php'));\n        Route::group(['prefix' => 'a', \$k => 'v', ...\$more], base_path('routes/admin.php'));");
+        [$files, $warnings] = $this->locate($root, 10);
+        self::assertSame([['routes/admin.php', '', [], null]], $this->shape($files));
+        self::assertSame(['app/Providers/RouteServiceProvider.php:10: route group attributes could not be resolved', 'app/Providers/RouteServiceProvider.php:11: route group attributes could not be resolved'], $warnings);
+    }
+
     public function testUnresolvedMiddlewareAndNamespaceWarn(): void
     {
         $root = $this->provider("        Route::middleware(['web', \$m, null])->namespace(\$ns)->group(base_path('routes/admin.php'));\n        Route::namespace(null)->group(base_path('routes/admin.php'));");

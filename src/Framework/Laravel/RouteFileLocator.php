@@ -242,9 +242,16 @@ final class RouteFileLocator
             if (! $pathArg instanceof Arg || $pathArg->value instanceof Expr\Closure || $pathArg->value instanceof Expr\ArrowFunction) {
                 return false;
             }
-            if ($attrs instanceof Arg && $attrs->value instanceof Expr\Array_) {
+            if (! $attrs instanceof Arg || ! $attrs->value instanceof Expr\Array_) {
+                $warnings[] = sprintf('%s:%d: route group attributes could not be resolved', $file, $group->getStartLine());
+            } else {
                 foreach ($attrs->value->items as $item) {
-                    $key = $item->key instanceof Node\Scalar\String_ ? $item->key->value : '';
+                    if ($item->unpack || ! $item->key instanceof Node\Scalar\String_) {
+                        $warnings[] = sprintf('%s:%d: route group attributes could not be resolved', $file, $group->getStartLine());
+
+                        continue;
+                    }
+                    $key = $item->key->value;
                     $this->applyAttribute($key, [$item->value], $item, $file, $class, $eval, $prefix, $middleware, $namespace, $warnings);
                 }
             }
