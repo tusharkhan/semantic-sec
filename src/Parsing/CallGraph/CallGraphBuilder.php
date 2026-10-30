@@ -23,13 +23,29 @@ final class CallGraphBuilder
 
     private const FACADE_NAMESPACE = 'Illuminate\\Support\\Facades\\';
 
+    private const MODEL_BASES = [
+        'Illuminate\\Database\\Eloquent\\Model',
+        'Illuminate\\Foundation\\Auth\\User',
+        'Illuminate\\Database\\Eloquent\\Relations\\Pivot',
+        'Illuminate\\Database\\Eloquent\\Relations\\MorphPivot',
+    ];
+
     private const DYNAMIC_FUNCTIONS = ['call_user_func', 'call_user_func_array', 'forward_static_call', 'forward_static_call_array'];
+
+    // Laravel helpers that never reach project code worth following.
+    private const HELPERS = [
+        'response', 'collect', 'auth', 'request', 'abort', 'abort_if', 'abort_unless', 'now', 'today', 'view', 'redirect', 'back',
+        'config', 'env', 'app', 'resolve', 'route', 'url', 'session', 'old', 'trans', '__', 'logger', 'info', 'optional', 'tap',
+        'data_get', 'throw_if', 'throw_unless', 'dispatch', 'event', 'cache', 'bcrypt',
+    ];
+
+    private const SINKS = ['unserialize'];
 
     private const MAX_TEXT = 160;
 
     private readonly Standard $printer;
 
-    /** @var list<array{prefix: string, file: string, line: int, text: string, suffix: string}> */
+    /** @var list<array{file: string, line: int, kind: string, text: string, suffix: string}> */
     private array $records = [];
 
     /** @var array<int, int> spl id of a recorded call => its record index */
@@ -37,6 +53,9 @@ final class CallGraphBuilder
 
     /** @var array<int, BodyPositions> spl id of a nested function => positions of its own body */
     private array $nestedPositions = [];
+
+    /** @var array<string, list<string>> class => concrete subclasses and implementations, sorted */
+    private array $implementations = [];
 
     /** @param array<string, ?string> $facadeMap facade name or FQN => facade id like "facade:Auth" */
     public function __construct(
@@ -57,19 +76,23 @@ final class CallGraphBuilder
         for ($i = 0; $i < count($nodes); $i++) {
             $node = $nodes[$i];
             if ($node->depth >= $this->maxDepth) {
+                $this->recordDepthLimit($node);
+
                 continue;
             }
-            foreach ($this->callees($node) as [$method, $receiver, $site]) {
-                $id = $method->id();
+            foreach ($this->callees($node) as [$method, $bound, $site, $assumed, $text]) {
+                $bound = $bound !== null && $bound !== $method->class ? $bound : null;
+                $id = $bound === null ? $method->id() : $bound.'::'.$method->name;
                 if (isset($visited[$id])) {
+                    $this->records[] = ['file' => $site->file, 'line' => $site->line, 'kind' => 'already-visited', 'text' => $text, 'suffix' => ' → '.$id];
+
                     continue;
                 }
                 $visited[$id] = true;
-                $bound = $receiver !== null && $receiver !== $method->class ? $receiver : null;
-                $nodes[] = new PathNode($id, $method, null, $method->file, $method->startLine, $method->endLine, $node->depth + 1, $site, $node->id, $bound);
+                $nodes[] = new PathNode($id, $method, null, $method->file, $method->startLine, $method->endLine, $node->depth + 1, $site, $node->id, $bound, $node->assumed || $assumed);
             }
         }
-        $unresolved = array_map(static fn (array $r): string => sprintf('%s%s:%d: %s%s', $r['prefix'], $r['file'], $r['line'], $r['text'], $r['suffix']), $this->records);
+        $unresolved = array_map(static fn (array $r): string => sprintf('%s:%d: [%s] %s%s', $r['file'], $r['line'], $r['kind'], $r['text'], $r['suffix']), $this->records);
         $this->records = [];
 
         return new ExecutionPath($nodes, array_values(array_unique($unresolved)));
@@ -87,16 +110,26 @@ final class CallGraphBuilder
         $method = $action->class !== null && $action->method !== null ? $this->symbols->findMethod($action->class, $action->method) : null;
         if ($method !== null) {
             $bound = ltrim($action->class, '\\');
+            $bound = $bound !== $method->class ? $bound : null;
 
-            return new PathNode($method->id(), $method, null, $method->file, $method->startLine, $method->endLine, 0, null, null, $bound !== $method->class ? $bound : null);
+            return new PathNode($bound === null ? $method->id() : $bound.'::'.$method->name, $method, null, $method->file, $method->startLine, $method->endLine, 0, null, null, $bound);
         }
         $symbol = $action->symbol() ?? ($action->class ?? '?').'::'.($action->method ?? '?');
-        $this->records[] = ['prefix' => '', 'file' => $route->file, 'line' => $route->line, 'text' => 'action '.$symbol.' not found', 'suffix' => ''];
+        $this->records[] = ['file' => $route->file, 'line' => $route->line, 'kind' => 'not-found', 'text' => 'action '.$symbol, 'suffix' => ''];
 
         return new PathNode($symbol, null, null, $route->file, $route->line, $route->line, 0, null, null);
     }
 
-    /** @return list<array{MethodSymbol, ?string, CallSite}> resolved callees in source order, with the class `$this` is bound to */
+    // A node at the depth limit whose calls are not followed.
+    private function recordDepthLimit(PathNode $node): void
+    {
+        $fn = $node->closure ?? $node->method?->node;
+        if ($fn !== null && self::calls($fn->getStmts() ?? []) !== []) {
+            $this->records[] = ['file' => $node->file, 'line' => $node->startLine, 'kind' => 'depth-limit', 'text' => $node->id, 'suffix' => ''];
+        }
+    }
+
+    /** @return list<array{MethodSymbol, ?string, CallSite, bool, string}> callees in source order: method, bound class, site, assumed, call text */
     private function callees(PathNode $node): array
     {
         $fn = $node->closure ?? $node->method?->node;
@@ -111,7 +144,7 @@ final class CallGraphBuilder
         foreach (self::calls($stmts) as $call) {
             $target = $this->resolve($call, $node, $positions);
             if ($target !== null) {
-                $out[] = [$target[0], $target[1], new CallSite($node->file, $call->getStartLine(), $this->isConditional($call, $positions))];
+                $out[] = [$target[0], $target[1], new CallSite($node->file, $call->getStartLine(), $this->isConditional($call, $positions)), $target[2], $this->print($call)];
             }
         }
 
@@ -119,7 +152,7 @@ final class CallGraphBuilder
     }
 
     /**
-     * Calls in evaluation order (inner before outer), including nested closures but not nested classes or functions.
+     * Calls and `new` in evaluation order (inner before outer), including nested closures but not nested classes or functions.
      *
      * @param  array<Node>  $stmts
      * @return list<Expr\CallLike>
@@ -137,7 +170,8 @@ final class CallGraphBuilder
 
             public function leaveNode(Node $node): null
             {
-                if ($node instanceof Expr\MethodCall || $node instanceof Expr\NullsafeMethodCall || $node instanceof Expr\StaticCall || $node instanceof Expr\FuncCall) {
+                if ($node instanceof Expr\MethodCall || $node instanceof Expr\NullsafeMethodCall || $node instanceof Expr\StaticCall
+                    || $node instanceof Expr\FuncCall || ($node instanceof Expr\New_ && ! $node->class instanceof Stmt\Class_)) {
                     $this->calls[] = $node;
                 }
 
@@ -149,16 +183,16 @@ final class CallGraphBuilder
         return $visitor->calls;
     }
 
-    /** @return array{MethodSymbol, ?string}|null the method to traverse and the class `$this` is bound to, or null after recording why not */
+    /** @return array{MethodSymbol, ?string, bool}|null the method to traverse, the class `$this` is bound to and whether it is assumed; null after recording why not */
     private function resolve(Expr\CallLike $call, PathNode $node, BodyPositions $positions): ?array
     {
         if ($call instanceof Expr\FuncCall) {
-            $name = $call->name instanceof Node\Name ? strtolower($call->name->getLast()) : null;
-            if ($name === null || in_array($name, self::DYNAMIC_FUNCTIONS, true)) {
-                $this->record($call, $node, 'dynamic call');
-            }
+            $this->recordFunction($call, $node);
 
             return null;
+        }
+        if ($call instanceof Expr\New_) {
+            return $this->resolveNew($call, $node, $positions);
         }
         if ($call instanceof Expr\StaticCall) {
             return $this->resolveStatic($call, $node, $positions);
@@ -167,7 +201,7 @@ final class CallGraphBuilder
             return null;
         }
         if (! $call->name instanceof Node\Identifier) {
-            $this->record($call, $node, 'dynamic call');
+            $this->record($call, $node, 'dynamic');
 
             return null;
         }
@@ -177,95 +211,227 @@ final class CallGraphBuilder
 
             return null;
         }
-        // $this inside a method reached through a subclass is bound to that subclass.
+        // $this inside a method reached through a subclass is bound to that subclass; only the route class itself is exact.
         $isThis = $call->var instanceof Expr\Variable && $call->var->name === 'this';
         if ($isThis && $node->closureClass !== null && $this->symbols->isSubclassOf($node->closureClass, $class)) {
             $class = $node->closureClass;
         }
 
-        return $this->lookup($call, $node, $class, $call->name->toString(), $class);
+        return $this->lookup($call, $node, $class, $call->name->toString(), $isThis && $node->depth === 0);
     }
 
-    /** @return array{MethodSymbol, ?string}|null */
+    private function recordFunction(Expr\FuncCall $call, PathNode $node): void
+    {
+        if (! $call->name instanceof Node\Name) {
+            $this->record($call, $node, 'dynamic');
+
+            return;
+        }
+        $name = strtolower(ltrim($call->name->toString(), '\\'));
+        if (in_array($name, self::DYNAMIC_FUNCTIONS, true)) {
+            $this->record($call, $node, 'dynamic');
+        } elseif (in_array($name, self::SINKS, true)) {
+            $this->record($call, $node, 'sink');
+        } elseif (! in_array($name, self::HELPERS, true) && ! (function_exists($name) && (new \ReflectionFunction($name))->isInternal())) {
+            $this->record($call, $node, 'function');
+        }
+    }
+
+    /** @return array{MethodSymbol, ?string, bool}|null */
+    private function resolveNew(Expr\New_ $new, PathNode $node, BodyPositions $positions): ?array
+    {
+        if (! $new->class instanceof Node\Name) {
+            if ($new->class instanceof Expr) {
+                $this->record($new, $node, 'dynamic');
+            }
+
+            return null;
+        }
+        $class = $this->keywordClass($new->class, $node, $new, $positions) ?? ltrim($new->class->toString(), '\\');
+        if ($this->symbols->getClass($class) === null) {
+            $this->record($new, $node, 'not-in-project', $class.'::__construct');
+
+            return null;
+        }
+        $ctor = $this->symbols->findMethod($class, '__construct');
+        if ($ctor === null) {
+            $lineage = $this->symbols->lineage($class);
+            $parent = $lineage[count($lineage) - 1]->parent ?? null;
+            if ($parent !== null && $this->symbols->getClass($parent) === null) {
+                $this->record($new, $node, 'not-in-project', ltrim($parent, '\\').'::__construct');
+            }
+
+            return null;
+        }
+
+        return $this->vendor($ctor) ? $this->notInProject($new, $node, $ctor) : [$ctor, $class, false];
+    }
+
+    /** @return array{MethodSymbol, ?string, bool}|null */
     private function resolveStatic(Expr\StaticCall $call, PathNode $node, BodyPositions $positions): ?array
     {
         if (! $call->class instanceof Node\Name || ! $call->name instanceof Node\Identifier) {
-            $this->record($call, $node, 'dynamic call');
+            $this->record($call, $node, 'dynamic');
 
             return null;
         }
         $name = $call->name->toString();
         $keyword = $call->class->toLowerString();
         if (in_array($keyword, ['self', 'static', 'parent'], true)) {
-            $bound = $this->boundClass($node, $call, $positions);
-            $self = $node->method !== null && $this->symbols->getClass($node->method->class)?->kind !== 'trait' ? $node->method->class : $bound;
-            $class = match ($keyword) {
-                'self' => $self,
-                'static' => $bound,
-                default => $self === null ? null : $this->symbols->getClass($self)?->parent,
-            };
+            $class = $this->keywordClass($call->class, $node, $call, $positions);
             if ($class === null) {
-                $this->record($call, $node, 'receiver type unknown');
+                $this->record($call, $node, 'unknown-type');
 
                 return null;
             }
+            // self:: and parent:: never dispatch; static:: does, like $this.
+            $bound = $this->boundClass($node, $call, $positions);
 
-            return $this->lookup($call, $node, ltrim($class, '\\'), $name, $bound ?? $class);
+            return $this->lookup($call, $node, $class, $name, $keyword !== 'static' || $node->depth === 0, $keyword === 'static' ? null : $bound);
         }
         $class = ltrim($call->class->toString(), '\\');
-        $facade = $this->facade($class);
-        if ($facade !== null) {
-            $this->recordOf[spl_object_id($call)] = count($this->records);
-            $this->records[] = ['prefix' => 'facade:'.$facade.' ', 'file' => $node->file, 'line' => $call->getStartLine(), 'text' => $this->print($call), 'suffix' => ''];
+        if ($this->facade($class) !== null) {
+            $this->record($call, $node, 'facade');
 
             return null;
         }
 
-        return $this->lookup($call, $node, $class, $name, $class);
+        return $this->lookup($call, $node, $class, $name, true);
     }
 
-    /** @return array{MethodSymbol, ?string}|null */
-    private function lookup(Expr\CallLike $call, PathNode $node, string $class, string $name, ?string $receiver): ?array
+    private function keywordClass(Node\Name $name, PathNode $node, Node $at, BodyPositions $positions): ?string
+    {
+        $keyword = $name->toLowerString();
+        if (! in_array($keyword, ['self', 'static', 'parent'], true)) {
+            return null;
+        }
+        $bound = $this->boundClass($node, $at, $positions);
+        $self = $node->method !== null && $this->symbols->getClass($node->method->class)?->kind !== 'trait' ? $node->method->class : $bound;
+        $class = match ($keyword) {
+            'self' => $self,
+            'static' => $bound,
+            default => $self === null ? null : $this->symbols->getClass($self)?->parent,
+        };
+
+        return $class === null ? null : ltrim($class, '\\');
+    }
+
+    /**
+     * The targets of a call on $class: exact calls take its own method; a dispatching call on an abstract type takes the sole
+     * override when there is one, and on a concrete type takes its own method and flags overrides.
+     *
+     * @return array{MethodSymbol, ?string, bool}|null
+     */
+    private function lookup(Expr\CallLike $call, PathNode $node, string $class, string $name, bool $exact, ?string $bindAs = null): ?array
     {
         $symbol = $this->symbols->getClass($class);
         if ($symbol === null) {
-            $this->record($call, $node, $class.' is not in the project');
+            $this->record($call, $node, 'not-in-project', $class);
 
             return null;
         }
-        $method = $this->symbols->findMethod($class, $name);
-        if ($symbol->kind === 'interface' || ($method !== null && $method->node->stmts === null)) {
-            $impls = $this->symbols->implementations($class);
-            sort($impls);
-            if (count($impls) !== 1) {
-                $this->record($call, $node, $impls === []
-                    ? 'no implementation of '.$class.' in the project'
-                    : sprintf('%s has %d implementations: %s', $class, count($impls), implode(', ', $impls)));
+        $own = $this->symbols->findMethod($class, $name);
+        $abstract = $symbol->kind === 'interface' || ($symbol->node instanceof Stmt\Class_ && $symbol->node->isAbstract())
+            || ($own !== null && $own->node->stmts === null);
+        if (! $abstract) {
+            if ($own === null) {
+                $this->recordMissing($call, $node, $class, $name);
 
                 return null;
             }
-            $impl = $this->symbols->findMethod($impls[0], $name);
-            if ($impl === null || $impl->node->stmts === null) {
-                $this->record($call, $node, $impls[0].'::'.$name.' not found');
-
-                return null;
+            if ($this->vendor($own)) {
+                return $this->notInProject($call, $node, $own);
             }
-            $this->records[] = ['prefix' => '', 'file' => $node->file, 'line' => $call->getStartLine(), 'text' => $this->print($call), 'suffix' => ' → assumed sole implementation '.$impls[0]];
+            $overrides = [];
+            foreach ($exact ? [] : $this->implementationsOf($class) as $sub) {
+                $method = $this->symbols->findMethod($sub, $name);
+                if ($method !== null && $method->id() !== $own->id()) {
+                    $overrides[$method->class] = true;
+                }
+            }
+            if ($overrides !== []) {
+                $this->record($call, $node, 'may-be-overridden', implode(', ', array_keys($overrides)), false);
+            }
 
-            return [$impl, $impls[0]];
+            return [$own, $bindAs ?? $class, false];
         }
-        if ($method === null) {
-            $this->record($call, $node, $class.'::'.$name.' not found');
-
-            return null;
+        if ($exact && $own !== null && $own->node->stmts !== null) {
+            return $this->vendor($own) ? $this->notInProject($call, $node, $own) : [$own, $bindAs ?? $class, false];
         }
-        if (str_starts_with($method->file, 'vendor/')) {
-            $this->record($call, $node, $method->class.' is not in the project');
+        $targets = [];
+        $labels = [];
+        foreach ($this->implementationsOf($class) as $sub) {
+            $method = $this->symbols->findMethod($sub, $name);
+            if ($method === null || $method->node->stmts === null) {
+                $labels[$sub.'::'.$name] = true;
 
-            return null;
+                continue;
+            }
+            $targets[$method->id()][0] = $method;
+            $targets[$method->id()][1][] = $sub;
+            $labels[$method->id()] = true;
+        }
+        if (count($targets) === 1 && count($labels) === 1) {
+            [$method, $subs] = array_values($targets)[0];
+            $bound = count($subs) === 1 ? $subs[0] : null;
+            if ($this->vendor($method)) {
+                return $this->notInProject($call, $node, $method);
+            }
+            $this->record($call, $node, 'assumed', $bound ?? $method->class, false);
+
+            return [$method, $bound, true];
+        }
+        $labels = array_keys($labels);
+        sort($labels);
+        $this->record($call, $node, $labels === [] ? 'not-found' : 'ambiguous', $labels === [] ? 'no implementation of '.$class.' in the project' : implode(', ', $labels));
+
+        return null;
+    }
+
+    /** @return list<string> */
+    private function implementationsOf(string $class): array
+    {
+        if (! isset($this->implementations[$class])) {
+            $found = $this->symbols->implementations($class);
+            sort($found);
+            $this->implementations[$class] = $found;
         }
 
-        return [$method, $receiver];
+        return $this->implementations[$class];
+    }
+
+    private function vendor(MethodSymbol $method): bool
+    {
+        return str_starts_with($method->file, 'vendor/');
+    }
+
+    private function notInProject(Expr\CallLike $call, PathNode $node, MethodSymbol $method): null
+    {
+        $this->record($call, $node, 'not-in-project', $method->class);
+
+        return null;
+    }
+
+    // Eloquent forwards unknown model calls to its query builder; anything else is simply missing.
+    private function recordMissing(Expr\CallLike $call, PathNode $node, string $class, string $name): void
+    {
+        foreach (self::MODEL_BASES as $base) {
+            if ($this->symbols->isSubclassOf($class, $base)) {
+                $this->record($call, $node, 'eloquent');
+
+                return;
+            }
+        }
+        $outside = [];
+        foreach ($this->symbols->lineage($class) as $symbol) {
+            foreach ([$symbol->parent, ...$symbol->traits] as $ancestor) {
+                if ($ancestor !== null && $this->symbols->getClass($ancestor) === null) {
+                    $outside[] = ltrim($ancestor, '\\');
+                }
+            }
+        }
+        // Likely inherited from a vendor parent or trait.
+        $this->record($call, $node, $outside === [] ? 'not-found' : 'not-in-project', $class.'::'.$name.($outside === [] ? '' : ' via '.implode(', ', $outside)));
     }
 
     // An unknown receiver that is itself a recorded call extends that record to the whole chain.
@@ -273,7 +439,7 @@ final class CallGraphBuilder
     {
         $index = $this->recordOf[spl_object_id($receiver)] ?? null;
         if ($index === null) {
-            $this->record($call, $node, 'receiver type unknown');
+            $this->record($call, $node, 'unknown-type');
 
             return;
         }
@@ -281,10 +447,12 @@ final class CallGraphBuilder
         $this->recordOf[spl_object_id($call)] = $index;
     }
 
-    private function record(Expr\CallLike $call, PathNode $node, string $reason): void
+    private function record(Expr\CallLike $call, PathNode $node, string $kind, ?string $detail = null, bool $chainable = true): void
     {
-        $this->recordOf[spl_object_id($call)] = count($this->records);
-        $this->records[] = ['prefix' => '', 'file' => $node->file, 'line' => $call->getStartLine(), 'text' => $this->print($call), 'suffix' => ' → '.$reason];
+        if ($chainable) {
+            $this->recordOf[spl_object_id($call)] = count($this->records);
+        }
+        $this->records[] = ['file' => $node->file, 'line' => $call->getStartLine(), 'kind' => $kind, 'text' => $this->print($call), 'suffix' => $detail === null ? '' : ' → '.$detail];
     }
 
     private function print(Expr $expr): string
@@ -394,9 +562,45 @@ final class CallGraphBuilder
         return $expr instanceof Expr\Variable && is_string($expr->name) ? $expr->name : null;
     }
 
+    // A nullsafe call, a call on a nullsafe chain, or a call inside the arguments of one is skipped on null.
+    private static function shortCircuited(Node $call, BodyPositions $positions): bool
+    {
+        if ($call instanceof Expr && self::hasNullsafe($call)) {
+            return true;
+        }
+        for ($child = $call, $parent = $positions->parent($call); $parent !== null; $child = $parent, $parent = $positions->parent($parent)) {
+            if (self::isChainLink($parent) && $parent->var !== $child && self::hasNullsafe($parent)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @phpstan-assert-if-true Expr\MethodCall|Expr\NullsafeMethodCall|Expr\PropertyFetch|Expr\NullsafePropertyFetch|Expr\ArrayDimFetch $node */
+    private static function isChainLink(Node $node): bool
+    {
+        return $node instanceof Expr\MethodCall || $node instanceof Expr\NullsafeMethodCall || $node instanceof Expr\PropertyFetch
+            || $node instanceof Expr\NullsafePropertyFetch || $node instanceof Expr\ArrayDimFetch;
+    }
+
+    private static function hasNullsafe(Expr $expr): bool
+    {
+        for (; self::isChainLink($expr); $expr = $expr->var) {
+            if ($expr instanceof Expr\NullsafeMethodCall || $expr instanceof Expr\NullsafePropertyFetch) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     // Inside an if/loop/try or a nested closure; a DB::transaction callback runs exactly when the transaction call does.
     private function isConditional(Node $call, BodyPositions $positions): bool
     {
+        if (self::shortCircuited($call, $positions)) {
+            return true;
+        }
         $fn = self::enclosingClosure($call, $positions);
         if ($fn === null) {
             return ! $positions->isUnconditional($call);

@@ -88,12 +88,13 @@ final class CallGraphBuilderTest extends TestCase
             use App\Models\Order;
             use App\Services\Audit;
             use App\Services\Chain;
+            use App\Services\Checker;
             use App\Services\Ping;
             use Illuminate\Support\Facades\DB;
             use Illuminate\Support\Facades\Gate;
             use Vendor\Sdk\Client;
 
-            class OrderController
+            class OrderController extends \Illuminate\Routing\Controller
             {
                 public function chain(Chain $chain) { $chain->one(); }
                 public function cycle(Ping $ping) { $ping->ping(); }
@@ -117,8 +118,33 @@ final class CallGraphBuilderTest extends TestCase
                     DB::transaction(fn () => Audit::record());
                 }
                 public function unknown($thing) { $thing->go(); }
+                public function nullsafe(?Audit $audit, ?Order $order) { $order?->ship(); $order?->missing($audit->log()); }
+                public function abs(\App\Services\BaseRepo $r) { $r->find(); }
+                public function concrete(\App\Services\Reader $r) { $r->read(); }
+                public function shared(\App\Services\BaseSvc $s) { $s->run(); }
+                public function two(\App\Services\AdminSvc $x, \App\Services\UserSvc $u) { $x->run(); $u->run(); }
+                public function ctor(string $s) { new \App\Services\Ctor(); new \Vendor\Sdk\Thing(); my_helper(); strlen('x'); response(); unserialize($s); }
+                public function early(Checker $c, bool $f) { if ($f) { return response()->json([]); } $c->chk(); }
+                public function tern(Checker $c, bool $f) { $x = $f ? $c->chk() : null; }
+                public function coal(Checker $c, $v) { $x = $v ?? $c->chk(); }
+                public function andd(Checker $c, bool $f) { $f && $c->chk(); }
+                public function mat(Checker $c, int $f) { match ($f) { 1 => 1, 2 => $c->chk() }; }
+                public function tryc(Checker $c) { try { $c->chk(); } catch (\Exception $e) {} }
+                public function txearly(Checker $c) { DB::transaction(function () use ($c) { if (rand()) { return 1; } $c->chk(); }); }
+                public function inner(Checker $c, bool $f) { if ($f) { $this->helper($c); } }
+                private function helper(Checker $c) { $c->chk(); }
+                public function vendorParent() { $this->authorize(); }
             }
             PHP,
+        'app/Services/Checker.php' => '<?php namespace App\Services; class Checker { public function chk(): void {} }',
+        'app/Services/BaseRepo.php' => '<?php namespace App\Services; abstract class BaseRepo { public function find(): void { $this->guard(); } protected function guard(): void {} }',
+        'app/Services/OpenRepo.php' => '<?php namespace App\Services; class OpenRepo extends BaseRepo { public function find(): void {} }',
+        'app/Services/Reader.php' => '<?php namespace App\Services; class Reader { public function read(): void {} }',
+        'app/Services/SafeReader.php' => '<?php namespace App\Services; class SafeReader extends Reader { public function read(): void {} }',
+        'app/Services/BaseSvc.php' => '<?php namespace App\Services; abstract class BaseSvc { public function run(): void { $this->hook(); } abstract protected function hook(): void; }',
+        'app/Services/AdminSvc.php' => '<?php namespace App\Services; class AdminSvc extends BaseSvc { protected function hook(): void {} }',
+        'app/Services/UserSvc.php' => '<?php namespace App\Services; class UserSvc extends BaseSvc { protected function hook(): void {} }',
+        'app/Services/Ctor.php' => '<?php namespace App\Services; class Ctor { public function __construct() {} }',
         'app/Http/Controllers/BaseController.php' => <<<'PHP'
             <?php
             namespace App\Http\Controllers;
@@ -196,7 +222,7 @@ final class CallGraphBuilderTest extends TestCase
     {
         $path = self::build('facade');
         self::assertCount(1, $path->nodes);
-        self::assertSame(["facade:Gate app/Http/Controllers/OrderController.php:18: \\Illuminate\\Support\\Facades\\Gate::authorize('x')"], $path->unresolved);
+        self::assertSame(["app/Http/Controllers/OrderController.php:19: [facade] \\Illuminate\\Support\\Facades\\Gate::authorize('x')"], $path->unresolved);
     }
 
     public function testVendorClassIsUnresolved(): void
@@ -204,7 +230,7 @@ final class CallGraphBuilderTest extends TestCase
         $path = self::build('vendor');
         self::assertCount(1, $path->nodes);
         self::assertCount(1, $path->unresolved);
-        self::assertStringStartsWith('app/Http/Controllers/OrderController.php:19: $client->send()', $path->unresolved[0]);
+        self::assertStringStartsWith('app/Http/Controllers/OrderController.php:20: [not-in-project] $client->send()', $path->unresolved[0]);
         self::assertStringContainsString('Vendor\Sdk\Client', $path->unresolved[0]);
     }
 
@@ -212,7 +238,8 @@ final class CallGraphBuilderTest extends TestCase
     {
         $path = self::build('single');
         self::assertSame([self::CONTROLLER.'::single', 'App\Services\MailNotifier::send'], self::ids($path));
-        self::assertSame(['app/Http/Controllers/OrderController.php:20: $notifier->send() → assumed sole implementation App\Services\MailNotifier'], $path->unresolved);
+        self::assertTrue($path->nodes[1]->assumed);
+        self::assertSame(['app/Http/Controllers/OrderController.php:21: [assumed] $notifier->send() → App\Services\MailNotifier'], $path->unresolved);
     }
 
     public function testInterfaceWithTwoImplementationsListsBoth(): void
@@ -220,15 +247,15 @@ final class CallGraphBuilderTest extends TestCase
         $path = self::build('many');
         self::assertCount(1, $path->nodes);
         self::assertCount(1, $path->unresolved);
-        self::assertStringStartsWith('app/Http/Controllers/OrderController.php:21: $payer->pay()', $path->unresolved[0]);
-        self::assertStringContainsString('App\Services\CardPayer, App\Services\CashPayer', $path->unresolved[0]);
+        self::assertStringStartsWith('app/Http/Controllers/OrderController.php:22: [ambiguous] $payer->pay()', $path->unresolved[0]);
+        self::assertStringContainsString('App\Services\CardPayer::pay, App\Services\CashPayer::pay', $path->unresolved[0]);
     }
 
     public function testContainerResolvedCallsAreFollowed(): void
     {
         $path = self::build('container');
         self::assertSame([self::CONTROLLER.'::container', 'App\Services\Audit::log'], self::ids($path));
-        self::assertSame([], $path->unresolved);
+        self::assertSame(['app/Http/Controllers/OrderController.php:23: [already-visited] resolve(\\App\\Services\\Audit::class)->log() → App\\Services\\Audit::log'], $path->unresolved);
     }
 
     public function testStaticCallOnAClassIsFollowed(): void
@@ -241,15 +268,15 @@ final class CallGraphBuilderTest extends TestCase
         $path = self::build('dynamic');
         self::assertCount(1, $path->nodes);
         self::assertCount(2, $path->unresolved);
-        self::assertStringStartsWith('app/Http/Controllers/OrderController.php:24: $audit->{$m}()', $path->unresolved[0]);
-        self::assertStringStartsWith("app/Http/Controllers/OrderController.php:24: call_user_func([\$audit, 'log'])", $path->unresolved[1]);
+        self::assertStringStartsWith('app/Http/Controllers/OrderController.php:25: [dynamic] $audit->{$m}()', $path->unresolved[0]);
+        self::assertStringStartsWith("app/Http/Controllers/OrderController.php:25: [dynamic] call_user_func([\$audit, 'log'])", $path->unresolved[1]);
     }
 
     public function testUntypedReceiverIsUnresolved(): void
     {
         $path = self::build('unknown');
         self::assertCount(1, $path->nodes);
-        self::assertStringStartsWith('app/Http/Controllers/OrderController.php:37: $thing->go()', $path->unresolved[0] ?? '');
+        self::assertStringStartsWith('app/Http/Controllers/OrderController.php:38: [unknown-type] $thing->go()', $path->unresolved[0] ?? '');
     }
 
     public function testClosureRouteIsTheEntry(): void
@@ -274,7 +301,7 @@ final class CallGraphBuilderTest extends TestCase
         self::assertCount(1, $path->nodes);
         self::assertNull($path->entry()->method);
         self::assertNull($path->entry()->closure);
-        self::assertSame(['routes/web.php:9: action '.self::CONTROLLER.'::nope not found'], $path->unresolved);
+        self::assertSame(['routes/web.php:9: [not-found] action '.self::CONTROLLER.'::nope'], $path->unresolved);
     }
 
     public function testConditionalCallSiteFlag(): void
@@ -297,7 +324,7 @@ final class CallGraphBuilderTest extends TestCase
         $route = new RouteEntry(['GET'], '/p', null, new RouteAction('App\Http\Controllers\PostController', 'index'), [], [], [], null, 'routes/web.php', 1);
         $path = self::builder(3)->build($route);
 
-        self::assertSame(['App\Http\Controllers\BaseController::index', 'App\Http\Controllers\PostController::hook'], self::ids($path));
+        self::assertSame(['App\Http\Controllers\PostController::index', 'App\Http\Controllers\PostController::hook'], self::ids($path));
         self::assertSame('App\Http\Controllers\PostController', $path->entry()->closureClass);
     }
 
@@ -306,7 +333,85 @@ final class CallGraphBuilderTest extends TestCase
         $route = new RouteEntry(['GET'], '/p', null, new RouteAction('App\Http\Controllers\PostController', 'chained'), [], [], [], null, 'routes/web.php', 1);
         $path = self::builder(3)->build($route);
 
-        self::assertSame(["app/Http/Controllers/PostController.php:9: \\App\\Models\\Order::where('a', 1)->latest()->first() → App\\Models\\Order::where not found"], $path->unresolved);
+        self::assertSame(["app/Http/Controllers/PostController.php:9: [eloquent] \\App\\Models\\Order::where('a', 1)->latest()->first()"], $path->unresolved);
+    }
+
+    public function testNullsafeCallsAreConditional(): void
+    {
+        $path = self::build('nullsafe');
+        self::assertTrue(self::node($path, 'App\Models\Order::ship')->calledFrom?->conditional);
+        self::assertTrue(self::node($path, 'App\Services\Audit::log')->calledFrom?->conditional);
+    }
+
+    public function testAbstractReceiverUsesTheSoleOverride(): void
+    {
+        $path = self::build('abs');
+        self::assertSame([self::CONTROLLER.'::abs', 'App\Services\OpenRepo::find'], self::ids($path));
+        self::assertTrue($path->nodes[1]->assumed);
+        self::assertFalse($path->entry()->assumed);
+        self::assertContains('app/Http/Controllers/OrderController.php:40: [assumed] $r->find() → App\Services\OpenRepo', $path->unresolved);
+    }
+
+    public function testConcreteReceiverWithOverridesIsFollowedAndFlagged(): void
+    {
+        $path = self::build('concrete');
+        self::assertSame([self::CONTROLLER.'::concrete', 'App\Services\Reader::read'], self::ids($path));
+        self::assertFalse($path->nodes[1]->assumed);
+        self::assertSame(['app/Http/Controllers/OrderController.php:41: [may-be-overridden] $r->read() → App\Services\SafeReader'], $path->unresolved);
+    }
+
+    public function testSharedInheritedMethodLeavesThisDispatchAmbiguous(): void
+    {
+        $path = self::build('shared');
+        self::assertSame([self::CONTROLLER.'::shared', 'App\Services\BaseSvc::run'], self::ids($path));
+        self::assertContains('app/Services/BaseSvc.php:1: [ambiguous] $this->hook() → App\Services\AdminSvc::hook, App\Services\UserSvc::hook', $path->unresolved);
+    }
+
+    public function testEachSubclassBindingIsItsOwnNode(): void
+    {
+        $path = self::build('two');
+        self::assertSame([self::CONTROLLER.'::two', 'App\Services\AdminSvc::run', 'App\Services\UserSvc::run', 'App\Services\AdminSvc::hook', 'App\Services\UserSvc::hook'], self::ids($path));
+        self::assertSame('App\Services\BaseSvc::run', $path->nodes[1]->method?->id());
+        self::assertSame('App\Services\AdminSvc', $path->nodes[1]->closureClass);
+    }
+
+    public function testConstructorsFunctionsAndSinksAreRecorded(): void
+    {
+        $path = self::build('ctor');
+        self::assertSame([self::CONTROLLER.'::ctor', 'App\Services\Ctor::__construct'], self::ids($path));
+        $prefix = 'app/Http/Controllers/OrderController.php:44: ';
+        self::assertSame([
+            $prefix.'[not-in-project] new \Vendor\Sdk\Thing() → Vendor\Sdk\Thing::__construct',
+            $prefix.'[function] my_helper()',
+            $prefix.'[sink] unserialize($s)',
+        ], $path->unresolved);
+    }
+
+    public function testConditionalShapes(): void
+    {
+        foreach (['early', 'tern', 'coal', 'andd', 'mat', 'tryc', 'txearly'] as $method) {
+            self::assertTrue(self::node(self::build($method), 'App\Services\Checker::chk')->calledFrom?->conditional, $method);
+        }
+    }
+
+    public function testConditionalityIsPerCallSiteNotTransitive(): void
+    {
+        $path = self::build('inner');
+        self::assertTrue(self::node($path, self::CONTROLLER.'::helper')->calledFrom?->conditional);
+        $chk = self::node($path, 'App\Services\Checker::chk');
+        self::assertSame(self::CONTROLLER.'::helper', $chk->calledBy);
+        self::assertFalse($chk->calledFrom?->conditional);
+    }
+
+    public function testMethodMissingBelowAVendorParentIsNotInProject(): void
+    {
+        $path = self::build('vendorParent');
+        self::assertSame(['app/Http/Controllers/OrderController.php:54: [not-in-project] $this->authorize() → '.self::CONTROLLER.'::authorize via Illuminate\Routing\Controller'], $path->unresolved);
+    }
+
+    public function testDepthLimitIsRecordedPerNode(): void
+    {
+        self::assertSame(['app/Services/Chain.php:7: [depth-limit] App\Services\Chain::two'], self::build('chain', 2)->unresolved);
     }
 
     private static function build(string $method, int $maxDepth = 3): ExecutionPath
