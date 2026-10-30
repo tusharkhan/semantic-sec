@@ -5,67 +5,13 @@ declare(strict_types=1);
 namespace TusharKhan\SemanticSec\Tests\Unit\Framework\Laravel;
 
 use PHPUnit\Framework\TestCase;
-use TusharKhan\SemanticSec\Framework\Laravel\ConstantEvaluator;
-use TusharKhan\SemanticSec\Framework\Laravel\RouteCollector;
-use TusharKhan\SemanticSec\Framework\Laravel\RouteEntry;
 use TusharKhan\SemanticSec\Framework\Laravel\RouteFile;
 use TusharKhan\SemanticSec\Framework\Laravel\RouteParameter;
-use TusharKhan\SemanticSec\Parsing\AstGenerator;
-use TusharKhan\SemanticSec\Parsing\FileFinder;
-use TusharKhan\SemanticSec\Parsing\ProjectParser;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkCorpus;
 
 final class RouteCollectorTest extends TestCase
 {
-    /** @var list<string> */
-    private array $dirs = [];
-
-    protected function tearDown(): void
-    {
-        foreach ($this->dirs as $dir) {
-            foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS), \RecursiveIteratorIterator::CHILD_FIRST) as $f) {
-                $f->isDir() ? rmdir($f->getPathname()) : unlink($f->getPathname());
-            }
-            rmdir($dir);
-        }
-    }
-
-    /** @return array{0: list<RouteEntry>, 1: list<string>} */
-    private function collect(string $root, RouteFile $file): array
-    {
-        $parsed = (new ProjectParser(new FileFinder(), new AstGenerator()))->parse($root);
-
-        return (new RouteCollector($parsed, new ConstantEvaluator()))->collect($file);
-    }
-
-    /**
-     * @param  array<string, string>  $extra
-     * @return array{0: list<RouteEntry>, 1: list<string>}
-     */
-    private function snippet(string $body, RouteFile $file = new RouteFile('routes/web.php', '', ['web'], null), array $extra = []): array
-    {
-        $dir = sys_get_temp_dir().'/ss-rc-'.bin2hex(random_bytes(4));
-        mkdir($dir);
-        $this->dirs[] = $dir;
-        $files = ['routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\nuse App\\Http\\Controllers\\FooController;\n\n".$body."\n"] + $extra;
-        foreach ($files as $path => $code) {
-            @mkdir(dirname($dir.'/'.$path), 0777, true);
-            file_put_contents($dir.'/'.$path, $code);
-        }
-
-        return $this->collect($dir, $file);
-    }
-
-    /** @param list<RouteEntry> $routes */
-    private function find(array $routes, string $key): RouteEntry
-    {
-        foreach ($routes as $route) {
-            if (in_array($key, $route->keys(), true)) {
-                return $route;
-            }
-        }
-        self::fail('route not found: '.$key.' in '.implode(', ', array_merge(...array_map(fn (RouteEntry $r): array => $r->keys(), $routes))));
-    }
+    use RouteSnippets;
 
     public function testBenchmarkLaravel11WebRoutes(): void
     {
@@ -105,10 +51,7 @@ final class RouteCollectorTest extends TestCase
         self::assertSame('App\\Http\\Controllers\\Vuln\\ReportController::show', $show->action->symbol());
         self::assertSame(['web', 'auth'], $show->middleware);
         self::assertSame('App\\Http\\Controllers\\Safe\\ReportController::show', $this->find($routes, 'GET /safe/reports/{report}')->action->symbol());
-        self::assertSame([
-            'routes/web.php:14: Route::resource is not analysed yet',
-            'routes/web.php:15: Route::resource is not analysed yet',
-        ], $warnings);
+        self::assertSame([], $warnings);
     }
 
     public function testMatchAnyAndInvokable(): void

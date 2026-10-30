@@ -19,7 +19,9 @@ final class RouteCollector
 
     private const ANY = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
 
-    private const RESOURCES = ['resource', 'apiresource', 'resources', 'apiresources', 'singleton', 'apisingleton', 'singletons', 'apisingletons'];
+    private const SINGLETONS = ['singleton', 'apisingleton', 'singletons', 'apisingletons'];
+
+    private const RESOURCE_OPTIONS = ['only' => 'only', 'except' => 'except', 'names' => 'names', 'parameters' => 'parameters', 'middleware' => 'middleware', 'excluded_middleware' => 'withoutmiddleware', 'shallow' => 'shallow'];
 
     private const UNSUPPORTED = ['view', 'redirect', 'fallback', 'permanentredirect'];
 
@@ -142,6 +144,7 @@ final class RouteCollector
     private function chain(array $steps, RouteContext $ctx, string $file): void
     {
         $route = null;
+        $resource = null;
         $done = false;
         foreach ($steps as $call) {
             $name = $call->name instanceof Node\Identifier ? $call->name->toString() : '';
@@ -155,6 +158,8 @@ final class RouteCollector
                 $this->warn($file, $line, sprintf('route method %s is not analysed', $name));
             } elseif ($route !== null) {
                 $this->routeStep($m, $name, $args, $route, $file, $line);
+            } elseif ($resource !== null) {
+                $this->resourceStep($m, $name, $args, $resource, $file, $line);
             } elseif (in_array($m, self::VERBS, true) || $m === 'any' || $m === 'match') {
                 $route = $this->startRoute($m, $args, $ctx, $file, $line);
                 if ($route === null) {
@@ -163,7 +168,15 @@ final class RouteCollector
             } elseif ($m === 'group') {
                 $this->group($args, $ctx, $file, $line);
                 $done = true;
-            } elseif (in_array($m, self::RESOURCES, true)) {
+            } elseif ($m === 'resource' || $m === 'apiresource') {
+                $resource = $this->startResource($m === 'apiresource', $args, $ctx, $file, $line);
+                if ($resource === null) {
+                    return;
+                }
+            } elseif ($m === 'resources' || $m === 'apiresources') {
+                $this->resources($m === 'apiresources', $args, $ctx, $file, $line);
+                $done = true;
+            } elseif (in_array($m, self::SINGLETONS, true)) {
                 $this->warn($file, $line, sprintf('Route::%s is not analysed yet', $name));
 
                 return;
@@ -177,6 +190,9 @@ final class RouteCollector
         }
         if ($route !== null) {
             $this->routes[] = $route->toEntry();
+        }
+        if ($resource !== null) {
+            $this->emitResource($resource);
         }
     }
 
@@ -383,6 +399,185 @@ final class RouteCollector
                 break;
             default:
                 $this->warn($file, $line, sprintf('route method %s is not analysed', $name));
+        }
+    }
+
+    /** @param list<Expr> $args */
+    private function startResource(bool $api, array $args, RouteContext $ctx, string $file, int $line): ?PendingResource
+    {
+        $name = isset($args[0]) ? $this->eval->string($args[0], $file) : null;
+        if ($name === null) {
+            $this->warn($file, $line, 'route resource name could not be resolved');
+
+            return null;
+        }
+        $resource = new PendingResource($api, $ctx, $file, $line);
+        $resource->name = $name;
+        $resource->controller = $this->resourceController($args[1] ?? null, $ctx, $file, $line);
+        if (isset($args[2])) {
+            $this->resourceOptions($args[2], $resource, $file, $line);
+        }
+
+        return $resource;
+    }
+
+    /** @param list<Expr> $args */
+    private function resources(bool $api, array $args, RouteContext $ctx, string $file, int $line): void
+    {
+        if (! isset($args[0]) || ! $args[0] instanceof Expr\Array_) {
+            $this->warn($file, $line, 'route resources could not be resolved');
+
+            return;
+        }
+        $template = new PendingResource($api, $ctx, $file, $line);
+        if (isset($args[1])) {
+            $this->resourceOptions($args[1], $template, $file, $line);
+        }
+        foreach ($args[0]->items as $item) {
+            $name = $item->key === null || $item->unpack ? null : $this->eval->string($item->key, $file);
+            if ($name === null) {
+                $this->warn($file, $line, 'route resource name could not be resolved');
+
+                continue;
+            }
+            $resource = clone $template;
+            $resource->name = $name;
+            $resource->controller = $this->resourceController($item->value, $ctx, $file, $line);
+            $this->emitResource($resource);
+        }
+    }
+
+    private function resourceController(?Expr $expr, RouteContext $ctx, string $file, int $line): ?string
+    {
+        $class = $expr === null ? null : $this->eval->string($expr, $file);
+        if ($class === null) {
+            $this->warn($file, $line, 'route action could not be resolved');
+
+            return null;
+        }
+
+        return RouteActionResolver::qualify($class, $ctx->namespace);
+    }
+
+    private function resourceOptions(Expr $options, PendingResource $resource, string $file, int $line): void
+    {
+        if (! $options instanceof Expr\Array_) {
+            $this->warn($file, $line, 'route resource options could not be resolved');
+
+            return;
+        }
+        foreach ($options->items as $item) {
+            $key = $item->key === null || $item->unpack ? null : $this->eval->string($item->key, $file);
+            $method = $key === null ? null : (self::RESOURCE_OPTIONS[strtolower($key)] ?? null);
+            if ($method === null) {
+                $this->warn($file, $line, $key === null ? 'route resource options could not be resolved' : sprintf('route resource option %s is not analysed', $key));
+
+                continue;
+            }
+            $this->resourceStep($method, $key, [$item->value], $resource, $file, $line);
+        }
+    }
+
+    /** @param list<Expr> $args */
+    private function resourceStep(string $m, string $name, array $args, PendingResource $resource, string $file, int $line): void
+    {
+        if (str_starts_with($m, 'where')) {
+            return;
+        }
+        switch ($m) {
+            case 'only':
+                $resource->only = $this->lists->stringList($args, $file, $line, 'resource methods', $this->warnings);
+                break;
+            case 'except':
+                $resource->except = $this->lists->stringList($args, $file, $line, 'resource methods', $this->warnings);
+                break;
+            case 'names':
+                if (isset($args[0]) && $args[0] instanceof Expr\Array_) {
+                    $resource->methodNames = [...$resource->methodNames, ...$this->stringMap($args[0], $file, $line, 'names')];
+                } else {
+                    $names = isset($args[0]) ? $this->eval->string($args[0], $file) : null;
+                    if ($names === null) {
+                        $this->warn($file, $line, 'route resource names could not be resolved');
+                    } else {
+                        $resource->names = $names;
+                    }
+                }
+                break;
+            case 'name':
+                $method = isset($args[0]) ? $this->eval->string($args[0], $file) : null;
+                $value = isset($args[1]) ? $this->eval->string($args[1], $file) : null;
+                if ($method === null || $value === null) {
+                    $this->warn($file, $line, 'route resource names could not be resolved');
+                } else {
+                    $resource->methodNames[$method] = $value;
+                }
+                break;
+            case 'parameters':
+                if (isset($args[0]) && $args[0] instanceof Expr\Array_) {
+                    $resource->parameters = [...$resource->parameters, ...$this->stringMap($args[0], $file, $line, 'parameters')];
+                } elseif (! isset($args[0]) || $this->eval->string($args[0], $file) !== 'singular') {
+                    $this->warn($file, $line, 'route resource parameters could not be resolved');
+                }
+                break;
+            case 'parameter':
+                $segment = isset($args[0]) ? $this->eval->string($args[0], $file) : null;
+                $value = isset($args[1]) ? $this->eval->string($args[1], $file) : null;
+                if ($segment === null || $value === null) {
+                    $this->warn($file, $line, 'route resource parameters could not be resolved');
+                } else {
+                    $resource->parameters[$segment] = $value;
+                }
+                break;
+            case 'middleware':
+                $resource->middleware = $this->stringList($args, $file, $line);
+                break;
+            case 'withoutmiddleware':
+                $resource->withoutMiddleware = [...$resource->withoutMiddleware, ...$this->stringList($args, $file, $line)];
+                break;
+            case 'scopebindings':
+                $resource->scopeBindings = true;
+                break;
+            case 'scoped':
+                $resource->scopeBindings = true;
+                if (isset($args[0]) && $args[0] instanceof Expr\Array_) {
+                    $resource->bindingFields = $this->stringMap($args[0], $file, $line, 'binding fields');
+                } elseif (isset($args[0])) {
+                    $this->warn($file, $line, 'route resource binding fields could not be resolved');
+                }
+                break;
+            case 'shallow':
+                if (isset($args[0]) && ! self::isConst($args[0], 'true') && ! self::isConst($args[0], 'false')) {
+                    $this->warn($file, $line, 'route resource shallow could not be resolved');
+                } else {
+                    $resource->shallow = ! isset($args[0]) || self::isConst($args[0], 'true');
+                }
+                break;
+            default:
+                $this->warn($file, $line, sprintf('route method %s is not analysed', $name));
+        }
+    }
+
+    /** @return array<string, string> string-keyed array literal; unresolvable pairs are dropped with a warning */
+    private function stringMap(Expr\Array_ $array, string $file, int $line, string $what): array
+    {
+        $out = [];
+        foreach ($array->items as $item) {
+            $key = $item->key === null || $item->unpack ? null : $this->eval->string($item->key, $file);
+            $value = $key === null ? null : $this->eval->string($item->value, $file);
+            if ($key === null || $value === null) {
+                $this->warn($file, $line, sprintf('route resource %s could not be resolved', $what));
+            } else {
+                $out[$key] = $value;
+            }
+        }
+
+        return $out;
+    }
+
+    private function emitResource(PendingResource $resource): void
+    {
+        foreach ($resource->routes() as $route) {
+            $this->routes[] = $route->toEntry();
         }
     }
 
