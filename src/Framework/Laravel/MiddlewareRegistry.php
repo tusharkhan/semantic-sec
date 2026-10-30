@@ -154,7 +154,8 @@ final class MiddlewareRegistry
     /** @param list<string> $bases */
     private function descendsFrom(string $alias, array $bases): bool
     {
-        $class = isset($this->aliases[$alias]) ? ltrim(explode(':', $this->aliases[$alias])[0], '\\') : null;
+        // An unaliased name is taken as a class FQN.
+        $class = isset($this->aliases[$alias]) ? ltrim(explode(':', $this->aliases[$alias])[0], '\\') : ltrim($alias, '\\');
         $seen = [];
         while ($class !== null && ! isset($seen[$class])) {
             $seen[$class] = true;

@@ -229,4 +229,19 @@ final class MiddlewareRegistryTest extends TestCase
         self::assertSame(MiddlewareKind::Other, $this->empty()->kind('can'));
         self::assertNull($this->empty()->ability('can'));
     }
+
+    public function testUnaliasedClassFqnIsClassifiedByAncestry(): void
+    {
+        [, $symbols] = $this->project([
+            'app/Http/Middleware/MyAuth.php' => '<?php namespace App\Http\Middleware; class MyAuth extends \Illuminate\Auth\Middleware\Authenticate {}',
+            'app/Http/Middleware/MyCan.php' => '<?php namespace App\Http\Middleware; class MyCan extends \Illuminate\Auth\Middleware\Authorize {}',
+        ]);
+        $r = new MiddlewareRegistry([], [], $symbols);
+        self::assertSame(MiddlewareKind::Authentication, $r->kind('App\Http\Middleware\MyAuth'));
+        self::assertSame(MiddlewareKind::Authentication, $r->kind('App\Http\Middleware\MyAuth:api'));
+        self::assertSame(MiddlewareKind::Authentication, $r->kind('Illuminate\Auth\Middleware\Authenticate'));
+        self::assertSame(MiddlewareKind::Ability, $r->kind('App\Http\Middleware\MyCan:view,post'));
+        self::assertSame(['ability' => 'view', 'arguments' => ['post']], $r->ability('App\Http\Middleware\MyCan:view,post'));
+        self::assertSame(MiddlewareKind::Other, $r->kind('App\Http\Middleware\Unknown'));
+    }
 }
