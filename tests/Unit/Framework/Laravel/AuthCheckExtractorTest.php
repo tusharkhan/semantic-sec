@@ -4,10 +4,14 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Tests\Unit\Framework\Laravel;
 
+use PhpParser\Node;
+use PhpParser\Node\Expr;
+use PhpParser\NodeFinder;
 use PHPUnit\Framework\TestCase;
 use TusharKhan\SemanticSec\Framework\DetectedFramework;
 use TusharKhan\SemanticSec\Framework\Laravel\AuthCheck;
 use TusharKhan\SemanticSec\Framework\Laravel\AuthCheckExtractor;
+use TusharKhan\SemanticSec\Framework\Laravel\AuthExpressions;
 use TusharKhan\SemanticSec\Framework\Laravel\ConstantEvaluator;
 use TusharKhan\SemanticSec\Framework\Laravel\ControllerMiddlewareReader;
 use TusharKhan\SemanticSec\Framework\Laravel\MiddlewareRegistry;
@@ -222,6 +226,44 @@ final class AuthCheckExtractorTest extends TestCase
         self::assertStringContainsString('PostPolicy::delete returns true', self::sources($out['DELETE /a'])[0]);
         self::assertSame(['controller_ability/authorization'], self::checks($out['DELETE /e']));
         self::assertSame(['controller_ability/authorization'], self::checks($out['DELETE /f']));
+    }
+
+    public function testAbilityModelCountsLoopCarriedAssignments(): void
+    {
+        $body = <<<'PHP'
+                public function a($c) { $x = new Post(); while ($c) { $this->authorize('delete', $x); $x = new User(); } }
+                public function b(Post $post, $c) { while ($c) { $this->authorize('delete', $post); $post = new User(); } }
+                public function c(Post $post, $c) { if ($c) { $post = new User(); } $this->authorize('delete', $post); }
+                public function d($c) { $x = new Post(); while ($c) { $this->authorize('delete', $x); $x = new Post(); } }
+                public function e(Post $post, $c) { while ($c) { $this->authorize('delete', $post); } $post = new User(); }
+                public function f(Post $post) { $this->authorize('delete', $post); }
+                public function g(Post $post, $c) { do { $this->authorize('delete', $post); $post = new User(); } while ($c); }
+            PHP;
+        $files = $this->controller($body) + self::BASE;
+        $parsed = [];
+        foreach ($files as $path => $code) {
+            $parsed[] = (new AstGenerator())->parse(new SourceFile($path, '/nonexistent/'.$path, $code));
+        }
+        $result = new ParseResult($parsed, []);
+        $symbols = (new SymbolTableBuilder())->build($result);
+        $eval = new ConstantEvaluator();
+        [$registry] = MiddlewareRegistry::fromProject($result, $symbols, new DetectedFramework('laravel', 11), $eval);
+        [$policies] = PolicyRegistry::fromProject($symbols, $eval);
+        $extractor = new AuthCheckExtractor($symbols, $registry, $policies, new ControllerMiddlewareReader($symbols, $eval), [], new RelationResolver($symbols), AuthUserModel::resolve($result, $symbols, $eval));
+        $modelOf = new \ReflectionMethod(AuthCheckExtractor::class, 'modelOf');
+        $got = [];
+        foreach (['a', 'b', 'c', 'd', 'e', 'f', 'g'] as $name) {
+            $method = $symbols->findMethod('App\Http\Controllers\C', $name);
+            self::assertNotNull($method);
+            $stmts = $method->node->stmts ?? [];
+            $call = (new NodeFinder())->findFirst($stmts, static fn (Node $n): bool => $n instanceof Expr\MethodCall && $n->name instanceof Node\Identifier && $n->name->toString() === 'authorize');
+            self::assertInstanceOf(Expr\MethodCall::class, $call);
+            $arg = $call->getArgs()[1]->value;
+            $context = new AuthExpressions($symbols, ['post' => 'App\Models\Post', 'c' => null], $stmts);
+            $got[$name] = $modelOf->invoke($extractor, $arg, $context, $arg->getStartFilePos());
+        }
+        $post = 'App\Models\Post';
+        self::assertSame(['a' => null, 'b' => null, 'c' => null, 'd' => $post, 'e' => $post, 'f' => $post, 'g' => null], $got);
     }
 
     public function testGateAndUserCanForms(): void

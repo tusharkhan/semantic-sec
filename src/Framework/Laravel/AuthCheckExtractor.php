@@ -722,23 +722,42 @@ final class AuthCheckExtractor
             return str_contains($expr->value, '\\') ? ltrim($expr->value, '\\') : null;
         }
         if ($expr instanceof Expr\Variable && is_string($expr->name)) {
-            $value = $context->lastAssignment($expr->name, $pos);
-            if ($value === null) {
-                $type = $context->paramType($expr->name);
+            $name = $expr->name;
+            if ($context->isUntouchedParam($name, $pos)) {
+                return self::paramModel($context->paramType($name));
+            }
+            // Every value it may hold (loop-carried ones and a rebound parameter's own type included) must name one model.
+            $values = $context->valuesAt($name, $pos);
+            if ($values === null) {
+                return null;
+            }
+            $models = $context->hasParam($name) ? [self::paramModel($context->paramType($name))] : [];
+            foreach ($values as $value) {
+                $models[] = $this->valueModel($value, $context, $depth);
+            }
+            $unique = array_unique($models, SORT_REGULAR);
 
-                return $type === null || in_array(strtolower($type), self::SCALARS, true) ? null : ltrim($type, '\\');
-            }
-            if ($value instanceof Expr\New_) {
-                return $value->class instanceof Node\Name ? self::modelName($value->class) : null;
-            }
-            if ($value instanceof Expr\Variable) {
-                return $this->modelOf($value, $context, $value->getStartFilePos(), $depth + 1);
-            }
-
-            return self::queriedModel($value);
+            return count($unique) === 1 ? $unique[0] : null;
         }
 
         return null;
+    }
+
+    private static function paramModel(?string $type): ?string
+    {
+        return $type === null || in_array(strtolower($type), self::SCALARS, true) ? null : ltrim($type, '\\');
+    }
+
+    private function valueModel(Expr $value, AuthExpressions $context, int $depth): ?string
+    {
+        if ($value instanceof Expr\New_) {
+            return $value->class instanceof Node\Name ? self::modelName($value->class) : null;
+        }
+        if ($value instanceof Expr\Variable) {
+            return $this->modelOf($value, $context, $value->getStartFilePos(), $depth + 1);
+        }
+
+        return self::queriedModel($value);
     }
 
     // X::find*|first*(..), or X::where*|query(..)->...->find*|first*|sole(..) with no fetch or read in between.

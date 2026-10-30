@@ -187,21 +187,19 @@ final class AuthExpressions
         return array_key_exists($name, $this->paramTypes);
     }
 
-    /** The last value assigned to $name that ends before $pos, or null; loop-carried values are not included. */
-    public function lastAssignment(string $name, int $pos): ?Expr
-    {
-        $values = $this->assignmentsBefore($name, $pos, false);
-
-        return $values === [] ? null : $values[count($values) - 1];
-    }
-
     /** @return list<Expr>|null every value assigned to the variable before it is read; null if it is rebound otherwise */
     public function assignedValues(Expr\Variable $var): ?array
     {
-        if (! is_string($var->name) || $this->isTainted($var->name)) {
+        return is_string($var->name) ? $this->valuesAt($var->name, $var->getStartFilePos()) : null;
+    }
+
+    /** @return list<Expr>|null every value $name may hold at $pos, loop-carried ones included; null if none or it is rebound otherwise */
+    public function valuesAt(string $name, int $pos): ?array
+    {
+        if ($this->isTainted($name)) {
             return null;
         }
-        $values = $this->assignmentsBefore($var->name, $var->getStartFilePos());
+        $values = $this->assignmentsBefore($name, $pos);
 
         return $values === [] ? null : $values;
     }
@@ -445,15 +443,15 @@ final class AuthExpressions
     }
 
     /**
-     * Values assigned before $pos, plus (with $loops) those later in a loop that encloses $pos, which run before the next pass.
+     * Values assigned before $pos, plus those later in a loop that encloses $pos, which run before the next pass.
      *
      * @return list<Expr>
      */
-    private function assignmentsBefore(string $name, int $pos, bool $loops = true): array
+    private function assignmentsBefore(string $name, int $pos): array
     {
         $found = [];
         foreach ($this->assignments[$name] ?? [] as [$end, $value]) {
-            if ($end < $pos || ($loops && $this->sharesLoop($pos, $end))) {
+            if ($end < $pos || $this->sharesLoop($pos, $end)) {
                 $found[] = $value;
             }
         }
