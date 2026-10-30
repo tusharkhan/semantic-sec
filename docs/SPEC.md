@@ -86,7 +86,22 @@ Built entirely from the AST. The tool never runs `artisan` or the app's own code
 
 **Authenticated-user and auth-id expressions.** Auth user: `auth()->user()`, `auth('x')->user()`, `Auth::user()`, `Auth::guard(..)->user()`, `request()->user()`, `$request->user()` (a `Request`/FormRequest parameter or `$request`), and `$this->user()` inside a FormRequest. Auth id: `auth()->id()`, `Auth::id()`, `<auth user>->id`, `<auth user>->getKey()`. A **variable** is one of these only if **every** assignment to it earlier in the method is such an expression and it is never a `foreach` key/value, a `list()`/`[...]` destructuring target, assigned by reference or through a compound operator, a `global`/`static` target, nor assigned inside a closure; otherwise it is unknown.
 
-**Where a check counts.** A check found in the action body (an ability call, an abort guard, a query scope, a custom helper) counts only in an **unconditional position**: no enclosing statement between it and the method or closure body may be an `if`/`elseif`/`else` body, a loop body, a `switch` case, a `match` arm body, a `try` body that has a `catch` (or the `catch` itself), a ternary branch, the right side of `&&`/`||`/`??`, or any closure/arrow function (this covers `->when(cond, fn …)`/`->unless`). The conditions of `if`/`elseif`/`while`/ternary/`match` are unconditional positions, since they always evaluate. A **non-throwing** ability call (`allows`, `denies`, `check`, `any`, `none`, `inspect`, `can`, `cannot`, `cant`) counts only in a **condition position**: the condition of `if`/`elseif`/ternary/`while`, a `match` subject or arm condition, the first argument of `abort_if|abort_unless|throw_if|throw_unless`, or the `return` expression of a FormRequest `authorize()`, reached through `!`, `&&`, `||`, `(bool)` or a comparison with `true`/`false`. Assigned to a variable, returned from a controller, or passed to a view/array/response, it is no check. `authorize()` / `Gate::authorize()` throw, so they count in any unconditional position.
+**Where a check counts.** A check found in the action body (an ability call, an abort guard, a query scope, a custom helper) counts only in an **unconditional position**. No enclosing construct between it and the method or closure body may be:
+- an `if` body, or any `elseif`/`else` branch (its condition included, since it runs only when the `if` fails; `else if` and `elseif` behave the same)
+- a loop body, a `switch` case, or a ternary branch
+- a `match` arm body, or any arm after the first (its conditions included)
+- a `try` body that has a `catch`, or the `catch` itself
+- the right side of `??`, or of `&&`/`||` outside a condition
+- any closure/arrow function (this covers `->when(cond, fn …)`/`->unless`)
+
+The condition of the first `if`, of `while`, of a ternary and of the `match` subject is an unconditional position. **Early return:** a check is also void when an earlier sibling statement, at its own level or an enclosing one, is an `if` (or one of its `elseif`/`else` branches) that directly `return`s a non-error value or `exit`s. Error values are `abort(…)`, `response(…, 4xx/5xx)` and `redirect()`/`to_route()` to login; a bare `return;` or an unknown value is non-error.
+
+A **non-throwing** ability call (`allows`, `denies`, `check`, `any`, `none`, `inspect`, `can`, `cannot`, `cant`) counts only in a **condition position**, reached through `!`, `(bool)`, `&&`, `||` or a comparison with `true`/`false`:
+- the condition of an `if`/`elseif`/ternary/`while`, or a `match` subject or arm condition (still subject to the rule above)
+- the first argument of `abort_if|abort_unless|throw_if|throw_unless`
+- the `return` expression of a FormRequest `authorize()`
+
+Through `&&`/`||` it follows the abort-guard any/every rule (see the table below). In a guard or return, every other operand must qualify where the rule says "every", for example `abort_unless(Gate::allows(..) || $flag)` gives no check. In an `if`/ternary/`while`/`match` condition the polarity is unclear, so it never counts. Assigned to a variable, returned from a controller, or passed to a view/array/response, it is no check. `authorize()` / `Gate::authorize()` throw, so they count in any unconditional position.
 
 **Authorization sources**, each recorded as an `AuthCheck` with a strength:
 
@@ -97,7 +112,7 @@ Built entirely from the AST. The tool never runs `artisan` or the app's own code
 | Policy found (registered in `AuthServiceProvider::$policies` / `Gate::policy()`, or by auto-discovery `App\Policies\{Model}Policy`) **and** invoked: `authorizeResource()` in the constructor, `$this->authorize()`, `Gate::authorize/allows/denies`, or `->can()` / `->cannot()` on the **authenticated user**. `$user->can()` on an action parameter is no check: Laravel injects an empty model when it isn't route-bound, and a route-bound one is chosen by the caller. | Authorization |
 | An ability call above whose model has no policy (unknown or unresolved model, or a Gate-only ability) | Authorization: triviality cannot be proven, and the explicit call is real intent |
 | A trivial policy: the ability method's body is only `return true;` or `return Response::allow();`, or `before()` is | **None**, flagged in the map |
-| FormRequest parameter whose `authorize()` (found on the class, a parent or a trait) contains an ability call (`can`/`cannot`/`cant`, `Gate::*`, `authorize`), a `$this->route(...)` reference, an auth comparison (as for abort guards, below), or a method call on the auth user other than `check`/`guest`/`id`/`getKey`/`getAuthIdentifier` (role checks such as `->isAdmin()`, `->hasRole()`) | Authorization |
+| FormRequest parameter whose `authorize()` (found on the class, a parent or a trait) contains **enforced** evidence: an ability call (`can`/`cannot`/`cant`, `Gate::*`, `authorize`), an auth comparison (with the guard polarity: `return` means "allowed"), or a method call on the auth user other than `check`/`guest`/`id`/`getKey`/`getAuthIdentifier` (role checks such as `->isAdmin()`). The evidence must sit in an unconditional, early-return-free position of `authorize()` and decide the `return` or a condition by the any/every rule, so `isAdmin() \|\| true` doesn't count. A `$this->route('p')` read alone is neither evidence nor coverage. | Authorization |
 | FormRequest `authorize()` that only checks login: `auth()->check()`, `Auth::check()`, `Auth::guard(..)->check()`, `$this->user() !== null`, `! is_null($this->user())`, `(bool) $this->user()`, `return $this->user();`, joined only by `&&`, `\|\|`, `!` and literals | Authentication only |
 | FormRequest with no `authorize()`, one that returns `true` or `Response::allow()`, or one with nothing auth-related | None |
 | `abort_if` / `abort_unless` / `throw_if` / `throw_unless` whose condition's **top-level** comparison is between an auth-user/auth-id operand and something other than `null`/`true`/`false`, **with the right polarity**: `abort_if`/`throw_if` need `!==`/`!=`, `abort_unless`/`throw_unless` need `===`/`==`; a leading `!` flips the requirement. Compound conditions: `abort_unless(A && B)` and `abort_if(A \|\| B)` count if **any** operand qualifies; `abort_unless(A \|\| B)` and `abort_if(A && B)` only if **every** operand does. `abort_if($user->id === auth()->id())` (blocks only yourself), a login check such as `abort_if(auth()->id() === null, 401)`, a bare `abort_unless($request->user(), 401)`, a call such as `$request->user()->isAdmin()`, or any other condition (e.g. `$order->status === 'paid'`) is **not** an AuthCheck; see `workflow_bypass` in §7. | Authorization |
@@ -105,7 +120,18 @@ Built entirely from the AST. The tool never runs `artisan` or the app's own code
 | Child binding scoped to its URL parent: `->scopeBindings()`, or Laravel's implicit scoping of a custom-keyed child (`/users/{user}/posts/{post:slug}`); `->withoutScopedBindings()` turns both off | Authorization only when another authorization-strength check covers the parent parameter (a `can:` naming it, or an ability call on its variable); otherwise **None** (`scoped to URL parent {user}`) |
 | Helper on the user's `auth_helpers` config list | Authorization |
 
-**Coverage (`covers`).** Each `AuthCheck` records the route parameter it is proven to protect, or `null` for route-wide/unknown: `can:ability,<param>` → that parameter (`can:ability,Class` → `null`); an ability call whose model argument is the untouched, route-bound parameter variable → that parameter; `authorizeResource(…, '<param>')` on a model-carrying method → that parameter; an authorization-strength scoped binding → the child parameter; a FormRequest that reads `$this->route('<p>')` → `<p>`; abort guards, query scopes, custom helpers and authentication → `null`. M4's `idor` selection may require the check to cover the identifier parameter (decided in M4).
+**Coverage (`covers`).** Each `AuthCheck` records the route parameter it is proven to protect. It is set **only when the check's strength is Authorization**, and is `null` otherwise or when the check is route-wide/unknown.
+
+| Check | `covers` |
+|---|---|
+| `can:ability,<param>` | that parameter (`can:ability,Class` → `null`) |
+| An ability call whose model argument is the untouched, route-bound parameter variable | that parameter |
+| `authorizeResource(…, '<param>')` on a model-carrying method | that parameter |
+| An authorization-strength scoped binding | the child parameter |
+| A FormRequest whose counted evidence uses `$this->route('<p>')` as an ability argument or comparison operand (directly, or through a variable whose every assignment is that read) | `<p>` |
+| Abort guards, query scopes, custom helpers, authentication | `null` |
+
+M4's `idor` selection may require the check to cover the identifier parameter (decided in M4).
 
 **`RouteEntry`** holds: HTTP methods, URI, name, action (`class`, `method`, or closure), resolved middleware, `withoutMiddleware`, `scopeBindings` (`null` default, `true`, `false`), parameters (name, binding field, optional, bound model class), checks, and the file and line it was defined on. URIs are printed as declared, including binding fields (`/posts/{post:slug}`), with a leading `/`, and with group prefixes and the automatic `/api` prefix applied. `map:` lists are compared as sets.
 
