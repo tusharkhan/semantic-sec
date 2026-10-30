@@ -10,6 +10,7 @@ use TusharKhan\SemanticSec\Analysis\Severity;
 use TusharKhan\SemanticSec\Config\Config;
 use TusharKhan\SemanticSec\Framework\DetectedFramework;
 use TusharKhan\SemanticSec\Framework\Laravel\ConstantEvaluator;
+use TusharKhan\SemanticSec\Framework\Laravel\RouteEntry;
 use TusharKhan\SemanticSec\Framework\Laravel\RouteFile;
 use TusharKhan\SemanticSec\Framework\Laravel\RouteFileLocator;
 use TusharKhan\SemanticSec\Parsing\AstGenerator;
@@ -226,12 +227,17 @@ PHP,
         ], $warnings);
     }
 
-    public function testWithoutMiddlewareWarns(): void
+    public function testProviderGroupWithoutMiddlewareIsCarried(): void
     {
         $root = $this->provider("        Route::withoutMiddleware('auth')->group(base_path('routes/admin.php'));");
         [$files, $warnings] = $this->locate($root, 10);
-        self::assertCount(1, $files);
-        self::assertSame(['app/Providers/RouteServiceProvider.php:10: withoutMiddleware on route-file groups is not analysed'], $warnings);
+        self::assertSame(['auth'], $files[0]->withoutMiddleware);
+        self::assertSame([], $warnings);
+
+        $root = $this->provider("        Route::group(['excluded_middleware' => ['auth', \$x]], base_path('routes/admin.php'));");
+        [$files, $warnings] = $this->locate($root, 10);
+        self::assertSame(['auth', RouteEntry::UNRESOLVED], $files[0]->withoutMiddleware);
+        self::assertSame(['app/Providers/RouteServiceProvider.php:10: route middleware could not be resolved'], $warnings);
     }
 
     public function testNestedGroupWarns(): void

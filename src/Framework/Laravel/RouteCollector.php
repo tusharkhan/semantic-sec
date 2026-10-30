@@ -278,7 +278,7 @@ final class RouteCollector
             case 'middleware':
                 return $ctx->merge(new RouteContext(middleware: $this->stringList($args, $file, $line)));
             case 'withoutmiddleware':
-                return $ctx->merge(new RouteContext(withoutMiddleware: $this->stringList($args, $file, $line)));
+                return $ctx->merge(new RouteContext(withoutMiddleware: $this->withoutList($args, $file, $line)));
             case 'can':
                 $can = $this->can($args, $file, $line);
 
@@ -377,7 +377,7 @@ final class RouteCollector
                 $route->middleware = [...$route->middleware, ...$this->stringList($args, $file, $line)];
                 break;
             case 'withoutmiddleware':
-                $route->withoutMiddleware = [...$route->withoutMiddleware, ...$this->stringList($args, $file, $line)];
+                $route->withoutMiddleware = [...$route->withoutMiddleware, ...$this->withoutList($args, $file, $line)];
                 break;
             case 'can':
                 $can = $this->can($args, $file, $line);
@@ -471,11 +471,15 @@ final class RouteCollector
         foreach ($options->items as $item) {
             $key = $item->key === null || $item->unpack ? null : $this->eval->string($item->key, $file);
             if ($key !== null && in_array(strtolower($key), ['middleware_for', 'excluded_middleware_for'], true)) {
+                $before = count($this->warnings);
                 $map = $this->perMethodMiddleware($item->value, $file, $line);
                 if (strtolower($key) === 'middleware_for') {
                     $resource->middlewareFor = $map;
                 } else {
                     $resource->withoutMiddlewareFor = $map;
+                    if (count($this->warnings) > $before) {
+                        $resource->withoutMiddleware[] = RouteEntry::UNRESOLVED;
+                    }
                 }
 
                 continue;
@@ -559,6 +563,9 @@ final class RouteCollector
                 $methods = $this->strictList($args[0] ?? null, $file, $line);
                 $middleware = $this->strictList($args[1] ?? null, $file, $line);
                 if ($methods === null || $middleware === null) {
+                    if ($m === 'withoutmiddlewarefor') {
+                        $resource->withoutMiddleware[] = RouteEntry::UNRESOLVED;
+                    }
                     break;
                 }
                 if ($m === 'middlewarefor' && $resource->middleware !== null) {
@@ -573,7 +580,7 @@ final class RouteCollector
                 }
                 break;
             case 'withoutmiddleware':
-                $resource->withoutMiddleware = [...$resource->withoutMiddleware, ...$this->stringList($args, $file, $line)];
+                $resource->withoutMiddleware = [...$resource->withoutMiddleware, ...$this->withoutList($args, $file, $line)];
                 break;
             case 'scopebindings':
                 $resource->scopeBindings = true;
@@ -663,6 +670,23 @@ final class RouteCollector
     private function stringList(array $args, string $file, int $line): array
     {
         return $this->lists->stringList($args, $file, $line, 'middleware', $this->warnings);
+    }
+
+    /**
+     * Like stringList(), but records an unresolvable item as RouteEntry::UNRESOLVED.
+     *
+     * @param  list<Expr>  $args
+     * @return list<string>
+     */
+    private function withoutList(array $args, string $file, int $line): array
+    {
+        $before = count($this->warnings);
+        $list = $this->stringList($args, $file, $line);
+        if (count($this->warnings) > $before) {
+            $list[] = RouteEntry::UNRESOLVED;
+        }
+
+        return $list;
     }
 
     private function warn(string $file, int $line, string $message): void

@@ -6,6 +6,9 @@ namespace TusharKhan\SemanticSec\Framework\Laravel;
 
 final readonly class RouteEntry
 {
+    // Marks a withoutMiddleware item that could not be resolved.
+    public const UNRESOLVED = '<unresolved>';
+
     /**
      * @param  list<string>  $methods  upper-case as declared (no implicit HEAD)
      * @param  list<string>  $middleware  declared + group/inherited, raw-resolved strings

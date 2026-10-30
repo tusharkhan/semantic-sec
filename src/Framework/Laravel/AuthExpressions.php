@@ -6,7 +6,10 @@ namespace TusharKhan\SemanticSec\Framework\Laravel;
 
 use PhpParser\Node;
 use PhpParser\Node\Expr;
+use PhpParser\Node\Stmt;
 use PhpParser\NodeFinder;
+use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitorAbstract;
 use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTable;
 
 /** Recognises authenticated-user, auth-id, relation-read and where-scope expressions inside one action body. */
@@ -22,6 +25,9 @@ final class AuthExpressions
     // Calls that leave the user's relation scope.
     private const SCOPE_RESETS = ['newquery', 'query', 'newmodelquery', 'replicate', 'getmodel', 'getrelated', 'newmodelinstance', 'make'];
 
+    // Calls on the user that only tell whether someone is logged in.
+    private const LOGIN_CALLS = ['check', 'guest', 'id', 'getkey', 'getauthidentifier'];
+
     private const AUTH_FACADES = ['Illuminate\\Support\\Facades\\Auth', 'Auth'];
 
     private const REQUEST = 'Illuminate\\Http\\Request';
@@ -31,17 +37,94 @@ final class AuthExpressions
     /** @var array<string, list<array{int, Expr}>> var => [assignment end position, value] in source order */
     private array $assignments = [];
 
+    /** @var array<string, true> variables written other than by a plain top-level assignment */
+    private array $tainted = [];
+
     /**
-     * @param  array<string, ?string>  $paramTypes  action parameter name => type
+     * @param  array<string, ?string>  $paramTypes  action parameter name => native type
      * @param  array<Node>  $body
+     * @param  bool  $thisIsRequest  inside a FormRequest, where $this->user() is the authenticated user
      */
-    public function __construct(private readonly SymbolTable $symbols, private readonly array $paramTypes, array $body)
+    public function __construct(private readonly SymbolTable $symbols, private readonly array $paramTypes, array $body, private readonly bool $thisIsRequest = false)
     {
-        foreach ((new NodeFinder())->findInstanceOf($body, Expr\Assign::class) as $assign) {
-            if ($assign->var instanceof Expr\Variable && is_string($assign->var->name)) {
-                $this->assignments[$assign->var->name][] = [$assign->getEndFilePos(), $assign->expr];
+        $visitor = new class () extends NodeVisitorAbstract {
+            /** @var array<string, list<array{int, Expr}>> */
+            public array $assignments = [];
+
+            /** @var array<string, true> */
+            public array $tainted = [];
+
+            private int $depth = 0;
+
+            public function enterNode(Node $node): null
+            {
+                if (self::opensScope($node)) {
+                    $this->depth++;
+                    foreach ($node instanceof Expr\Closure ? $node->uses : [] as $use) {
+                        if ($use->byRef) {
+                            $this->taint($use->var);
+                        }
+                    }
+                }
+                if ($node instanceof Expr\Assign) {
+                    if ($this->depth === 0 && $node->var instanceof Expr\Variable && is_string($node->var->name)) {
+                        $this->assignments[$node->var->name][] = [$node->getEndFilePos(), $node->expr];
+                    } else {
+                        $this->taint($node->var);
+                    }
+                } elseif ($node instanceof Expr\AssignRef) {
+                    $this->taint($node->var);
+                    $this->taint($node->expr);
+                } elseif ($node instanceof Expr\AssignOp || $node instanceof Expr\PreInc || $node instanceof Expr\PostInc
+                    || $node instanceof Expr\PreDec || $node instanceof Expr\PostDec) {
+                    $this->taint($node->var);
+                } elseif ($node instanceof Stmt\Foreach_) {
+                    $this->taint($node->valueVar);
+                    if ($node->keyVar !== null) {
+                        $this->taint($node->keyVar);
+                    }
+                } elseif ($node instanceof Stmt\Global_ || $node instanceof Stmt\Unset_) {
+                    foreach ($node->vars as $var) {
+                        $this->taint($var);
+                    }
+                } elseif ($node instanceof Stmt\Static_) {
+                    foreach ($node->vars as $var) {
+                        $this->taint($var->var);
+                    }
+                } elseif ($node instanceof Stmt\Catch_ && $node->var !== null) {
+                    $this->taint($node->var);
+                }
+
+                return null;
             }
-        }
+
+            public function leaveNode(Node $node): null
+            {
+                if (self::opensScope($node)) {
+                    $this->depth--;
+                }
+
+                return null;
+            }
+
+            private static function opensScope(Node $node): bool
+            {
+                return $node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction || $node instanceof Stmt\Function_ || $node instanceof Stmt\ClassLike;
+            }
+
+            private function taint(Node $target): void
+            {
+                $vars = $target instanceof Expr\Variable ? [$target] : (new NodeFinder())->findInstanceOf([$target], Expr\Variable::class);
+                foreach ($vars as $var) {
+                    if (is_string($var->name)) {
+                        $this->tainted[$var->name] = true;
+                    }
+                }
+            }
+        };
+        (new NodeTraverser($visitor))->traverse($body);
+        $this->assignments = $visitor->assignments;
+        $this->tainted = $visitor->tainted;
     }
 
     public function paramType(string $name): ?string
@@ -57,14 +140,15 @@ final class AuthExpressions
     /** The last value assigned to $name that ends before $pos, or null. */
     public function lastAssignment(string $name, int $pos): ?Expr
     {
-        $found = null;
-        foreach ($this->assignments[$name] ?? [] as [$end, $value]) {
-            if ($end < $pos) {
-                $found = $value;
-            }
-        }
+        $values = $this->assignmentsBefore($name, $pos);
 
-        return $found;
+        return $values === [] ? null : $values[count($values) - 1];
+    }
+
+    /** True for an action parameter that is never reassigned or rebound before $pos. */
+    public function isUntouchedParam(string $name, int $pos): bool
+    {
+        return $this->hasParam($name) && ! isset($this->tainted[$name]) && $this->lastAssignment($name, $pos) === null;
     }
 
     public function isAuthUser(Expr $expr): bool
@@ -73,9 +157,7 @@ final class AuthExpressions
             return self::isAuthFacade($expr->class) && self::name($expr) === 'user';
         }
         if ($expr instanceof Expr\Variable) {
-            $value = is_string($expr->name) && $expr->name !== 'this' ? $this->lastAssignment($expr->name, $expr->getStartFilePos()) : null;
-
-            return $value !== null && $this->isAuthUser($value);
+            return $this->variableIs($expr, $this->isAuthUser(...));
         }
         if (! self::isCall($expr) || self::name($expr) !== 'user') {
             return false;
@@ -94,9 +176,7 @@ final class AuthExpressions
             return $expr->name instanceof Node\Identifier && $expr->name->toString() === 'id' && $this->isAuthUser($expr->var);
         }
         if ($expr instanceof Expr\Variable) {
-            $value = is_string($expr->name) && $expr->name !== 'this' ? $this->lastAssignment($expr->name, $expr->getStartFilePos()) : null;
-
-            return $value !== null && $this->isAuthId($value);
+            return $this->variableIs($expr, $this->isAuthId(...));
         }
         if (! self::isCall($expr)) {
             return false;
@@ -109,20 +189,77 @@ final class AuthExpressions
     /** True when the subtree compares an auth-user or auth-id operand for (in)equality with something other than null/true/false. */
     public function comparesAuth(Node $node): bool
     {
-        return (new NodeFinder())->findFirst([$node], fn (Node $n): bool => ($n instanceof Expr\BinaryOp\Identical || $n instanceof Expr\BinaryOp\NotIdentical
-            || $n instanceof Expr\BinaryOp\Equal || $n instanceof Expr\BinaryOp\NotEqual)
-            && (($this->isAuth($n->left) && ! self::isLiteral($n->right)) || ($this->isAuth($n->right) && ! self::isLiteral($n->left)))) !== null;
+        return (new NodeFinder())->findFirst([$node], fn (Node $n): bool => $n instanceof Expr && $this->isAuthComparison($n, null)) !== null;
     }
 
-    // A null/true/false comparison only checks that someone is logged in.
-    private static function isLiteral(Expr $expr): bool
+    /**
+     * Whether a guard condition proves the user matches. *_unless want an equality ($equal), *_if an inequality;
+     * `!` flips; unless(A && B) / if(A || B) need any operand, unless(A || B) / if(A && B) every operand.
+     */
+    public function guardQualifies(Expr $cond, bool $equal): bool
     {
-        return $expr instanceof Expr\ConstFetch && in_array(strtolower($expr->name->toString()), ['null', 'true', 'false'], true);
+        if ($cond instanceof Expr\BooleanNot) {
+            return $this->guardQualifies($cond->expr, ! $equal);
+        }
+        $and = $cond instanceof Expr\BinaryOp\BooleanAnd || $cond instanceof Expr\BinaryOp\LogicalAnd;
+        $or = $cond instanceof Expr\BinaryOp\BooleanOr || $cond instanceof Expr\BinaryOp\LogicalOr;
+        if ($cond instanceof Expr\BinaryOp && ($and || $or)) {
+            $left = $this->guardQualifies($cond->left, $equal);
+            $right = $this->guardQualifies($cond->right, $equal);
+
+            return $and === $equal ? ($left || $right) : ($left && $right);
+        }
+
+        return $this->isAuthComparison($cond, $equal);
     }
 
-    private function isAuth(Expr $expr): bool
+    /**
+     * Login-only boolean expression (auth()->check(), $this->user() !== null, ...).
+     *
+     * @return bool|null true if it checks login, false if it is only literals, null if it does anything else
+     */
+    public function loginOnly(Expr $expr): ?bool
     {
-        return $this->isAuthUser($expr) || $this->isAuthId($expr);
+        if ($expr instanceof Expr\BooleanNot) {
+            return $this->loginOnly($expr->expr);
+        }
+        if ($expr instanceof Expr\BinaryOp\BooleanAnd || $expr instanceof Expr\BinaryOp\BooleanOr
+            || $expr instanceof Expr\BinaryOp\LogicalAnd || $expr instanceof Expr\BinaryOp\LogicalOr) {
+            $left = $this->loginOnly($expr->left);
+            $right = $this->loginOnly($expr->right);
+
+            return $left === null || $right === null ? null : $left || $right;
+        }
+        if (self::isConst($expr, ['true', 'false'])) {
+            return false;
+        }
+        if ($expr instanceof Expr\Cast\Bool_) {
+            return $this->isAuthUser($expr->expr) ? true : null;
+        }
+        if ($this->isAuthUser($expr)) {
+            return true;
+        }
+        if (self::isFunc($expr, 'is_null')) {
+            $args = self::args($expr);
+
+            return count($args) === 1 && $this->isAuth($args[0]) ? true : null;
+        }
+        if ($expr instanceof Expr\BinaryOp\Identical || $expr instanceof Expr\BinaryOp\NotIdentical
+            || $expr instanceof Expr\BinaryOp\Equal || $expr instanceof Expr\BinaryOp\NotEqual) {
+            return ($this->isAuth($expr->left) && self::isConst($expr->right, ['null'])) || ($this->isAuth($expr->right) && self::isConst($expr->left, ['null'])) ? true : null;
+        }
+        $name = self::name($expr);
+        if ($expr instanceof Expr\StaticCall) {
+            return self::isAuthFacade($expr->class) && in_array($name, ['check', 'guest'], true) ? true : null;
+        }
+
+        return self::isCall($expr) && in_array($name, ['check', 'guest'], true) && self::isGuard($expr->var) ? true : null;
+    }
+
+    /** A method call on the authenticated user other than a login check or an ability call (->isAdmin(), ->hasRole()). */
+    public function isRoleCall(Expr $expr): bool
+    {
+        return self::isCall($expr) && ! in_array(self::name($expr), [...self::LOGIN_CALLS, 'can', 'cannot', 'cant'], true) && $this->isAuthUser($expr->var);
     }
 
     /** A chain rooted at the auth user whose first call is a relation and a later call is a read. */
@@ -233,6 +370,68 @@ final class AuthExpressions
         return $expr instanceof Expr\FuncCall && self::name($expr) === $function;
     }
 
+    /** @return list<Expr> */
+    private function assignmentsBefore(string $name, int $pos): array
+    {
+        $found = [];
+        foreach ($this->assignments[$name] ?? [] as [$end, $value]) {
+            if ($end < $pos) {
+                $found[] = $value;
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * A variable is an auth expression only when every earlier assignment is one and nothing else writes it.
+     *
+     * @param  callable(Expr): bool  $test
+     */
+    private function variableIs(Expr\Variable $var, callable $test): bool
+    {
+        if (! is_string($var->name) || $var->name === 'this' || isset($this->tainted[$var->name])) {
+            return false;
+        }
+        $values = $this->assignmentsBefore($var->name, $var->getStartFilePos());
+        foreach ($values as $value) {
+            if (! $test($value)) {
+                return false;
+            }
+        }
+
+        return $values !== [];
+    }
+
+    /** An (in)equality between an auth operand and a non-literal; a null $equal accepts either polarity. */
+    private function isAuthComparison(Expr $n, ?bool $equal): bool
+    {
+        $isEqual = $n instanceof Expr\BinaryOp\Identical || $n instanceof Expr\BinaryOp\Equal;
+        $isNotEqual = $n instanceof Expr\BinaryOp\NotIdentical || $n instanceof Expr\BinaryOp\NotEqual;
+        if (! $n instanceof Expr\BinaryOp || ! ($isEqual || $isNotEqual) || ($equal !== null && $equal !== $isEqual)) {
+            return false;
+        }
+
+        return ($this->isAuth($n->left) && ! self::isLiteral($n->right)) || ($this->isAuth($n->right) && ! self::isLiteral($n->left));
+    }
+
+    // A null/true/false comparison only checks that someone is logged in.
+    private static function isLiteral(Expr $expr): bool
+    {
+        return self::isConst($expr, ['null', 'true', 'false']);
+    }
+
+    /** @param list<string> $names */
+    private static function isConst(Expr $expr, array $names): bool
+    {
+        return $expr instanceof Expr\ConstFetch && in_array(strtolower($expr->name->toString()), $names, true);
+    }
+
+    private function isAuth(Expr $expr): bool
+    {
+        return $this->isAuthUser($expr) || $this->isAuthId($expr);
+    }
+
     // auth(), auth('x'), auth()->guard(..), Auth::guard(..)
     private static function isGuard(Node $expr): bool
     {
@@ -252,7 +451,7 @@ final class AuthExpressions
             return false;
         }
         if ($var->name === 'this') {
-            return false;
+            return $this->thisIsRequest;
         }
 
         return $var->name === 'request' || Ancestry::descendsFrom($this->symbols, $this->paramTypes[$var->name] ?? null, [self::REQUEST, self::FORM_REQUEST]);

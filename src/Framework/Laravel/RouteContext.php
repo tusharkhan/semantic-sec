@@ -24,7 +24,7 @@ final readonly class RouteContext
 
     public static function fromFile(RouteFile $file): self
     {
-        return new self(trim($file->prefix, '/'), $file->middleware, [], '', null, $file->namespace === null ? null : trim($file->namespace, '\\'));
+        return new self(trim($file->prefix, '/'), $file->middleware, $file->withoutMiddleware, '', null, $file->namespace === null ? null : trim($file->namespace, '\\'));
     }
 
     /** Merges an inner group's attributes the way Laravel's RouteGroup::merge does. */

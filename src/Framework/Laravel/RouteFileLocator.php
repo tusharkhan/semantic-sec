@@ -234,6 +234,7 @@ final class RouteFileLocator
         $file = $class->file;
         $prefix = '';
         $middleware = [];
+        $without = [];
         $namespace = null;
 
         if ($group instanceof Expr\StaticCall) {
@@ -252,7 +253,7 @@ final class RouteFileLocator
                         continue;
                     }
                     $key = $item->key->value;
-                    $this->applyAttribute($key, [$item->value], $item, $file, $class, $eval, $prefix, $middleware, $namespace, $warnings);
+                    $this->applyAttribute($key, [$item->value], $item, $file, $class, $eval, $prefix, $middleware, $without, $namespace, $warnings);
                 }
             }
         } else {
@@ -280,7 +281,7 @@ final class RouteFileLocator
                         $values[] = $a->value;
                     }
                 }
-                $this->applyAttribute(strtolower($call->name->toString()), $values, $call, $file, $class, $eval, $prefix, $middleware, $namespace, $warnings);
+                $this->applyAttribute(strtolower($call->name->toString()), $values, $call, $file, $class, $eval, $prefix, $middleware, $without, $namespace, $warnings);
             }
         }
 
@@ -295,7 +296,7 @@ final class RouteFileLocator
 
             return true;
         }
-        $files[] = new RouteFile($path, $prefix, $middleware, $namespace);
+        $files[] = new RouteFile($path, $prefix, $middleware, $namespace, $without);
 
         return true;
     }
@@ -303,9 +304,10 @@ final class RouteFileLocator
     /**
      * @param  list<Expr>  $values
      * @param  list<string>  $middleware
+     * @param  list<string>  $without
      * @param  list<string>  $warnings
      */
-    private function applyAttribute(string $name, array $values, Node $at, string $file, ClassSymbol $class, ConstantEvaluator $eval, string &$prefix, array &$middleware, ?string &$namespace, array &$warnings): void
+    private function applyAttribute(string $name, array $values, Node $at, string $file, ClassSymbol $class, ConstantEvaluator $eval, string &$prefix, array &$middleware, array &$without, ?string &$namespace, array &$warnings): void
     {
         $line = $at->getStartLine();
         switch (strtolower($name)) {
@@ -329,20 +331,24 @@ final class RouteFileLocator
                 }
                 break;
             case 'middleware':
+            case 'withoutmiddleware':
+            case 'excluded_middleware':
+                $exclude = strtolower($name) !== 'middleware';
                 foreach ($values as $value) {
                     foreach ($value instanceof Expr\Array_ ? array_map(fn ($i) => $i->value, $value->items) : [$value] as $item) {
                         $str = $eval->string($item, $file, $class);
-                        if ($str !== null) {
+                        if ($str !== null && $exclude) {
+                            $without[] = $str;
+                        } elseif ($str !== null) {
                             $middleware[] = $str;
                         } elseif (! $this->isNull($item)) {
                             $warnings[] = sprintf('%s:%d: route middleware could not be resolved', $file, $line);
+                            if ($exclude) {
+                                $without[] = RouteEntry::UNRESOLVED;
+                            }
                         }
                     }
                 }
-                break;
-            case 'withoutmiddleware':
-            case 'excluded_middleware':
-                $warnings[] = sprintf('%s:%d: withoutMiddleware on route-file groups is not analysed', $file, $line);
                 break;
         }
     }
