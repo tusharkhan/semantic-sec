@@ -163,6 +163,9 @@ final class MiddlewareRegistryTest extends TestCase
         self::assertSame(MiddlewareKind::Ability, $r->kind('can:update,post'));
         self::assertSame(MiddlewareKind::Other, $r->kind('throttle:60,1'));
         self::assertSame(MiddlewareKind::Other, $r->kind('authx'));
+        // AuthenticateSession only re-validates an existing session; it never rejects a guest.
+        self::assertSame(MiddlewareKind::Other, $r->kind('auth.session'));
+        self::assertSame(MiddlewareKind::Other, $r->kind('Illuminate\Session\Middleware\AuthenticateSession'));
         self::assertSame(['ability' => 'update', 'arguments' => ['post']], $r->ability('can:update,post'));
         self::assertNull($r->ability('auth'));
     }

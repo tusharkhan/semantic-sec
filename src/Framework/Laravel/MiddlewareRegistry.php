@@ -38,7 +38,6 @@ final class MiddlewareRegistry
     private const AUTHENTICATION_CLASSES = [
         'Illuminate\\Auth\\Middleware\\Authenticate',
         'Illuminate\\Auth\\Middleware\\AuthenticateWithBasicAuth',
-        'Illuminate\\Session\\Middleware\\AuthenticateSession',
         'Illuminate\\Auth\\Middleware\\EnsureEmailIsVerified',
         'Illuminate\\Routing\\Middleware\\ValidateSignature',
     ];
@@ -122,7 +121,7 @@ final class MiddlewareRegistry
     public function kind(string $canonical): MiddlewareKind
     {
         $name = explode(':', $canonical, 2)[0];
-        if (in_array($name, ['auth', 'auth.basic', 'auth.session', 'verified', 'signed'], true)) {
+        if (in_array($name, ['auth', 'auth.basic', 'verified', 'signed'], true)) {
             return MiddlewareKind::Authentication;
         }
         if ($this->isAbility($canonical)) {

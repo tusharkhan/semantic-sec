@@ -55,7 +55,7 @@ final class MapCommand extends Command
         }
 
         if ($format === 'json') {
-            $output->writeln(json_encode($this->toArray($map, $framework, $warnings), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+            $output->writeln(json_encode($this->toArray($map, $framework, $warnings), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR));
         } else {
             $this->renderConsole($output, $map, $warnings);
         }
@@ -153,15 +153,15 @@ final class MapCommand extends Command
     {
         $lines = [];
         foreach ($route->checks as $check) {
-            $kind = $check->kind->value;
-            $lines[$check->kind->value.'|'.$check->strength->value.'|'.$check->source] = match ($check->strength) {
-                AuthStrength::Authorization => $kind,
-                AuthStrength::Authentication => $kind.' (auth only)',
-                AuthStrength::None => sprintf('%s (none: %s)', $kind, $check->source),
-            };
+            $line = $check->kind->value.match ($check->strength) {
+                AuthStrength::Authorization => '',
+                AuthStrength::Authentication => ' (auth only)',
+                AuthStrength::None => ' (none)',
+            }.': '.$check->source;
+            $lines[$line] = true;
         }
 
-        return array_values($lines);
+        return array_keys($lines);
     }
 
     /**
@@ -178,6 +178,10 @@ final class MapCommand extends Command
                 'name' => $route->name,
                 'action' => ['class' => $route->action->class, 'method' => $route->action->method, 'closure' => $route->action->isClosure()],
                 'middleware' => $route->middleware,
+                'withoutMiddleware' => $route->withoutMiddleware,
+                'scopeBindings' => $route->scopeBindings,
+                'file' => $route->file,
+                'line' => $route->line,
                 'parameters' => array_map(static fn ($p): array => ['name' => $p->name, 'field' => $p->field, 'optional' => $p->optional, 'boundModel' => $p->boundModel], $route->parameters),
                 'checks' => array_map(static fn ($c): array => ['kind' => $c->kind->value, 'strength' => $c->strength->value, 'source' => $c->source, 'file' => $c->file, 'line' => $c->line, 'covers' => $c->covers], $route->checks),
             ];

@@ -380,6 +380,11 @@ final class RouteFileLocator
                     $namespace = null;
                     break;
                 }
+                // Laravel 11+ apps drop the property; the framework default is null.
+                if ($this->isUnsetNamespaceProperty($expr, $class)) {
+                    $namespace = null;
+                    break;
+                }
                 $namespace = $eval->string($expr, $file, $class);
                 if ($namespace === null) {
                     $warnings[] = sprintf('%s:%d: route namespace could not be resolved', $file, $line);
@@ -406,6 +411,18 @@ final class RouteFileLocator
                 }
                 break;
         }
+    }
+
+    // $this->namespace that the app never declares, or declares without a value.
+    private function isUnsetNamespaceProperty(Expr $expr, ClassSymbol $class): bool
+    {
+        if (! $expr instanceof Expr\PropertyFetch || ! $expr->var instanceof Expr\Variable || $expr->var->name !== 'this'
+            || ! $expr->name instanceof Node\Identifier || $expr->name->toString() !== 'namespace') {
+            return false;
+        }
+        $property = $class->properties['namespace'] ?? null;
+
+        return $property === null || $property->default === null || $this->isNull($property->default);
     }
 
     private function isNull(Expr $e): bool

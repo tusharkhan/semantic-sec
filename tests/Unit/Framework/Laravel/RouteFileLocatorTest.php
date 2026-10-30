@@ -295,4 +295,15 @@ PHP,
         ], $this->shape($files));
         self::assertSame(['app/Providers/PackageServiceProvider.php:14: route file path could not be resolved'], $warnings);
     }
+
+    public function testUndeclaredNamespacePropertyIsNull(): void
+    {
+        $root = $this->project([
+            'app/Providers/RouteServiceProvider.php' => "<?php\nnamespace App\\Providers;\nuse Illuminate\\Foundation\\Support\\Providers\\RouteServiceProvider as ServiceProvider;\nuse Illuminate\\Support\\Facades\\Route;\nclass RouteServiceProvider extends ServiceProvider\n{\n    public function boot(): void\n    {\n        Route::middleware('web')->namespace(\$this->namespace)->group(base_path('routes/admin.php'));\n    }\n}\n",
+            'routes/admin.php' => '<?php',
+        ]);
+        [$files, $warnings] = $this->locate($root, 10);
+        self::assertSame([['routes/admin.php', '', ['web'], null]], $this->shape($files));
+        self::assertSame([], $warnings);
+    }
 }
