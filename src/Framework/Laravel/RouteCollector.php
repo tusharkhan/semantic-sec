@@ -298,7 +298,7 @@ final class RouteCollector
             if ($domain === null) {
                 $this->warn($file, $line, 'route domain could not be resolved');
 
-                return $ctx;
+                return $ctx->merge(new RouteContext(resetDomain: true));
             }
 
             return $ctx->merge(new RouteContext(domain: $domain));
@@ -405,6 +405,7 @@ final class RouteCollector
             $domain = isset($args[0]) ? $this->eval->string($args[0], $file) : null;
             if ($domain === null) {
                 $this->warn($file, $line, 'route domain could not be resolved');
+                $route->domainUnknown = true;
             } else {
                 $route->domain = $domain;
             }

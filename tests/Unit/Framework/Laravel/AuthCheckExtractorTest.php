@@ -604,6 +604,7 @@ final class AuthCheckExtractorTest extends TestCase
         self::assertSame([], self::checks($out['GET /a']));
         self::assertSame([], self::checks($out['GET /b']));
         self::assertSame(['query_scope/authorization'], self::checks($out['GET /c']));
+        self::assertSame([], self::checks($out['GET /d']));
     }
 
     public function testRelationChainStopsAtQueryReset(): void
@@ -1414,5 +1415,62 @@ final class AuthCheckExtractorTest extends TestCase
         self::assertSame([], self::checks($out['GET /a']));
         self::assertSame([], self::checks($out['GET /b']));
         self::assertSame([], self::checks($out['GET /c']));
+    }
+
+    /** @return array<string, string> */
+    private function accountFiles(): array
+    {
+        $files = $this->controller("    public function a(Account \$account, Post \$post) {}\n") + ['app/Models/Account.php' => '<?php namespace App\Models; class Account extends \Illuminate\Database\Eloquent\Model {}'];
+        $files['app/Http/Controllers/C.php'] = str_replace('use App\Models\Post;', "use App\\Models\\Post;\nuse App\\Models\\Account;", $files['app/Http/Controllers/C.php']);
+
+        return $files;
+    }
+
+    public function testDomainParentUncoveredScopeIsNone(): void
+    {
+        [$out] = $this->analyse("Route::domain('{account}.x.com')->group(function () {\n    Route::get('a/{post:slug}', [C::class, 'a']);\n});", $this->accountFiles());
+        $checks = $out['GET /a/{post:slug}']->checks;
+        self::assertSame(['query_scope/none'], self::checks($out['GET /a/{post:slug}']));
+        self::assertSame('scoped to URL parent {account}', $checks[0]->source);
+    }
+
+    public function testDomainParentCoveredScopeIsAuthorization(): void
+    {
+        $routes = "Route::domain('{account}.x.com')->group(function () {\n"
+            ."    Route::get('a/{post:slug}', [C::class, 'a'])->middleware('can:view,account');\n"
+            ."    Route::scopeBindings()->get('b/{post}', [C::class, 'a'])->middleware('can:view,account');\n"
+            .'});';
+        [$out] = $this->analyse($routes, $this->accountFiles());
+        foreach (['GET /a/{post:slug}', 'GET /b/{post}'] as $key) {
+            self::assertContains('query_scope/authorization', self::checks($out[$key]));
+            $scope = array_values(array_filter($out[$key]->checks, static fn (AuthCheck $c): bool => $c->kind->value === 'query_scope'))[0];
+            self::assertSame('post', $scope->covers);
+        }
+    }
+
+    public function testForeachTaintNestedDestructuringAndNegative(): void
+    {
+        $body = <<<'PHP'
+                public function a(Request $r) { foreach ($r->input('g') as $grp) { foreach ($grp as $id) { abort_if($id != auth()->id(), 403); } } }
+                public function b(Request $r) { foreach ($r->input('p') as [$x, $y]) { abort_if($y != auth()->id(), 403); } }
+            PHP;
+        $routes = '';
+        foreach (['a', 'b'] as $m) {
+            $routes .= "Route::get('{$m}', [C::class, '{$m}']);\n";
+        }
+        [$out] = $this->analyse($routes, $this->controller($body));
+        self::assertSame([], self::checks($out['GET /a']));
+        self::assertSame([], self::checks($out['GET /b']));
+    }
+
+    public function testForeachVariableInputClassification(): void
+    {
+        $ast = (new \PhpParser\ParserFactory())->createForNewestSupportedVersion()->parse('<?php foreach ($r->input("g") as $grp) { foreach ($grp as $id) {} } foreach ($r->input("p") as [$x, $y]) {} foreach ($r->user()->orders as $o) {} $o; $id; $y;');
+        self::assertNotNull($ast);
+        $expr = new \TusharKhan\SemanticSec\Framework\Laravel\AuthExpressions((new SymbolTableBuilder())->build(new ParseResult([], [])), ['r' => 'Illuminate\Http\Request'], $ast);
+        $var = static fn (string $n): \PhpParser\Node\Expr\Variable => new \PhpParser\Node\Expr\Variable($n);
+        self::assertTrue($expr->isRequestInput($var('id')));
+        self::assertTrue($expr->isRequestInput($var('y')));
+        self::assertFalse($expr->isRequestInput($var('o')));
     }
 }

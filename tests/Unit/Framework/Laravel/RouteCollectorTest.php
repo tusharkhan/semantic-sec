@@ -319,4 +319,20 @@ final class RouteCollectorTest extends TestCase
         self::assertStringContainsString('route domain could not be resolved', $warnings[1]);
         self::assertSame([], $this->find($routes, 'GET /a')->parameters);
     }
+
+    public function testUnresolvableInnerDomainResetsOuterDomain(): void
+    {
+        [$routes, $warnings] = $this->snippet(<<<'PHP'
+            Route::domain('{account}.x.com')->group(function () {
+                Route::domain($d)->group(function () {
+                    Route::get('a', [FooController::class, 'a']);
+                });
+                Route::get('b', [FooController::class, 'b'])->domain(config('x'));
+            });
+            PHP);
+
+        self::assertCount(2, $warnings);
+        self::assertSame([], $this->find($routes, 'GET /a')->parameters);
+        self::assertSame([], $this->find($routes, 'GET /b')->parameters);
+    }
 }

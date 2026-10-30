@@ -20,6 +20,7 @@ final readonly class RouteContext
         public ?string $namespace = null,
         public ?bool $scopeBindings = null,
         public ?string $domain = null,
+        public bool $resetDomain = false,
     ) {
     }
 
@@ -46,7 +47,7 @@ final readonly class RouteContext
             $inner->controller ?? $this->controller,
             $namespace,
             $inner->scopeBindings ?? $this->scopeBindings,
-            $inner->domain ?? $this->domain,
+            $inner->resetDomain ? null : ($inner->domain ?? $this->domain),
         );
     }
 

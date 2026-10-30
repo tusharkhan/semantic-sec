@@ -21,6 +21,8 @@ final class PendingRoute
 
     public ?string $domain = null;
 
+    public bool $domainUnknown = false;
+
     /** @var array<string, string> parameter name => binding field */
     public array $bindingFields = [];
 
@@ -59,7 +61,7 @@ final class PendingRoute
     {
         preg_match_all('/\{(\w+)(?::(\w+))?(\?)?\}/', $uri, $matches, PREG_SET_ORDER);
         $domain = [];
-        if (($this->domain ?? $this->ctx->domain) !== null) {
+        if (! $this->domainUnknown && ($this->domain ?? $this->ctx->domain) !== null) {
             preg_match_all('/\{(\w+)(\?)?\}/', $this->domain ?? (string) $this->ctx->domain, $found, PREG_SET_ORDER);
             $domain = array_map(static fn (array $m): RouteParameter => new RouteParameter($m[1], null, ($m[2] ?? '') === '?', null, true), $found);
         }

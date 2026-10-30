@@ -279,4 +279,17 @@ final class MiddlewareRegistryTest extends TestCase
         self::assertSame(MiddlewareKind::Authentication, $parent->kind($parent->canonical('login')));
         self::assertSame(MiddlewareKind::Other, $parent->kind($parent->canonical('other')));
     }
+
+    public function testConfiguredAuthMiddlewareIsNotPrefixMatchedAndClassIsCaseInsensitive(): void
+    {
+        [$result, $symbols] = $this->project($this->loginFiles());
+        $fw = new DetectedFramework('laravel', 11);
+        [$r] = MiddlewareRegistry::fromProject($result, $symbols, $fw, new ConstantEvaluator(), ['auth', 'app\http\middleware\LOGINMIDDLEWARE']);
+        self::assertSame(MiddlewareKind::Authentication, $r->kind('auth'));
+        self::assertSame(MiddlewareKind::Other, $r->kind('authx'));
+        self::assertSame(MiddlewareKind::Authentication, $r->kind($r->canonical('login')));
+        [$x] = MiddlewareRegistry::fromProject($result, $symbols, $fw, new ConstantEvaluator(), ['authx']);
+        self::assertSame(MiddlewareKind::Other, $x->kind('auth_other'));
+        self::assertSame(MiddlewareKind::Authentication, $x->kind('auth'));
+    }
 }

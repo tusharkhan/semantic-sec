@@ -194,4 +194,9 @@ YAML);
         $this->assertLoadFails("auth_middleware: ['']\n", 'auth_middleware');
         $this->assertLoadFails("auth_middleware: [1]\n", 'auth_middleware');
     }
+
+    public function testAuthMiddlewareRejectsParameterEntries(): void
+    {
+        $this->assertLoadFails("auth_middleware: ['auth:web']\n", 'auth_middleware', '":"');
+    }
 }

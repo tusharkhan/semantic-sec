@@ -47,6 +47,9 @@ final class MiddlewareRegistry
     /** @var list<string> */
     private array $authMiddleware = [];
 
+    /** @var list<string> */
+    private array $authClasses = [];
+
     /** @var array<string, string> target class => alias (first alias wins) */
     private array $targets = [];
 
@@ -88,6 +91,7 @@ final class MiddlewareRegistry
 
         $registry = new self($aliases + self::DEFAULT_ALIASES, $groups, $symbols);
         $registry->authMiddleware = array_map(static fn (string $m): string => ltrim($m, '\\'), $authMiddleware);
+        $registry->authClasses = array_map('strtolower', $registry->authMiddleware);
 
         return [$registry, $warnings];
     }
@@ -137,7 +141,7 @@ final class MiddlewareRegistry
             return MiddlewareKind::Ability;
         }
 
-        return $this->descendsFrom($name, [...self::AUTHENTICATION_CLASSES, ...$this->authMiddleware]) || in_array($name, $this->authMiddleware, true) ? MiddlewareKind::Authentication : MiddlewareKind::Other;
+        return $this->descendsFrom($name, self::AUTHENTICATION_CLASSES) || $this->isConfiguredAuth($name) ? MiddlewareKind::Authentication : MiddlewareKind::Other;
     }
 
     /** @return array{ability: string, arguments: list<string>}|null */
@@ -157,6 +161,29 @@ final class MiddlewareRegistry
         $parts = explode(':', $canonical, 2);
 
         return isset($parts[1]) && $parts[1] !== '' && ($parts[0] === 'can' || $this->descendsFrom($parts[0], [self::AUTHORIZE]));
+    }
+
+    // A configured entry matches the alias name, or the class (or an ancestor) case-insensitively.
+    private function isConfiguredAuth(string $name): bool
+    {
+        if ($this->authMiddleware === []) {
+            return false;
+        }
+        if (in_array($name, $this->authMiddleware, true)) {
+            return true;
+        }
+        $class = isset($this->aliases[$name]) ? ltrim(explode(':', $this->aliases[$name])[0], '\\') : ltrim($name, '\\');
+        $seen = [];
+        while ($class !== '' && ! isset($seen[strtolower($class)])) {
+            $seen[strtolower($class)] = true;
+            if (in_array(strtolower($class), $this->authClasses, true)) {
+                return true;
+            }
+            $parent = $this->symbols->getClass($class)?->parent;
+            $class = $parent === null ? '' : ltrim($parent, '\\');
+        }
+
+        return false;
     }
 
     /** @param list<string> $bases */

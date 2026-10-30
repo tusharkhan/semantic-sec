@@ -71,7 +71,7 @@ final class ConfigLoader
             sensitiveFields: $sensitive,
             authHelpers: $this->stringList($data['auth_helpers'] ?? [], 'auth_helpers'),
             rulesets: $this->rulesets($data['rulesets'] ?? []),
-            authMiddleware: $this->stringList($data['auth_middleware'] ?? [], 'auth_middleware', true),
+            authMiddleware: $this->authMiddleware($data['auth_middleware'] ?? []),
         );
     }
 
@@ -164,6 +164,19 @@ final class ConfigLoader
         }
 
         return $value;
+    }
+
+    /** @return list<string> */
+    private function authMiddleware(mixed $value): array
+    {
+        $list = $this->stringList($value, 'auth_middleware', true);
+        foreach ($list as $entry) {
+            if (str_contains($entry, ':')) {
+                throw new ConfigException(sprintf('Config key "auth_middleware" entry "%s" must be an alias or class name without ":" parameters.', $entry));
+            }
+        }
+
+        return $list;
     }
 
     /** @return list<CustomRuleset> */
