@@ -183,7 +183,7 @@ final class MapCommand extends Command
                 'file' => $route->file,
                 'line' => $route->line,
                 'parameters' => array_map(static fn ($p): array => ['name' => $p->name, 'field' => $p->field, 'optional' => $p->optional, 'boundModel' => $p->boundModel], $route->parameters),
-                'checks' => array_map(static fn ($c): array => ['kind' => $c->kind->value, 'strength' => $c->strength->value, 'source' => $c->source, 'file' => $c->file, 'line' => $c->line, 'covers' => $c->covers], $route->checks),
+                'checks' => array_map(static fn ($c): array => ['kind' => $c->kind->value, 'strength' => $c->strength->value, 'source' => $c->source, 'file' => $c->file, 'line' => $c->line, 'covers' => $c->covers, 'model' => $c->model], $route->checks),
             ];
         }
 

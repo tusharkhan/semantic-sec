@@ -781,14 +781,14 @@ final class AuthCheckExtractorTest extends TestCase
         }
         [$out] = $this->analyse($routes, $this->controller($methods) + ['app/Http/Requests/All.php' => $code]);
         $strength = static fn (string $m): string => self::checks($out['PUT /'.$m.'/{post}'])[0];
-        foreach (['a', 'h', 'i', 'l', 'o'] as $m) {
+        foreach (['a', 'h', 'l', 'o'] as $m) {
             self::assertSame('form_request/authorization', $strength($m), $m);
         }
         foreach (['b', 'c', 'd', 'e', 'f', 'g'] as $m) {
             self::assertSame('form_request/authentication', $strength($m), $m);
         }
-        // A bare route() read authorizes nothing.
-        foreach (['j', 'k', 'm', 'n'] as $m) {
+        // A bare route() read, or a comparison with request input, authorizes nothing.
+        foreach (['i', 'j', 'k', 'm', 'n'] as $m) {
             self::assertSame('form_request/none', $strength($m), $m);
         }
         self::assertSame(['FormRequest B::authorize only checks login'], self::sources($out['PUT /b/{post}']));
@@ -984,7 +984,7 @@ final class AuthCheckExtractorTest extends TestCase
         self::assertSame([null, 'post'], $covers('GET /a/{post}'));
         self::assertSame([null], $covers('GET /b'));
         self::assertSame(['post', 'post'], $covers('PUT /c/{post}'));
-        self::assertSame([null, null], $covers('PUT /d/{post}'));
+        self::assertSame([null, 'post'], $covers('PUT /d/{post}'));
         self::assertSame(['post'], $covers('GET /posts/{post}'));
         self::assertSame([null], $covers('GET /posts'));
         self::assertSame(['user', 'post'], $covers('GET /f/{user}/posts/{post:slug}'));
@@ -1132,5 +1132,140 @@ final class AuthCheckExtractorTest extends TestCase
             'q7' => "public function q7(Request \$r, Post \$post) { if (Gate::denies('view', \$post)) { if (\$r->x) { return 1; } abort(403); } return \$post; }",
         ]);
         self::assertSame(['controller_ability/authorization'], self::checks($out['q7']));
+    }
+
+    public function testTautologicalAuthComparisonIsNoCheck(): void
+    {
+        $out = $this->each('get', '{post}', [
+            'a' => 'public function a(Request $r, Post $post) { abort_unless(auth()->id() === $r->user()->id, 403); return $post; }',
+            'b' => 'public function b(Request $r, Post $post) { $me = Auth::id(); abort_if($me !== auth()->user()->getKey(), 403); return $post; }',
+            'c' => 'public function c(Request $r, Post $post) { abort_unless($post->user_id === auth()->id(), 403); return $post; }',
+        ]);
+        self::assertSame([], self::checks($out['a']));
+        self::assertSame([], self::checks($out['b']));
+        self::assertSame(['abort_guard/authorization'], self::checks($out['c']));
+    }
+
+    public function testAuthComparisonWithRequestInputIsNoCheck(): void
+    {
+        $out = $this->each('get', '{post}', [
+            'a' => "public function a(Request \$r, Post \$post) { abort_if(\$r->input('owner') != auth()->id(), 403); return \$post; }",
+            'b' => "public function b(Request \$r, Post \$post) { abort_unless(request('owner') == auth()->id(), 403); return \$post; }",
+            'c' => 'public function c(Request $r, Post $post) { abort_unless($r->owner === auth()->id(), 403); return $post; }',
+            'd' => "public function d(Request \$r, Post \$post) { \$o = \$r->query('o'); abort_unless(\$o === auth()->id(), 403); return \$post; }",
+            'e' => "public function e(Request \$r, Post \$post) { abort_unless(auth()->id() === \$r->route('owner'), 403); return \$post; }",
+            'f' => "public function f(Request \$r, Post \$post) { abort_unless(auth()->id() === request()->get('owner'), 403); return \$post; }",
+            'g' => "public function g(Request \$r, Post \$post) { abort_unless(auth()->id() === \$r->route('post')->user_id, 403); return \$post; }",
+        ]);
+        foreach (['a', 'b', 'c', 'd', 'e', 'f'] as $m) {
+            self::assertSame([], self::checks($out[$m]), $m);
+        }
+        self::assertSame(['abort_guard/authorization'], self::checks($out['g']));
+    }
+
+    public function testDeniesInIfCountsOnlyWhenTheBodyBlocks(): void
+    {
+        $out = $this->each('get', '{post}', [
+            'a' => "public function a(Request \$r, Post \$post) { if (Gate::denies('view', \$post)) { \$r->merge(['x' => 1]); } return \$post; }",
+            'b' => "public function b(Request \$r, Post \$post) { if (Gate::denies('view', \$post)) { return view('nope'); } return \$post; }",
+            'c' => "public function c(Request \$r, Post \$post) { if (! Gate::allows('view', \$post)) { \$r->merge(['x' => 1]); } return \$post; }",
+            'd' => "public function d(Request \$r, Post \$post) { if (Gate::denies('view', \$post)) { throw new \\RuntimeException('no'); } return \$post; }",
+            'e' => "public function e(Request \$r, Post \$post) { if (auth()->user()->cannot('view', \$post)) { return redirect()->back(); } return \$post; }",
+            'f' => "public function f(Request \$r, Post \$post) { if (Gate::denies('view', \$post)) { return response()->json([], 403); } return \$post; }",
+            'g' => "public function g(Request \$r, Post \$post) { if (Gate::denies('view', \$post) === true) { abort(403); } return \$post; }",
+            'h' => "public function h(Request \$r, Post \$post) { if (Gate::denies('view', \$post)) { if (\$r->x) { abort(403); } } return \$post; }",
+        ]);
+        foreach (['a', 'b', 'c', 'h'] as $m) {
+            self::assertSame([], self::checks($out[$m]), $m);
+        }
+        foreach (['d', 'e', 'f', 'g'] as $m) {
+            self::assertSame(['controller_ability/authorization'], self::checks($out[$m]), $m);
+        }
+    }
+
+    public function testAllowsInIfCountsOnlyWhenTheOtherPathBlocks(): void
+    {
+        $out = $this->each('get', '{post}', [
+            'a' => "public function a(Request \$r, Post \$post) { if (Gate::allows('view', \$post)) { \$r->merge(['seen' => 1]); } return \$post; }",
+            'b' => "public function b(Request \$r, Post \$post) { if (Gate::allows('view', \$post)) { return \$post; } abort(403); }",
+            'c' => "public function c(Request \$r, Post \$post) { if (Gate::allows('view', \$post)) { \$x = 1; } else { abort(403); } return \$post; }",
+            'd' => "public function d(Request \$r, Post \$post) { if (Gate::allows('view', \$post)) { return \$post; } return view('nope'); }",
+            'e' => "public function e(Request \$r, Post \$post) { if (auth()->user()->can('view', \$post)) { return \$post; } if (\$r->x) { return \$post; } abort(403); }",
+            'f' => "public function f(Request \$r, Post \$post) { if (Gate::allows('view', \$post)) { \$x = 1; } elseif (\$r->x) { \$y = 1; } else { abort(403); } return \$post; }",
+            'g' => "public function g(Request \$r, Post \$post) { if (! Gate::denies('view', \$post)) { return \$post; } abort(403); }",
+        ]);
+        foreach (['a', 'd', 'e', 'f'] as $m) {
+            self::assertSame([], self::checks($out[$m]), $m);
+        }
+        foreach (['b', 'c', 'g'] as $m) {
+            self::assertSame(['controller_ability/authorization'], self::checks($out[$m]), $m);
+        }
+    }
+
+    public function testExtractTaintsEveryVariable(): void
+    {
+        $out = $this->each('get', '{post}', [
+            'a' => "public function a(Request \$r, Post \$post) { \$uid = auth()->id(); extract(\$r->all()); return Post::where('user_id', \$uid)->get(); }",
+            'b' => "public function b(Request \$r, Post \$post) { \$uid = auth()->id(); parse_str(\$r->getContent()); return Post::where('user_id', \$uid)->get(); }",
+            'c' => "public function c(Request \$r, Post \$post) { \$uid = auth()->id(); \$k = \$r->input('k'); \$\$k = 5; return Post::where('user_id', \$uid)->get(); }",
+            'd' => 'public function d(Request $r, Post $post) { $o = $post->user_id; extract($r->all()); abort_unless($o === auth()->id(), 403); return $post; }',
+            'e' => "public function e(Request \$r, Post \$post) { \$uid = auth()->id(); parse_str(\$r->getContent(), \$q); return Post::where('user_id', \$uid)->get(); }",
+        ]);
+        foreach (['a', 'b', 'c', 'd'] as $m) {
+            self::assertSame([], self::checks($out[$m]), $m);
+        }
+        self::assertSame(['query_scope/authorization'], self::checks($out['e']));
+    }
+
+    public function testNestedEarlyReturnVoidsLaterChecks(): void
+    {
+        $out = $this->each('get', '{post}', [
+            'a' => "public function a(Request \$r, Post \$post) { if (\$r->boolean('y')) { if (\$r->x) { return 1; } } if (Gate::denies('a', \$post)) { abort(403); } return \$post; }",
+            'b' => "public function b(Request \$r, Post \$post) { foreach (\$r->ids as \$i) { if (\$i) { return \$post; } } \$this->authorize('view', \$post); }",
+            'c' => "public function c(Request \$r, Post \$post) { try { if (\$r->x) { return; } } finally { } \$this->authorize('view', \$post); }",
+            'd' => "public function d(Request \$r, Post \$post) { \$f = function () { return 1; }; \$this->authorize('view', \$post); }",
+            'e' => "public function e(Request \$r, Post \$post) { if (\$r->y) { if (\$r->x) { abort(403); } } \$this->authorize('view', \$post); }",
+        ]);
+        foreach (['a', 'b', 'c'] as $m) {
+            self::assertSame([], self::checks($out[$m]), $m);
+        }
+        foreach (['d', 'e'] as $m) {
+            self::assertSame(['controller_ability/authorization'], self::checks($out[$m]), $m);
+        }
+    }
+
+    public function testAbortGuardCoversTheBoundParameterItCompares(): void
+    {
+        $out = $this->each('get', '{post}', [
+            'a' => 'public function a(Post $post) { abort_if($post->user_id !== auth()->id(), 403); return $post; }',
+            'b' => 'public function b(Post $post) { abort_unless(auth()->id() === $post->user_id, 403); return $post; }',
+            'c' => 'public function c(Post $post) { $post = Post::find(1); abort_if($post->user_id !== auth()->id(), 403); return $post; }',
+            'd' => 'public function d(Request $r, Post $post) { $o = $post->user_id; abort_if($o !== auth()->id(), 403); return $post; }',
+            'e' => 'public function e(Request $r, Post $post) { abort_if(! ($post->user_id === auth()->id()), 403); return $post; }',
+        ]);
+        foreach (['a', 'b', 'e'] as $m) {
+            self::assertSame('abort_guard', $out[$m]->checks[0]->kind->value, $m);
+            self::assertSame('post', $out[$m]->checks[0]->covers, $m);
+        }
+        foreach (['c', 'd'] as $m) {
+            self::assertSame('abort_guard', $out[$m]->checks[0]->kind->value, $m);
+            self::assertNull($out[$m]->checks[0]->covers, $m);
+        }
+    }
+
+    public function testQueryScopeRecordsTheQueriedModel(): void
+    {
+        $out = $this->each('get', '{post}', [
+            'a' => "public function a(Post \$post) { return Post::where('user_id', auth()->id())->get(); }",
+            'b' => "public function b(Post \$post) { return Post::query()->latest()->where('user_id', '=', Auth::id())->first(); }",
+            'c' => 'public function c(Request $r, Post $post) { return $r->user()->posts()->findOrFail(1); }',
+            'd' => "public function d(Post \$post) { return \\DB::table('posts')->where('user_id', auth()->id())->get(); }",
+        ]);
+        self::assertSame('App\\Models\\Post', $out['a']->checks[0]->model);
+        self::assertSame('App\\Models\\Post', $out['b']->checks[0]->model);
+        self::assertSame('query_scope', $out['c']->checks[0]->kind->value);
+        self::assertNull($out['c']->checks[0]->model);
+        self::assertSame('query_scope', $out['d']->checks[0]->kind->value);
+        self::assertNull($out['d']->checks[0]->model);
     }
 }

@@ -82,8 +82,9 @@ final class BodyPositions
      * asking $leaf whether each other operand qualifies.
      *
      * @param  (callable(Expr, bool): bool)|null  $leaf  operand, whether true must mean "allowed"
+     * @param  ?bool  $trueAllows  set for a non-throwing ability call: an `if` it decides must then gate a blocking path
      */
-    public function isConditionPosition(Node $node, bool $returns, ?callable $leaf = null): bool
+    public function isConditionPosition(Node $node, bool $returns, ?callable $leaf = null, ?bool $trueAllows = null): bool
     {
         $found = $this->conditionRoot($node);
         if ($found === null) {
@@ -103,8 +104,104 @@ final class BodyPositions
 
             return $root instanceof Expr && $this->decides($root, $allow, $leaf);
         }
+        if ($slot instanceof Stmt\If_ && $trueAllows !== null && ! $compound) {
+            return $this->ifBlocks($slot, $this->polarity($node, $root) === $trueAllows);
+        }
 
         return ! $compound;
+    }
+
+    // Whether the condition is true exactly when the node is true, through `!`, `(bool)` and true/false comparisons.
+    private function polarity(Node $node, Node $root): bool
+    {
+        $same = true;
+        for ($child = $node; $child !== $root && ($parent = $this->parent($child)) !== null; $child = $parent) {
+            if ($parent instanceof Expr\BooleanNot) {
+                $same = ! $same;
+            } elseif ($parent instanceof Expr\BinaryOp && ($literal = self::boolLiteralSide($parent)) !== null) {
+                $equal = $parent instanceof Expr\BinaryOp\Identical || $parent instanceof Expr\BinaryOp\Equal;
+                $same = $same === ($equal === $literal[1]);
+            }
+        }
+
+        return $same;
+    }
+
+    /** True when the denied path of the `if` blocks: its body when a true condition means denied, else its other branches or what follows it. */
+    private function ifBlocks(Stmt\If_ $if, bool $trueAllows): bool
+    {
+        if (! $trueAllows) {
+            return self::blocks($if->stmts);
+        }
+        if ($if->else !== null) {
+            foreach ([...array_map(static fn (Stmt\ElseIf_ $e): array => $e->stmts, $if->elseifs), $if->else->stmts] as $stmts) {
+                if (! self::blocks($stmts)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        if ($if->elseifs !== [] || ! self::leaves($if->stmts)) {
+            return false;
+        }
+        $parent = $this->parent($if);
+        $siblings = $parent === null ? $this->body : (property_exists($parent, 'stmts') && is_array($parent->stmts) ? $parent->stmts : []);
+        $after = array_slice($siblings, (int) array_search($if, $siblings, true) + 1);
+        foreach ($after as $stmt) {
+            if (self::isBlocking($stmt)) {
+                return true;
+            }
+            if (self::hasBypass($stmt)) {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    /** @param array<Node> $stmts */
+    private static function blocks(array $stmts): bool
+    {
+        foreach ($stmts as $stmt) {
+            if (self::isBlocking($stmt)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @param array<Node> $stmts */
+    private static function leaves(array $stmts): bool
+    {
+        foreach ($stmts as $stmt) {
+            if ($stmt instanceof Stmt\Return_ || self::isBlocking($stmt)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // abort(..), abort_if/unless, throw, exit, or a return of an error response or redirect.
+    private static function isBlocking(Node $stmt): bool
+    {
+        if ($stmt instanceof Stmt\Return_) {
+            $root = $stmt->expr;
+            while ($root !== null && AuthExpressions::isCall($root)) {
+                $root = $root->var;
+            }
+
+            return self::isErrorValue($stmt->expr) || ($root instanceof Expr\FuncCall && in_array(AuthExpressions::name($root), ['redirect', 'to_route', 'back'], true));
+        }
+        if (! $stmt instanceof Stmt\Expression) {
+            return false;
+        }
+        $expr = $stmt->expr;
+
+        return $expr instanceof Expr\Throw_ || $expr instanceof Expr\Exit_
+            || ($expr instanceof Expr\FuncCall && in_array(AuthExpressions::name($expr), ['abort', 'abort_if', 'abort_unless'], true));
     }
 
     /** @param callable(Expr, bool): bool $leaf */
@@ -175,7 +272,7 @@ final class BodyPositions
     }
 
     /**
-     * An earlier sibling `if` that returns a non-error value (or exits) lets a request skip what follows.
+     * An earlier sibling statement that returns a non-error value (or exits) anywhere inside lets a request skip what follows.
      *
      * @param  array<Node>  $siblings
      */
@@ -189,7 +286,7 @@ final class BodyPositions
             if ($stmt === $child) {
                 return false;
             }
-            if ($stmt instanceof Stmt\If_ && self::ifBypasses($stmt)) {
+            if (self::hasBypass($stmt)) {
                 return true;
             }
         }
@@ -197,13 +294,18 @@ final class BodyPositions
         return false;
     }
 
-    private static function ifBypasses(Stmt\If_ $if): bool
+    // A non-error return or exit anywhere inside the node, outside nested functions and classes.
+    private static function hasBypass(Node $node): bool
     {
-        $lists = [$if->stmts, ...array_map(static fn (Stmt\ElseIf_ $e): array => $e->stmts, $if->elseifs), $if->else === null ? [] : $if->else->stmts];
-        foreach ($lists as $stmts) {
-            foreach ($stmts as $stmt) {
-                if (($stmt instanceof Stmt\Return_ && ! self::isErrorValue($stmt->expr))
-                    || ($stmt instanceof Stmt\Expression && $stmt->expr instanceof Expr\Exit_)) {
+        if (($node instanceof Stmt\Return_ && ! self::isErrorValue($node->expr)) || $node instanceof Expr\Exit_) {
+            return true;
+        }
+        if ($node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction || $node instanceof Stmt\Function_ || $node instanceof Stmt\ClassLike) {
+            return false;
+        }
+        foreach ($node->getSubNodeNames() as $name) {
+            foreach (is_array($node->$name) ? $node->$name : [$node->$name] as $sub) {
+                if ($sub instanceof Node && self::hasBypass($sub)) {
                     return true;
                 }
             }

@@ -28,6 +28,9 @@ final class AuthCheckExtractor
 
     private const GUARDS = ['abort_if', 'abort_unless', 'throw_if', 'throw_unless'];
 
+    // Non-throwing ability calls whose true result means "denied".
+    private const DENYING = ['denies', 'none', 'cannot', 'cant'];
+
     private const MAX_SOURCE = 120;
 
     private readonly ConstantEvaluator $eval;
@@ -494,11 +497,11 @@ final class AuthCheckExtractor
             if (! $positions->isUnconditional($node, $ability !== null && ! $ability[3])) {
                 continue;
             }
-            $add = static function (AuthCheckKind $kind, AuthStrength $strength, string $source, ?string $covers = null) use (&$checks, $file, $node): void {
-                $checks[] = new AuthCheck($kind, $strength, $source, $file, $node->getStartLine(), $strength === AuthStrength::Authorization ? $covers : null);
+            $add = static function (AuthCheckKind $kind, AuthStrength $strength, string $source, ?string $covers = null, ?string $model = null) use (&$checks, $file, $node): void {
+                $checks[] = new AuthCheck($kind, $strength, $source, $file, $node->getStartLine(), $strength === AuthStrength::Authorization ? $covers : null, $model);
             };
-            // A non-throwing check counts only where its result decides a branch or guard.
-            if ($ability !== null && ($ability[3] || $positions->isConditionPosition($node, false, $leaf))) {
+            // A non-throwing check counts only where its result decides a blocking branch or a guard.
+            if ($ability !== null && ($ability[3] || $positions->isConditionPosition($node, false, $leaf, ! in_array(AuthExpressions::name($node), self::DENYING, true)))) {
                 [$abilityArg, $modelArg, $any] = $ability;
                 $reason = $this->abilityReason($abilityArg, $modelArg, $any, $context, $file, $class);
                 $variable = $modelArg instanceof Expr\Array_ ? ($modelArg->items[0]->value ?? null) : $modelArg;
@@ -511,11 +514,12 @@ final class AuthCheckExtractor
             if ($node instanceof Expr\FuncCall && in_array(AuthExpressions::name($node), self::GUARDS, true)) {
                 $condition = AuthExpressions::args($node)[0] ?? null;
                 if ($condition !== null && $context->guardQualifies($condition, str_ends_with((string) AuthExpressions::name($node), '_unless'))) {
-                    $add(AuthCheckKind::AbortGuard, AuthStrength::Authorization, $this->describe($node));
+                    $add(AuthCheckKind::AbortGuard, AuthStrength::Authorization, $this->describe($node), self::guardSubject($condition, $context, $parameters));
                 }
             }
-            if (((! isset($inner[spl_object_id($node)]) && $context->isRelationRead($node)) || $context->isWhereScope($node)) && ! self::chainHasOrWhere($node, $inner)) {
-                $add(AuthCheckKind::QueryScope, AuthStrength::Authorization, $this->describe($node));
+            $where = $context->isWhereScope($node);
+            if (((! isset($inner[spl_object_id($node)]) && $context->isRelationRead($node)) || $where) && ! self::chainHasOrWhere($node, $inner)) {
+                $add(AuthCheckKind::QueryScope, AuthStrength::Authorization, $this->describe($node), null, $where ? self::scopedModel($node) : null);
             }
             if ($this->isHelper($node, $class)) {
                 $add(AuthCheckKind::CustomHelper, AuthStrength::Authorization, $this->describe($node));
@@ -523,6 +527,40 @@ final class AuthCheckExtractor
         }
 
         return [$checks, $covered];
+    }
+
+    /**
+     * The route parameter a single-comparison guard reads as `$x->prop`, where `$x` is the untouched bound variable.
+     *
+     * @param  array<string, string>  $parameters
+     */
+    private static function guardSubject(Expr $condition, AuthExpressions $context, array $parameters): ?string
+    {
+        while ($condition instanceof Expr\BooleanNot) {
+            $condition = $condition->expr;
+        }
+        if (! $condition instanceof Expr\BinaryOp || ! $context->isAuthComparison($condition, null)) {
+            return null;
+        }
+        foreach ([$condition->left, $condition->right] as $side) {
+            $var = $side instanceof Expr\PropertyFetch || $side instanceof Expr\NullsafePropertyFetch ? $side->var : null;
+            if ($var instanceof Expr\Variable && is_string($var->name) && isset($parameters[$var->name]) && $context->isUntouchedParam($var->name, $var->getStartFilePos())) {
+                return $parameters[$var->name];
+            }
+        }
+
+        return null;
+    }
+
+    // X for X::where*(..) and X::query()->...->where(..); null for other roots.
+    private static function scopedModel(Expr $node): ?string
+    {
+        while (AuthExpressions::isCall($node)) {
+            $node = $node->var;
+        }
+        $root = $node instanceof Expr\StaticCall ? (AuthExpressions::name($node) ?? '') : '';
+
+        return $node instanceof Expr\StaticCall && $node->class instanceof Node\Name && ($root === 'query' || str_starts_with($root, 'where')) ? self::modelName($node->class) : null;
     }
 
     /**

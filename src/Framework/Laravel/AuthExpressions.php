@@ -40,6 +40,9 @@ final class AuthExpressions
     /** @var array<string, true> variables written other than by a plain top-level assignment */
     private array $tainted = [];
 
+    // extract(), one-argument parse_str() or $$var may write any variable.
+    private bool $taintsAll = false;
+
     /**
      * @param  array<string, ?string>  $paramTypes  action parameter name => native type
      * @param  array<Node>  $body
@@ -54,10 +57,16 @@ final class AuthExpressions
             /** @var array<string, true> */
             public array $tainted = [];
 
+            public bool $taintsAll = false;
+
             private int $depth = 0;
 
             public function enterNode(Node $node): null
             {
+                if (($node instanceof Expr\Variable && ! is_string($node->name)) || AuthExpressions::isFunc($node, 'extract')
+                    || (AuthExpressions::isFunc($node, 'parse_str') && $node instanceof Expr\FuncCall && count($node->args) === 1)) {
+                    $this->taintsAll = true;
+                }
                 if (self::opensScope($node)) {
                     $this->depth++;
                     foreach ($node instanceof Expr\Closure ? $node->uses : [] as $use) {
@@ -125,6 +134,7 @@ final class AuthExpressions
         (new NodeTraverser($visitor))->traverse($body);
         $this->assignments = $visitor->assignments;
         $this->tainted = $visitor->tainted;
+        $this->taintsAll = $visitor->taintsAll;
     }
 
     public function paramType(string $name): ?string
@@ -148,7 +158,7 @@ final class AuthExpressions
     /** @return list<Expr>|null every value assigned to the variable before it is read; null if it is rebound otherwise */
     public function assignedValues(Expr\Variable $var): ?array
     {
-        if (! is_string($var->name) || isset($this->tainted[$var->name])) {
+        if (! is_string($var->name) || $this->isTainted($var->name)) {
             return null;
         }
         $values = $this->assignmentsBefore($var->name, $var->getStartFilePos());
@@ -159,7 +169,12 @@ final class AuthExpressions
     /** True for an action parameter that is never reassigned or rebound before $pos. */
     public function isUntouchedParam(string $name, int $pos): bool
     {
-        return $this->hasParam($name) && ! isset($this->tainted[$name]) && $this->lastAssignment($name, $pos) === null;
+        return $this->hasParam($name) && ! $this->isTainted($name) && $this->lastAssignment($name, $pos) === null;
+    }
+
+    private function isTainted(string $name): bool
+    {
+        return $this->taintsAll || isset($this->tainted[$name]);
     }
 
     public function isAuthUser(Expr $expr): bool
@@ -401,7 +416,7 @@ final class AuthExpressions
      */
     private function variableIs(Expr\Variable $var, callable $test): bool
     {
-        if (! is_string($var->name) || $var->name === 'this' || isset($this->tainted[$var->name])) {
+        if (! is_string($var->name) || $var->name === 'this' || $this->isTainted($var->name)) {
             return false;
         }
         $values = $this->assignmentsBefore($var->name, $var->getStartFilePos());
@@ -423,7 +438,55 @@ final class AuthExpressions
             return false;
         }
 
-        return ($this->isAuth($n->left) && ! self::isLiteral($n->right)) || ($this->isAuth($n->right) && ! self::isLiteral($n->left));
+        return ($this->isAuth($n->left) && $this->isTrustedOperand($n->right)) || ($this->isAuth($n->right) && $this->isTrustedOperand($n->left));
+    }
+
+    // The other side must be neither a literal, another auth expression, nor request input.
+    private function isTrustedOperand(Expr $expr): bool
+    {
+        return ! self::isLiteral($expr) && ! $this->isAuth($expr) && ! $this->isRequestInput($expr);
+    }
+
+    /** Request input: request(..), $request->x, $request['x'], $request-><any but user()>(..), or a variable only ever assigned one. */
+    public function isRequestInput(Expr $expr): bool
+    {
+        while ($expr instanceof Expr\Cast) {
+            $expr = $expr->expr;
+        }
+        if ($expr instanceof Expr\Variable) {
+            return ($this->taintsAll && $expr->name !== 'this') || $this->variableIs($expr, $this->isRequestInput(...));
+        }
+        if ($expr instanceof Expr\FuncCall) {
+            return self::isFunc($expr, 'request') && $expr->args !== [];
+        }
+        if (! ($expr instanceof Expr\PropertyFetch || $expr instanceof Expr\NullsafePropertyFetch || $expr instanceof Expr\ArrayDimFetch || self::isCall($expr))) {
+            return false;
+        }
+        $var = $expr->var;
+        if ($this->isRequestReceiver($var)) {
+            return ! self::isCall($expr) || self::name($expr) !== 'user';
+        }
+        // A model read through route('p') is the bound model, not input.
+        if ($this->isRouteRead($var)) {
+            return false;
+        }
+
+        return $this->isRequestInput($var);
+    }
+
+    // route('p') on the request, directly or via a variable only ever assigned that.
+    private function isRouteRead(Expr $expr): bool
+    {
+        if ($expr instanceof Expr\Variable) {
+            return ! $this->taintsAll && $this->variableIs($expr, $this->isRouteRead(...));
+        }
+
+        return self::isCall($expr) && self::name($expr) === 'route' && $this->isRequestReceiver($expr->var);
+    }
+
+    private function isRequestReceiver(Expr $expr): bool
+    {
+        return (self::isFunc($expr, 'request') && $expr instanceof Expr\FuncCall && $expr->args === []) || $this->isRequestVariable($expr);
     }
 
     // A null/true/false comparison only checks that someone is logged in.
