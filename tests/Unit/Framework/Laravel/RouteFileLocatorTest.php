@@ -155,4 +155,82 @@ PHP,
         self::assertSame([['routes/admin.php', 'admin', ['web', 'auth'], null]], $this->shape($files));
         self::assertSame(['app/Providers/RouteServiceProvider.php:10: route file path could not be resolved'], $warnings);
     }
+
+    private function provider(string $body): string
+    {
+        $code = "<?php\nnamespace App\\Providers;\nuse Illuminate\\Foundation\\Support\\Providers\\RouteServiceProvider as ServiceProvider;\nuse Illuminate\\Support\\Facades\\Route;\nclass RouteServiceProvider extends ServiceProvider\n{\n    protected \$namespace = 'App\\\\Http';\n    public function boot(): void\n    {\n".$body."\n    }\n}\n";
+
+        return $this->project(['app/Providers/RouteServiceProvider.php' => $code, 'routes/admin.php' => '<?php']);
+    }
+
+    public function testArrayWebArgument(): void
+    {
+        $root = $this->project([
+            'bootstrap/app.php' => "<?php\nreturn A::configure()->withRouting(web: [__DIR__.'/../routes/web.php', __DIR__.'/../routes/more.php'])->create();",
+            'routes/web.php' => '<?php',
+            'routes/more.php' => '<?php',
+        ]);
+        [$files] = $this->locate($root, 11);
+        self::assertSame([['routes/web.php', '', ['web'], null], ['routes/more.php', '', ['web'], null]], $this->shape($files));
+    }
+
+    public function testPositionalWithRoutingWarns(): void
+    {
+        $root = $this->project(['bootstrap/app.php' => "<?php\nreturn A::configure()->withRouting(__DIR__.'/../routes/web.php')->create();"]);
+        [$files, $warnings] = $this->locate($root, 11);
+        self::assertSame([], $files);
+        self::assertSame(['bootstrap/app.php:2: withRouting positional arguments are not analysed'], $warnings);
+    }
+
+    public function testUsingAndSpreadWarn(): void
+    {
+        $root = $this->project(['bootstrap/app.php' => "<?php\nreturn A::configure()->withRouting(using: function () {}, ...\$args)->create();"]);
+        [, $warnings] = $this->locate($root, 11);
+        self::assertSame([
+            'bootstrap/app.php:2: withRouting using: arguments are not analysed',
+            'bootstrap/app.php:2: withRouting spread arguments are not analysed',
+        ], $warnings);
+    }
+
+    public function testWithRoutingFindingNothingWarns(): void
+    {
+        $root = $this->project(['bootstrap/app.php' => "<?php\nreturn A::configure()->withRouting(health: '/up')->create();"]);
+        [, $warnings] = $this->locate($root, 11);
+        self::assertSame(['bootstrap/app.php:2: withRouting found no route files'], $warnings);
+    }
+
+    public function testStaticRouteGroupArray(): void
+    {
+        $root = $this->provider("        Route::group(['prefix' => '/adm/', 'middleware' => ['web', 'auth'], 'namespace' => 'X'], base_path('routes/admin.php'));\n        Route::group(['prefix' => 'z'], function () {});");
+        [$files, $warnings] = $this->locate($root, 10);
+        self::assertSame([['routes/admin.php', 'adm', ['web', 'auth'], 'X']], $this->shape($files));
+        self::assertSame([], $warnings);
+    }
+
+    public function testUnresolvedMiddlewareAndNamespaceWarn(): void
+    {
+        $root = $this->provider("        Route::middleware(['web', \$m, null])->namespace(\$ns)->group(base_path('routes/admin.php'));\n        Route::namespace(null)->group(base_path('routes/admin.php'));");
+        [$files, $warnings] = $this->locate($root, 10);
+        self::assertSame([['routes/admin.php', '', ['web'], null]], $this->shape($files));
+        self::assertSame([
+            'app/Providers/RouteServiceProvider.php:10: route middleware could not be resolved',
+            'app/Providers/RouteServiceProvider.php:10: route namespace could not be resolved',
+        ], $warnings);
+    }
+
+    public function testWithoutMiddlewareWarns(): void
+    {
+        $root = $this->provider("        Route::withoutMiddleware('auth')->group(base_path('routes/admin.php'));");
+        [$files, $warnings] = $this->locate($root, 10);
+        self::assertCount(1, $files);
+        self::assertSame(['app/Providers/RouteServiceProvider.php:10: withoutMiddleware on route-file groups is not analysed'], $warnings);
+    }
+
+    public function testNestedGroupWarns(): void
+    {
+        $root = $this->provider("        Route::prefix('a')->group(function () {\n            Route::prefix('b')->group(base_path('routes/admin.php'));\n        });");
+        [$files, $warnings] = $this->locate($root, 10);
+        self::assertSame([], $files);
+        self::assertSame(['app/Providers/RouteServiceProvider.php:11: nested route groups in providers are not analysed'], $warnings);
+    }
 }

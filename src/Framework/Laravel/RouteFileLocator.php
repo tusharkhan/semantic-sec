@@ -88,8 +88,19 @@ final class RouteFileLocator
     private function fromWithRouting(Expr\MethodCall $call, ParseResult $parsed, ConstantEvaluator $eval, array &$files, array &$warnings): void
     {
         $named = [];
+        $before = count($warnings);
         foreach ($call->args as $arg) {
-            if ($arg instanceof Arg && $arg->name !== null) {
+            if (! $arg instanceof Arg) {
+                continue;
+            }
+            $line = $arg->getStartLine();
+            if ($arg->unpack) {
+                $warnings[] = sprintf('%s:%d: withRouting spread arguments are not analysed', self::BOOTSTRAP, $line);
+            } elseif ($arg->name === null) {
+                $warnings[] = sprintf('%s:%d: withRouting positional arguments are not analysed', self::BOOTSTRAP, $line);
+            } elseif ($arg->name->toString() === 'using') {
+                $warnings[] = sprintf('%s:%d: withRouting using: arguments are not analysed', self::BOOTSTRAP, $line);
+            } else {
                 $named[$arg->name->toString()] = $arg;
             }
         }
@@ -127,6 +138,9 @@ final class RouteFileLocator
         if (isset($named['then'])) {
             $warnings[] = sprintf('%s:%d: then: routes are not analysed', self::BOOTSTRAP, $named['then']->getStartLine());
         }
+        if ($files === [] && count($warnings) === $before) {
+            $warnings[] = sprintf('%s:%d: withRouting found no route files', self::BOOTSTRAP, $call->getStartLine());
+        }
     }
 
     /**
@@ -142,17 +156,58 @@ final class RouteFileLocator
                 continue;
             }
             foreach ($class->methods as $method) {
-                $groups = (new NodeFinder())->find($method->node->stmts ?? [], fn (Node $n): bool => $n instanceof Expr\MethodCall
-                    && $n->name instanceof Node\Identifier && strtolower($n->name->toString()) === 'group');
+                $groups = (new NodeFinder())->find($method->node->stmts ?? [], fn (Node $n): bool => $this->isRouteGroup($n));
+                $nested = [];
+                $groups = array_values(array_filter($groups, fn (Node $n): bool => $n instanceof Expr\MethodCall || $n instanceof Expr\StaticCall));
                 foreach ($groups as $group) {
-                    if ($group instanceof Expr\MethodCall) {
-                        $referenced = $this->fromGroup($group, $class, $parsed, $eval, $files, $warnings) || $referenced;
+                    foreach ($this->closureArgs($group) as $closure) {
+                        foreach ((new NodeFinder())->find($closure->getStmts(), fn (Node $n): bool => $this->isRouteGroup($n)) as $inner) {
+                            $nested[spl_object_id($inner)] = $inner;
+                        }
                     }
+                }
+                foreach ($groups as $group) {
+                    if (isset($nested[spl_object_id($group)])) {
+                        $warnings[] = sprintf('%s:%d: nested route groups in providers are not analysed', $class->file, $group->getStartLine());
+
+                        continue;
+                    }
+                    $referenced = $this->fromGroup($group, $class, $parsed, $eval, $files, $warnings) || $referenced;
                 }
             }
         }
 
         return $referenced;
+    }
+
+    /** @phpstan-assert-if-true Expr\MethodCall|Expr\StaticCall $n */
+    private function isRouteGroup(Node $n): bool
+    {
+        if ($n instanceof Expr\StaticCall) {
+            return $n->name instanceof Node\Identifier && strtolower($n->name->toString()) === 'group' && $this->isRouteFacade($n);
+        }
+        if (! $n instanceof Expr\MethodCall || ! $n->name instanceof Node\Identifier || strtolower($n->name->toString()) !== 'group') {
+            return false;
+        }
+        $root = $n->var;
+        while ($root instanceof Expr\MethodCall) {
+            $root = $root->var;
+        }
+
+        return $root instanceof Expr\StaticCall && $this->isRouteFacade($root);
+    }
+
+    /** @return list<Expr\Closure|Expr\ArrowFunction> */
+    private function closureArgs(Expr\MethodCall|Expr\StaticCall $group): array
+    {
+        $out = [];
+        foreach ($group->args as $a) {
+            if ($a instanceof Arg && ($a->value instanceof Expr\Closure || $a->value instanceof Expr\ArrowFunction)) {
+                $out[] = $a->value;
+            }
+        }
+
+        return $out;
     }
 
     private function isRouteProvider(ClassSymbol $class, SymbolTable $symbols): bool
@@ -174,65 +229,55 @@ final class RouteFileLocator
      * @param  list<RouteFile>  $files
      * @param  list<string>  $warnings
      */
-    private function fromGroup(Expr\MethodCall $group, ClassSymbol $class, ParseResult $parsed, ConstantEvaluator $eval, array &$files, array &$warnings): bool
+    private function fromGroup(Expr\MethodCall|Expr\StaticCall $group, ClassSymbol $class, ParseResult $parsed, ConstantEvaluator $eval, array &$files, array &$warnings): bool
     {
-        $arg = $group->args[0] ?? null;
-        if (! $arg instanceof Arg || $arg->value instanceof Expr\Closure || $arg->value instanceof Expr\ArrowFunction) {
-            return false;
-        }
-
-        // Flatten the chain from the root outwards.
-        $calls = [];
-        $node = $group->var;
-        while ($node instanceof Expr\MethodCall) {
-            array_unshift($calls, $node);
-            $node = $node->var;
-        }
-        if (! $node instanceof Expr\StaticCall || ! $this->isRouteFacade($node)) {
-            return false;
-        }
-        array_unshift($calls, $node);
-
+        $file = $class->file;
         $prefix = '';
         $middleware = [];
         $namespace = null;
-        $file = $class->file;
-        foreach ($calls as $call) {
-            if (! $call->name instanceof Node\Identifier) {
-                continue;
+
+        if ($group instanceof Expr\StaticCall) {
+            $attrs = $group->args[0] ?? null;
+            $pathArg = $group->args[1] ?? null;
+            if (! $pathArg instanceof Arg || $pathArg->value instanceof Expr\Closure || $pathArg->value instanceof Expr\ArrowFunction) {
+                return false;
             }
-            $values = [];
-            foreach ($call->args as $a) {
-                if ($a instanceof Arg) {
-                    $values[] = $a->value;
+            if ($attrs instanceof Arg && $attrs->value instanceof Expr\Array_) {
+                foreach ($attrs->value->items as $item) {
+                    $key = $item->key instanceof Node\Scalar\String_ ? $item->key->value : '';
+                    $this->applyAttribute($key, [$item->value], $item, $file, $class, $eval, $prefix, $middleware, $namespace, $warnings);
                 }
             }
-            switch (strtolower($call->name->toString())) {
-                case 'prefix':
-                    $v = isset($values[0]) ? $eval->string($values[0], $file, $class) : null;
-                    if ($v === null) {
-                        $warnings[] = sprintf('%s:%d: route prefix could not be resolved', $file, $call->getStartLine());
-                    } else {
-                        $prefix = trim($v, '/');
+        } else {
+            $pathArg = $group->args[0] ?? null;
+            if (! $pathArg instanceof Arg || $pathArg->value instanceof Expr\Closure || $pathArg->value instanceof Expr\ArrowFunction) {
+                return false;
+            }
+            // Flatten the chain from the root outwards.
+            $calls = [];
+            $node = $group->var;
+            while ($node instanceof Expr\MethodCall) {
+                array_unshift($calls, $node);
+                $node = $node->var;
+            }
+            if ($node instanceof Expr\StaticCall) {
+                array_unshift($calls, $node);
+            }
+            foreach ($calls as $call) {
+                if (! $call->name instanceof Node\Identifier) {
+                    continue;
+                }
+                $values = [];
+                foreach ($call->args as $a) {
+                    if ($a instanceof Arg) {
+                        $values[] = $a->value;
                     }
-                    break;
-                case 'namespace':
-                    $namespace = isset($values[0]) ? $eval->string($values[0], $file, $class) : null;
-                    break;
-                case 'middleware':
-                    foreach ($values as $value) {
-                        foreach ($value instanceof Expr\Array_ ? array_map(fn ($i) => $i->value, $value->items) : [$value] as $item) {
-                            $s = $eval->string($item, $file, $class);
-                            if ($s !== null) {
-                                $middleware[] = $s;
-                            }
-                        }
-                    }
-                    break;
+                }
+                $this->applyAttribute(strtolower($call->name->toString()), $values, $call, $file, $class, $eval, $prefix, $middleware, $namespace, $warnings);
             }
         }
 
-        $path = $eval->path($arg->value, $file, $class);
+        $path = $eval->path($pathArg->value, $file, $class);
         if ($path === null) {
             $warnings[] = sprintf('%s:%d: route file path could not be resolved', $file, $group->getStartLine());
 
@@ -246,6 +291,58 @@ final class RouteFileLocator
         $files[] = new RouteFile($path, $prefix, $middleware, $namespace);
 
         return true;
+    }
+
+    /**
+     * @param  list<Expr>  $values
+     * @param  list<string>  $middleware
+     * @param  list<string>  $warnings
+     */
+    private function applyAttribute(string $name, array $values, Node $at, string $file, ClassSymbol $class, ConstantEvaluator $eval, string &$prefix, array &$middleware, ?string &$namespace, array &$warnings): void
+    {
+        $line = $at->getStartLine();
+        switch (strtolower($name)) {
+            case 'prefix':
+                $v = isset($values[0]) ? $eval->string($values[0], $file, $class) : null;
+                if ($v === null) {
+                    $warnings[] = sprintf('%s:%d: route prefix could not be resolved', $file, $line);
+                } else {
+                    $prefix = trim($v, '/');
+                }
+                break;
+            case 'namespace':
+                $expr = $values[0] ?? null;
+                if ($expr === null || $this->isNull($expr)) {
+                    $namespace = null;
+                    break;
+                }
+                $namespace = $eval->string($expr, $file, $class);
+                if ($namespace === null) {
+                    $warnings[] = sprintf('%s:%d: route namespace could not be resolved', $file, $line);
+                }
+                break;
+            case 'middleware':
+                foreach ($values as $value) {
+                    foreach ($value instanceof Expr\Array_ ? array_map(fn ($i) => $i->value, $value->items) : [$value] as $item) {
+                        $str = $eval->string($item, $file, $class);
+                        if ($str !== null) {
+                            $middleware[] = $str;
+                        } elseif (! $this->isNull($item)) {
+                            $warnings[] = sprintf('%s:%d: route middleware could not be resolved', $file, $line);
+                        }
+                    }
+                }
+                break;
+            case 'withoutmiddleware':
+            case 'excluded_middleware':
+                $warnings[] = sprintf('%s:%d: withoutMiddleware on route-file groups is not analysed', $file, $line);
+                break;
+        }
+    }
+
+    private function isNull(Expr $e): bool
+    {
+        return $e instanceof Expr\ConstFetch && strtolower($e->name->toString()) === 'null';
     }
 
     private function isRouteFacade(Expr\StaticCall $call): bool
