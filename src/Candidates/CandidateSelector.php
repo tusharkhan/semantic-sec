@@ -62,6 +62,15 @@ final class CandidateSelector
         'doesntexist', 'paginate', 'simplepaginate', 'cursorpaginate', 'cursor', 'lazy', 'sum', 'max', 'min', 'avg', 'tobase', 'getresults',
     ];
 
+    // Relation definitions a model's relation method builds, and the modifiers chained onto them.
+    private const RELATION_DEFINITIONS = [
+        'hasone', 'hasmany', 'belongsto', 'belongstomany', 'hasonethrough', 'hasmanythrough', 'morphone', 'morphmany', 'morphto', 'morphtomany',
+        'morphedbymany', 'withpivot', 'withtimestamps', 'withdefault', 'as', 'using', 'wherepivot', 'ofmany', 'latestofmany', 'oldestofmany',
+    ];
+
+    // Model reads usually called statically or on a collection of models.
+    private const STATIC_READS = ['query', 'all', 'newquery', 'exists'];
+
     // Finders that throw when the scoped query has no such row.
     private const THROWING = ['findorfail', 'firstorfail', 'sole'];
 
@@ -120,6 +129,12 @@ final class CandidateSelector
     /** @var array<int, PathNode> per route: spl id of a call => the callee node it reaches */
     private array $callees = [];
 
+    /** @var array<string, list<Expr\Assign|Expr\AssignOp|Expr\AssignRef|Stmt\Foreach_>> per route: node id => its writes */
+    private array $writeNodes = [];
+
+    /** @var array<string, mixed> per route: memoised taint steps and callee taints */
+    private array $taintMemo = [];
+
     /** @var array<string, array<string, array{0: string, 1: ?string}>> per route: node id => variable => [route parameter, bound model] */
     private array $routeVars = [];
 
@@ -156,7 +171,7 @@ final class CandidateSelector
                 $reason = 'selection failed: '.$e->getMessage();
                 $candidate = new Candidate($route, new ExecutionPath([$entry], []), [Category::Idor, Category::MissingAuthorization], ['idor' => $reason, 'missing_authorization' => $reason]);
             } finally {
-                $this->nodes = $this->bodies = $this->callees = $this->routeVars = $this->massVars = $this->decided = [];
+                $this->nodes = $this->bodies = $this->callees = $this->routeVars = $this->massVars = $this->decided = $this->writeNodes = $this->taintMemo = [];
             }
             if ($candidate !== null) {
                 $candidates[] = $candidate;
@@ -589,13 +604,8 @@ final class CandidateSelector
                 }
             }
         }
-        // Any assignment whose right-hand side mentions the identifier carries it on, loosely unless it is a plain copy.
-        foreach ((new NodeFinder())->find($body->stmts, static fn (Node $n): bool => $n instanceof Expr\Assign || $n instanceof Expr\AssignOp) as $assign) {
-            \assert($assign instanceof Expr\Assign || $assign instanceof Expr\AssignOp);
-            if (! $this->carriedBy($assign->expr, $var, $node)) {
-                continue;
-            }
-            $target = $assign->var;
+        // Every write of a value carrying the identifier carries it on, loosely unless it is a plain copy.
+        foreach ($this->taintedWrites($node, $var, 0) as [$target, $copy]) {
             if (! $target instanceof Expr\Variable || ! is_string($target->name)) {
                 $flows[] = self::unknownFlow();
 
@@ -604,7 +614,6 @@ final class CandidateSelector
             if ($target->name === $var) {
                 continue;
             }
-            $copy = $assign instanceof Expr\Assign && self::isVariable(self::unwrap($assign->expr), $var);
             foreach ($this->flowModels($node, $target->name, $seen, $copy && $bound) as $flow) {
                 $flow['loose'] = $flow['loose'] || ! $copy;
                 $flows[] = $flow;
@@ -669,28 +678,12 @@ final class CandidateSelector
         $index = array_search($arg, $call->getRawArgs(), true);
         $param = $callee === null || $arg->unpack || ! is_int($index) ? null : $this->calleeParam($callee, $index, $arg->name?->toString());
         $calleeBody = $callee === null ? null : ($this->bodies[$callee->id] ?? null);
-        if ($callee === null || $param === null || $calleeBody === null || $depth > 4) {
+        if ($callee === null || $param === null || $calleeBody === null) {
             return true;
         }
-        $tainted = [$param => true];
-        $assigns = (new NodeFinder())->find($calleeBody->stmts, static fn (Node $n): bool => $n instanceof Expr\Assign || $n instanceof Expr\AssignOp || $n instanceof Expr\AssignRef);
-        for ($round = 0, $grew = true; $grew && $round < 8; $round++) {
-            $grew = false;
-            foreach ($assigns as $assign) {
-                \assert($assign instanceof Expr\Assign || $assign instanceof Expr\AssignOp || $assign instanceof Expr\AssignRef);
-                foreach (array_keys($tainted) as $t) {
-                    if (! $this->carriedBy($assign->expr, (string) $t, $callee, $depth + 1)) {
-                        continue;
-                    }
-                    if (! $assign->var instanceof Expr\Variable || ! is_string($assign->var->name)) {
-                        return true;
-                    }
-                    if (! isset($tainted[$assign->var->name])) {
-                        $tainted[$assign->var->name] = true;
-                        $grew = true;
-                    }
-                }
-            }
+        $tainted = $this->calleeTaint($callee, $param, $depth);
+        if ($tainted === null) {
+            return true;
         }
         foreach ((new NodeFinder())->find($calleeBody->stmts, static fn (Node $n): bool => $n instanceof Stmt\Return_ || $n instanceof Expr\Yield_ || $n instanceof Expr\YieldFrom || $n instanceof Expr\ArrowFunction) as $exit) {
             $value = match (true) {
@@ -706,6 +699,161 @@ final class CandidateSelector
         }
 
         return false;
+    }
+
+    /**
+     * One taint step, shared by route bodies and callees: every write of a value carrying $var (assignments of every
+     * kind, list destructuring, foreach value and key, by-reference outputs of a call it is passed to).
+     *
+     * @return list<array{Expr, bool}> target, and whether it is a plain copy of $var
+     */
+    private function taintedWrites(PathNode $node, string $var, int $depth): array
+    {
+        $key = 'w'.$node->id."\0".$var."\0".$depth;
+        if (array_key_exists($key, $this->taintMemo)) {
+            /** @var list<array{Expr, bool}> */
+            return $this->taintMemo[$key];
+        }
+        $body = $this->bodies[$node->id];
+        $out = [];
+        if (! isset($this->writeNodes[$node->id])) {
+            /** @var list<Expr\Assign|Expr\AssignOp|Expr\AssignRef|Stmt\Foreach_> $found */
+            $found = (new NodeFinder())->find($body->stmts, static fn (Node $n): bool => $n instanceof Expr\Assign || $n instanceof Expr\AssignOp || $n instanceof Expr\AssignRef || $n instanceof Stmt\Foreach_);
+            $this->writeNodes[$node->id] = $found;
+        }
+        foreach ($this->writeNodes[$node->id] as $write) {
+            if (! $this->carriedBy($write->expr, $var, $node, $depth)) {
+                continue;
+            }
+            $copy = $write instanceof Expr\Assign && self::isVariable(self::unwrap($write->expr), $var);
+            $targets = $write instanceof Stmt\Foreach_ ? array_filter([$write->valueVar, $write->keyVar]) : [$write->var];
+            foreach ($targets as $target) {
+                foreach (self::destructured($target) as $leaf) {
+                    $out[] = [$leaf, $copy && $leaf === $target];
+                }
+            }
+        }
+        foreach ($body->calls as $call) {
+            foreach ($this->refOutputs($node, $call, $var, $depth) as $target) {
+                $out[] = [$target, false];
+            }
+        }
+
+        return $this->taintMemo[$key] = $out;
+    }
+
+    /** @return list<Expr> the variables a list or array destructuring target writes, or the target itself */
+    private static function destructured(Expr $target): array
+    {
+        if (! $target instanceof Expr\List_ && ! $target instanceof Expr\Array_) {
+            return [$target];
+        }
+        $out = [];
+        foreach ($target->items as $item) {
+            if ($item !== null) {
+                array_push($out, ...self::destructured($item->value));
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Arguments a call may write a value carrying $var into: by-reference parameters a followed callee taints, every
+     * by-reference parameter of an internal function, and every other variable argument of any other non-lookup call.
+     *
+     * @return list<Expr>
+     */
+    private function refOutputs(PathNode $node, Expr\CallLike $call, string $var, int $depth): array
+    {
+        if ($call->isFirstClassCallable()) {
+            return [];
+        }
+        $args = array_values(array_filter($call->getRawArgs(), static fn ($a): bool => $a instanceof Node\Arg));
+        $carrier = null;
+        foreach ($args as $arg) {
+            if ($this->mentions($arg->value, $var)) {
+                $carrier = $arg;
+
+                break;
+            }
+        }
+        if ($carrier === null || $this->isRealLookup($node, $call)) {
+            return [];
+        }
+        $callee = $this->callees[spl_object_id($call)] ?? null;
+        $params = null;
+        if ($callee !== null) {
+            $index = array_search($carrier, $call->getRawArgs(), true);
+            $param = $carrier->unpack || ! is_int($index) || ! self::isVariable(self::unwrap($carrier->value), $var) ? null : $this->calleeParam($callee, $index, $carrier->name?->toString());
+            $tainted = $param === null || $depth > 4 ? null : $this->calleeTaint($callee, $param, $depth + 1);
+            if ($tainted !== null) {
+                $params = [];
+                foreach ($callee->method?->node->params ?? [] as $i => $p) {
+                    if ($p->byRef && $p->var instanceof Expr\Variable && is_string($p->var->name) && isset($tainted[$p->var->name])) {
+                        $params[$i] = $p->var->name;
+                    }
+                }
+            }
+        } elseif ($call instanceof Expr\FuncCall && $call->name instanceof Node\Name && function_exists($name = ltrim($call->name->toString(), '\\')) && (new \ReflectionFunction($name))->isInternal()) {
+            $params = [];
+            foreach ((new \ReflectionFunction($name))->getParameters() as $p) {
+                if ($p->isPassedByReference()) {
+                    $params[$p->getPosition()] = $p->getName();
+                }
+            }
+        } elseif ($call instanceof Expr\FuncCall && $call->name instanceof Node\Name && $this->knownFunction(strtolower(ltrim($call->name->toString(), '\\')))) {
+            return [];
+        }
+        $out = [];
+        foreach ($args as $i => $arg) {
+            if ($arg === $carrier || self::isVariable(self::unwrap($arg->value), $var)) {
+                continue;
+            }
+            $hit = $params === null ? ! $arg->unpack && self::unwrap($arg->value) instanceof Expr\Variable
+                : ($arg->name === null ? isset($params[$i]) : in_array($arg->name->toString(), $params, true));
+            if ($hit) {
+                $out[] = $arg->value;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Variables of a callee that may hold its parameter, by the shared taint walk; null when the value escapes into a
+     * property, an array element or another non-variable target.
+     *
+     * @return array<string, true>|null
+     */
+    private function calleeTaint(PathNode $callee, string $param, int $depth): ?array
+    {
+        if ($depth > 4 || ! isset($this->bodies[$callee->id])) {
+            return null;
+        }
+        $key = 't'.$callee->id."\0".$param."\0".$depth;
+        if (array_key_exists($key, $this->taintMemo)) {
+            /** @var array<string, true>|null */
+            return $this->taintMemo[$key];
+        }
+        // Guards recursion through the callee's own calls.
+        $this->taintMemo[$key] = null;
+        $tainted = [$param => true];
+        $queue = [$param];
+        while ($queue !== []) {
+            $var = array_shift($queue);
+            foreach ($this->taintedWrites($callee, $var, $depth + 1) as [$target]) {
+                if (! $target instanceof Expr\Variable || ! is_string($target->name) || count($tainted) > 32) {
+                    return $this->taintMemo[$key] = null;
+                }
+                if (! isset($tainted[$target->name])) {
+                    $tainted[$target->name] = true;
+                    $queue[] = $target->name;
+                }
+            }
+        }
+
+        return $this->taintMemo[$key] = $tainted;
     }
 
     // The callee parameter an argument binds to, by name when named; null when it is variadic or not a plain variable.
@@ -1081,21 +1229,19 @@ final class CandidateSelector
                 return true;
             }
 
-            return ! self::isSafeFacade(ltrim($call->class->toString(), '\\')) && $this->types->staticModel($call, $node) === null;
+            if (self::isSafeFacade(ltrim($call->class->toString(), '\\'))) {
+                return false;
+            }
+
+            // On a model class, only Eloquent reads and writes (writes are then held to the auth-rooted rule).
+            return $this->types->staticModel($call, $node) === null || ! (self::isModelRead($call->name->toLowerString()) || $this->isModelWrite($node, $call) && self::isWriteName($call->name->toLowerString()));
         }
-        // An unknown method anywhere on a chain from the user may write anything.
-        if ($this->userRooted($call->var, $body)) {
-            return ! $this->knownUserChainMethod($call, $body, $node);
-        }
-        // A variable holding a user relation hop or scoped query allows only the methods a direct chain does.
-        if ($call->var instanceof Expr\Variable && $this->authRooted($call->var, $body, $node)) {
-            return ! $this->knownUserChainMethod($call, $body, $node);
-        }
-        if ($this->harmlessReceiver($call->var, $body) || $this->authRooted($call->var, $body, $node) || $this->types->queryModel($call->var, $node) !== null) {
+        if ($this->harmlessReceiver($call->var, $body)) {
             return false;
         }
 
-        return true;
+        // Default deny: any other method on any receiver must be an Eloquent read, a model write or a relation.
+        return ! $this->knownModelMethod($call, $body, $node);
     }
 
     // A chain rooted at the request, response()/request()/auth() and similar helpers, or a safe facade.
@@ -1111,6 +1257,9 @@ final class CandidateSelector
             }
             $expr = $expr->var;
         }
+        if ($body->auth->isAuthUser($expr)) {
+            return false;
+        }
         if ($expr instanceof Expr\FuncCall) {
             return $expr->name instanceof Node\Name && in_array(strtolower(ltrim($expr->name->toString(), '\\')), self::KNOWN_FUNCTIONS, true);
         }
@@ -1121,32 +1270,35 @@ final class CandidateSelector
         return $this->isRequestReceiver($expr, $body);
     }
 
-    // The chain passes through the authenticated user (auth()->user(), $request->user(), Auth::user(), or a variable holding it).
-    private function userRooted(Expr $expr, FunctionBody $body): bool
+    private static function isModelRead(string $name): bool
     {
-        while (true) {
-            if ($body->auth->isAuthUser($expr)) {
-                return true;
-            }
-            if (! (AuthExpressions::isCall($expr) || $expr instanceof Expr\PropertyFetch || $expr instanceof Expr\NullsafePropertyFetch || $expr instanceof Expr\ArrayDimFetch)) {
-                return false;
-            }
-            $expr = $expr->var;
-        }
+        return in_array($name, [...self::ELOQUENT_METHODS, ...self::USER_METHODS, ...self::STATIC_READS], true)
+            || str_starts_with($name, 'where') || str_starts_with($name, 'orwhere') || str_starts_with($name, 'first') || str_starts_with($name, 'find');
     }
 
-    // A method Eloquent provides on a user-rooted receiver, or a relation of the model there.
-    private function knownUserChainMethod(Expr\MethodCall|Expr\NullsafeMethodCall $call, FunctionBody $body, PathNode $node): bool
+    private static function isWriteName(string $name): bool
+    {
+        return in_array($name, [...AuthExpressions::WRITES, ...self::STATE_CALLS], true);
+    }
+
+    // An Eloquent read on a receiver not proven to be an app class, a model write, or a relation of the model there.
+    private function knownModelMethod(Expr\MethodCall|Expr\NullsafeMethodCall $call, FunctionBody $body, PathNode $node): bool
     {
         $name = $call->name instanceof Node\Identifier ? $call->name->toLowerString() : '';
-        if (in_array($name, [...self::ELOQUENT_METHODS, ...self::USER_METHODS, ...AuthExpressions::WRITES, ...self::STATE_CALLS], true)
-            || str_starts_with($name, 'where') || str_starts_with($name, 'orwhere') || str_starts_with($name, 'first') || str_starts_with($name, 'find')) {
+        if (self::isWriteName($name)) {
+            return $this->isModelWrite($node, $call);
+        }
+        $type = $this->types->typeOf($call->var, $node);
+        if (self::isModelRead($name)) {
+            return $type === null || $this->types->isModel($type) || str_starts_with($type, 'Illuminate\\');
+        }
+        if (in_array($name, self::RELATION_DEFINITIONS, true) && ($type === null || $this->types->isModel($type) || str_starts_with($type, self::RELATIONS_NS))) {
             return true;
         }
         if ($body->auth->isAuthUser($call->var)) {
             return $this->isRelation($call->var, $call, $node);
         }
-        $model = $this->types->queryModel($call->var, $node) ?? $this->types->typeOf($call->var, $node);
+        $model = $this->types->queryModel($call->var, $node) ?? $type;
 
         return $model !== null && $this->relations->relatedClass($model, $name) !== null;
     }
@@ -1162,14 +1314,29 @@ final class CandidateSelector
         if ($call !== null && $call->isFirstClassCallable()) {
             return false;
         }
+        $params = (new \ReflectionFunction($name))->getParameters();
         // compact() strings are variable names, never called.
-        foreach ($call === null || $name === 'compact' ? [] : $call->getArgs() as $arg) {
-            if (self::callableShaped($arg->value)) {
+        foreach ($call === null || $name === 'compact' ? [] : $call->getRawArgs() as $index => $arg) {
+            if (! $arg instanceof Node\Arg || $arg->unpack || self::callableShaped($arg->value)) {
+                return false;
+            }
+            $named = $arg->name?->toString();
+            $param = $named === null ? ($params[$index] ?? null) : null;
+            foreach ($named === null ? [] : $params as $candidate) {
+                $param = $candidate->getName() === $named ? $candidate : $param;
+            }
+            // Whatever reaches a callable parameter may name an app function, unless it is a literal null.
+            if ($param !== null && self::callableParam($param) && ! ($arg->value instanceof Expr\ConstFetch && $arg->value->name->toLowerString() === 'null')) {
                 return false;
             }
         }
 
         return true;
+    }
+
+    private static function callableParam(\ReflectionParameter $param): bool
+    {
+        return str_contains(strtolower((string) $param->getType()), 'callable') || str_contains(strtolower($param->getName()), 'callback') || str_contains(strtolower($param->getName()), 'handler');
     }
 
     // A closure, arrow function, first-class callable, [obj, 'm'] array, or an identifier-shaped or `::`/`@` string.
