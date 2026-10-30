@@ -179,9 +179,9 @@ PHP]);
         self::assertStringContainsString(':3: conditional controller middleware is not analysed', $w[0]);
     }
 
-    public function testMultiNameAndPipeMiddleware(): void
+    public function testMultiNameMiddleware(): void
     {
-        $body = "use Illuminate\\Routing\\Controllers\\HasMiddleware;\nuse Illuminate\\Routing\\Controllers\\Middleware;\nclass C implements HasMiddleware { public static function middleware(): array { return [new Middleware(['a', 'b'], only: ['show']), 'c|d']; } public function __construct() { \$this->middleware(['e', 'f|g'])->except('show'); } }";
+        $body = "use Illuminate\\Routing\\Controllers\\HasMiddleware;\nuse Illuminate\\Routing\\Controllers\\Middleware;\nclass C implements HasMiddleware { public static function middleware(): array { return [new Middleware(['a', 'b'], only: ['show']), 'c', 'd']; } public function __construct() { \$this->middleware(['e', 'f', 'g'])->except('show'); } }";
         self::assertSame([['a', 'b', 'c', 'd'], []], $this->read($body, 'show'));
         self::assertSame([['e', 'f', 'g', 'c', 'd'], []], $this->read($body, 'index'));
     }
@@ -190,5 +190,20 @@ PHP]);
     {
         $body = "use Illuminate\\Routing\\Controllers\\HasMiddleware;\nclass Base implements HasMiddleware { public static function middleware(): array { return ['auth']; } }\nclass C extends Base {}";
         self::assertSame([['auth'], []], $this->read($body));
+    }
+
+    public function testUnresolvableOptionsSkipAndWarn(): void
+    {
+        foreach (['$this->middleware(\'a\', $opts);', '$this->middleware(\'a\', [...$o]);', '$this->middleware(\'a\', [$k => [\'show\']]);'] as $call) {
+            [$mw, $w] = $this->read('class C { public function __construct() { '.$call.' } }');
+            self::assertSame([], $mw, $call);
+            self::assertCount(1, $w, $call);
+            self::assertStringContainsString(':3: controller middleware options could not be resolved', $w[0]);
+        }
+    }
+
+    public function testPipedNameStaysSingleEntry(): void
+    {
+        self::assertSame([['role:admin|editor'], []], $this->read("class C { public function __construct() { \$this->middleware('role:admin|editor'); } }"));
     }
 }

@@ -115,17 +115,22 @@ final class ControllerMiddlewareReader
             [$root, $only, $except, $ok] = $this->readChain($stmt->expr, $top, $class, $warnings);
             $names = $this->middlewareNames($root->args[0]->value ?? null, $class, $root->getStartLine(), $warnings);
             $options = $root->args[1]->value ?? null;
-            if ($options instanceof Expr\Array_) {
-                foreach ($options->items as $item) {
-                    $key = $item->key instanceof Expr ? $this->eval->string($item->key, $class->file, $class) : null;
-                    if ($key === 'only' || $key === 'except') {
-                        $list = $this->methodList([new Node\Arg($item->value)], $class, $item->getStartLine(), $warnings);
-                        $ok = $ok && $list !== null;
-                        if ($key === 'only') {
-                            $only ??= $list;
-                        } else {
-                            $except ??= $list;
-                        }
+            if ($options !== null && ! $options instanceof Expr\Array_) {
+                $warnings[] = sprintf('%s:%d: controller middleware options could not be resolved', $class->file, $root->getStartLine());
+                $ok = false;
+            }
+            foreach ($options instanceof Expr\Array_ ? $options->items : [] as $item) {
+                $key = $item->key instanceof Expr ? $this->eval->string($item->key, $class->file, $class) : null;
+                if ($item->unpack || $key === null) {
+                    $warnings[] = sprintf('%s:%d: controller middleware options could not be resolved', $class->file, $item->getStartLine());
+                    $ok = false;
+                } elseif ($key === 'only' || $key === 'except') {
+                    $list = $this->methodList([new Node\Arg($item->value)], $class, $item->getStartLine(), $warnings);
+                    $ok = $ok && $list !== null;
+                    if ($key === 'only') {
+                        $only ??= $list;
+                    } else {
+                        $except ??= $list;
                     }
                 }
             }
@@ -257,7 +262,7 @@ final class ControllerMiddlewareReader
             if ($str === null) {
                 $warnings[] = sprintf('%s:%d: controller middleware could not be resolved', $class->file, $item?->getStartLine() ?? $line);
             } else {
-                array_push($out, ...array_values(array_filter(explode('|', $str), static fn (string $n): bool => $n !== '')));
+                $out[] = $str;
             }
         }
 
