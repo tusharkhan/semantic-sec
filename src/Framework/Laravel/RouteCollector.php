@@ -34,8 +34,14 @@ final class RouteCollector
     /** @var array<string, true> */
     private array $loading = [];
 
+    private readonly StringListReader $lists;
+
+    private readonly RouteActionResolver $actions;
+
     public function __construct(private readonly ParseResult $parsed, private readonly ConstantEvaluator $eval)
     {
+        $this->lists = new StringListReader($eval);
+        $this->actions = new RouteActionResolver($eval, $this->lists);
     }
 
     /** @return array{0: list<RouteEntry>, 1: list<string>} */
@@ -53,7 +59,12 @@ final class RouteCollector
     {
         $parsed = $this->parsed->file($path);
         if ($parsed === null) {
-            $this->warnings[] = sprintf('route file %s not found', $path);
+            $message = sprintf('route file %s not found', $path);
+            if ($from === null) {
+                $this->warnings[] = $message;
+            } else {
+                $this->warn($from, $line, $message);
+            }
 
             return;
         }
@@ -143,7 +154,7 @@ final class RouteCollector
             if ($done) {
                 $this->warn($file, $line, sprintf('route method %s is not analysed', $name));
             } elseif ($route !== null) {
-                $route = $this->routeStep($m, $name, $args, $route, $file, $line);
+                $this->routeStep($m, $name, $args, $route, $file, $line);
             } elseif (in_array($m, self::VERBS, true) || $m === 'any' || $m === 'match') {
                 $route = $this->startRoute($m, $args, $ctx, $file, $line);
                 if ($route === null) {
@@ -165,7 +176,7 @@ final class RouteCollector
             }
         }
         if ($route !== null) {
-            $this->emit($route);
+            $this->routes[] = $route->toEntry();
         }
     }
 
@@ -249,9 +260,9 @@ final class RouteCollector
         }
         switch ($m) {
             case 'middleware':
-                return $ctx->merge(new RouteContext(middleware: $this->middleware($args, $file, $line)));
+                return $ctx->merge(new RouteContext(middleware: $this->stringList($args, $file, $line)));
             case 'withoutmiddleware':
-                return $ctx->merge(new RouteContext(withoutMiddleware: $this->middleware($args, $file, $line)));
+                return $ctx->merge(new RouteContext(withoutMiddleware: $this->stringList($args, $file, $line)));
             case 'can':
                 $can = $this->can($args, $file, $line);
 
@@ -280,79 +291,40 @@ final class RouteCollector
         return $ctx->merge(match ($fields[$m]) {
             'prefix' => new RouteContext(prefix: $value),
             'name' => new RouteContext(namePrefix: $value),
-            'controller' => new RouteContext(controller: ltrim($value, '\\')),
+            'controller' => new RouteContext(controller: $value),
             default => new RouteContext(namespace: $value),
         });
-    }
-
-    /**
-     * @param  list<Expr>  $args
-     * @return list<string>
-     */
-    private function middleware(array $args, string $file, int $line, string $what = 'middleware'): array
-    {
-        $out = [];
-        foreach ($args as $value) {
-            foreach ($value instanceof Expr\Array_ ? $value->items : [$value] as $item) {
-                if ($item instanceof Node\ArrayItem) {
-                    if ($item->unpack) {
-                        $this->warn($file, $line, sprintf('route %s could not be resolved', $what));
-
-                        continue;
-                    }
-                    $item = $item->value;
-                }
-                if (self::isConst($item, 'null')) {
-                    continue;
-                }
-                $str = $this->eval->string($item, $file);
-                if ($str === null) {
-                    $this->warn($file, $line, sprintf('route %s could not be resolved', $what));
-                } else {
-                    $out[] = $str;
-                }
-            }
-        }
-
-        return $out;
     }
 
     /** @param list<Expr> $args */
     private function can(array $args, string $file, int $line): ?string
     {
         $ability = isset($args[0]) ? $this->eval->string($args[0], $file) : null;
-        $models = [];
-        if ($ability !== null && isset($args[1])) {
-            $models = $this->middleware([$args[1]], $file, $line);
-            $expected = $args[1] instanceof Expr\Array_ ? count($args[1]->items) : 1;
-            if (count($models) !== $expected) {
-                return null;
-            }
-        }
         if ($ability === null) {
             $this->warn($file, $line, 'route middleware could not be resolved');
 
             return null;
         }
+        $models = [];
+        if (isset($args[1]) && ! self::isConst($args[1], 'null')) {
+            $models = $this->lists->strictStringList([$args[1]], $file, $line, 'middleware', $this->warnings);
+            if ($models === null) {
+                return null;
+            }
+        }
 
         return 'can:'.$ability.($models === [] ? '' : ','.implode(',', $models));
     }
 
-    /**
-     * @param  list<Expr>  $args
-     * @return array{methods: list<string>, uri: string, action: RouteAction, middleware: list<string>, without: list<string>, name: ?string, scope: ?bool, ctx: RouteContext, file: string, line: int}|null
-     */
-    private function startRoute(string $m, array $args, RouteContext $ctx, string $file, int $line): ?array
+    /** @param list<Expr> $args */
+    private function startRoute(string $m, array $args, RouteContext $ctx, string $file, int $line): ?PendingRoute
     {
         if ($m === 'match') {
-            if (! isset($args[0])) {
+            $methods = isset($args[0]) ? $this->lists->strictStringList([$args[0]], $file, $line, 'methods', $this->warnings) : [];
+            if ($methods === []) {
                 $this->warn($file, $line, 'route methods could not be resolved');
-
-                return null;
             }
-            $methods = $this->middleware([$args[0]], $file, $line, 'methods');
-            $expected = $args[0] instanceof Expr\Array_ ? count($args[0]->items) : 1;
-            if ($methods === [] || count($methods) !== $expected) {
+            if ($methods === null || $methods === []) {
                 return null;
             }
             $methods = array_map('strtoupper', $methods);
@@ -366,177 +338,61 @@ final class RouteCollector
 
             return null;
         }
-        $route = ['methods' => $methods, 'uri' => $uri, 'action' => new RouteAction(null, null), 'middleware' => [], 'without' => [], 'name' => null, 'scope' => null, 'ctx' => $ctx, 'file' => $file, 'line' => $line];
-        $route['action'] = $this->action($args[1] ?? null, $route, $file, $line);
+        $route = new PendingRoute($methods, $uri, $ctx, $file, $line);
+        $resolved = $this->actions->resolve($args[1] ?? null, $ctx, $file, $line);
+        $route->action = $resolved->action;
+        $route->middleware = $resolved->middleware;
+        $route->name = $resolved->name;
+        array_push($this->warnings, ...$resolved->warnings);
 
         return $route;
     }
 
-    /**
-     * @param  array{methods: list<string>, uri: string, action: RouteAction, middleware: list<string>, without: list<string>, name: ?string, scope: ?bool, ctx: RouteContext, file: string, line: int}  $route
-     */
-    private function action(?Expr $expr, array &$route, string $file, int $line): RouteAction
-    {
-        if ($expr instanceof Expr\Closure || $expr instanceof Expr\ArrowFunction) {
-            return new RouteAction(null, null, $expr);
-        }
-        if ($expr instanceof Expr\ClassConstFetch && $expr->name instanceof Node\Identifier && strtolower($expr->name->toString()) === 'class') {
-            $class = $this->eval->string($expr, $file);
-            if ($class !== null) {
-                return new RouteAction(self::qualify($class, $route['ctx']->namespace), '__invoke');
-            }
-        } elseif ($expr instanceof Expr\Array_) {
-            $keyed = array_filter($expr->items, fn (Node\ArrayItem $i): bool => $i->key !== null);
-            if ($keyed !== []) {
-                return $this->keyedAction($expr, $route, $file, $line);
-            }
-            if (count($expr->items) === 2 && ! $expr->items[0]->unpack && ! $expr->items[1]->unpack) {
-                $class = $this->eval->string($expr->items[0]->value, $file);
-                $method = $this->eval->string($expr->items[1]->value, $file);
-                if ($class !== null && $method !== null) {
-                    return new RouteAction(ltrim($class, '\\'), $method);
-                }
-            }
-        } elseif ($expr !== null) {
-            $str = $this->eval->string($expr, $file);
-            if ($str !== null) {
-                return $this->stringAction($str, $route['ctx']);
-            }
-        }
-        $this->warn($file, $line, 'route action could not be resolved');
-
-        return new RouteAction(null, null);
-    }
-
-    /**
-     * @param  array{methods: list<string>, uri: string, action: RouteAction, middleware: list<string>, without: list<string>, name: ?string, scope: ?bool, ctx: RouteContext, file: string, line: int}  $route
-     */
-    private function keyedAction(Expr\Array_ $expr, array &$route, string $file, int $line): RouteAction
-    {
-        $action = null;
-        foreach ($expr->items as $item) {
-            $key = $item->key instanceof Node\Scalar\String_ ? strtolower($item->key->value) : null;
-            if ($item->key === null && ($item->value instanceof Expr\Closure || $item->value instanceof Expr\ArrowFunction)) {
-                $action = new RouteAction(null, null, $item->value);
-            } elseif ($key === 'uses') {
-                $uses = $this->eval->string($item->value, $file);
-                $action = $uses === null ? null : $this->stringAction($uses, $route['ctx']);
-            } elseif ($key === 'middleware') {
-                $route['middleware'] = [...$route['middleware'], ...$this->middleware([$item->value], $file, $line)];
-            } elseif ($key === 'as') {
-                $name = $this->eval->string($item->value, $file);
-                if ($name === null) {
-                    $this->warn($file, $line, 'route name could not be resolved');
-                }
-                $route['name'] = $name;
-            } else {
-                $this->warn($file, $line, sprintf('route action key %s is not analysed', $key ?? '?'));
-            }
-        }
-        if ($action === null) {
-            $this->warn($file, $line, 'route action could not be resolved');
-        }
-
-        return $action ?? new RouteAction(null, null);
-    }
-
-    private function stringAction(string $action, RouteContext $ctx): RouteAction
-    {
-        if (str_contains($action, '@')) {
-            [$class, $method] = explode('@', $action, 2);
-        } elseif ($ctx->controller !== null) {
-            [$class, $method] = [$ctx->controller, $action];
-        } else {
-            [$class, $method] = [$action, '__invoke'];
-        }
-
-        return new RouteAction(self::qualify($class, $ctx->namespace), $method);
-    }
-
-    /** Prepends the group namespace the way Laravel's Router::prependGroupNamespace does. */
-    private static function qualify(string $class, ?string $namespace): string
-    {
-        if (str_starts_with($class, '\\')) {
-            return ltrim($class, '\\');
-        }
-        if ($namespace === null || $namespace === '' || str_starts_with($class, $namespace)) {
-            return $class;
-        }
-
-        return $namespace.'\\'.$class;
-    }
-
-    /**
-     * @param  list<Expr>  $args
-     * @param  array{methods: list<string>, uri: string, action: RouteAction, middleware: list<string>, without: list<string>, name: ?string, scope: ?bool, ctx: RouteContext, file: string, line: int}  $route
-     * @return array{methods: list<string>, uri: string, action: RouteAction, middleware: list<string>, without: list<string>, name: ?string, scope: ?bool, ctx: RouteContext, file: string, line: int}
-     */
-    private function routeStep(string $m, string $name, array $args, array $route, string $file, int $line): array
+    /** @param list<Expr> $args */
+    private function routeStep(string $m, string $name, array $args, PendingRoute $route, string $file, int $line): void
     {
         if ($m === 'domain' || str_starts_with($m, 'where')) {
-            return $route;
+            return;
         }
         switch ($m) {
             case 'middleware':
-                $route['middleware'] = [...$route['middleware'], ...$this->middleware($args, $file, $line)];
+                $route->middleware = [...$route->middleware, ...$this->stringList($args, $file, $line)];
                 break;
             case 'withoutmiddleware':
-                $route['without'] = [...$route['without'], ...$this->middleware($args, $file, $line)];
+                $route->withoutMiddleware = [...$route->withoutMiddleware, ...$this->stringList($args, $file, $line)];
                 break;
             case 'can':
                 $can = $this->can($args, $file, $line);
                 if ($can !== null) {
-                    $route['middleware'][] = $can;
+                    $route->middleware[] = $can;
                 }
                 break;
             case 'scopebindings':
-                $route['scope'] = true;
+                $route->scopeBindings = true;
                 break;
             case 'withoutscopedbindings':
-                $route['scope'] = false;
+                $route->scopeBindings = false;
                 break;
             case 'name':
                 $value = isset($args[0]) ? $this->eval->string($args[0], $file) : null;
                 if ($value === null) {
                     $this->warn($file, $line, 'route name could not be resolved');
                 } else {
-                    $route['name'] = ($route['name'] ?? '').$value;
+                    $route->name = ($route->name ?? '').$value;
                 }
                 break;
             default:
                 $this->warn($file, $line, sprintf('route method %s is not analysed', $name));
         }
-
-        return $route;
     }
 
-    /** @param array{methods: list<string>, uri: string, action: RouteAction, middleware: list<string>, without: list<string>, name: ?string, scope: ?bool, ctx: RouteContext, file: string, line: int} $route */
-    private function emit(array $route): void
+    /**
+     * @param  list<Expr>  $args
+     * @return list<string>
+     */
+    private function stringList(array $args, string $file, int $line): array
     {
-        $ctx = $route['ctx'];
-        $uri = '/'.RouteContext::joinPath($ctx->prefix, $route['uri']);
-        $name = $ctx->namePrefix.($route['name'] ?? '');
-
-        $this->routes[] = new RouteEntry(
-            $route['methods'],
-            $uri,
-            $name === '' ? null : $name,
-            $route['action'],
-            [...$ctx->middleware, ...$route['middleware']],
-            [...$ctx->withoutMiddleware, ...$route['without']],
-            self::parameters($uri),
-            $route['scope'] ?? $ctx->scopeBindings,
-            $route['file'],
-            $route['line'],
-        );
-    }
-
-    /** @return list<RouteParameter> */
-    private static function parameters(string $uri): array
-    {
-        preg_match_all('/\{(\w+)(?::(\w+))?(\?)?\}/', $uri, $matches, PREG_SET_ORDER);
-
-        return array_map(fn (array $m): RouteParameter => new RouteParameter($m[1], ($m[2] ?? '') === '' ? null : $m[2], ($m[3] ?? '') === '?'), $matches);
+        return $this->lists->stringList($args, $file, $line, 'middleware', $this->warnings);
     }
 
     private function warn(string $file, int $line, string $message): void

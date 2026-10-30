@@ -277,13 +277,48 @@ final class RouteCollectorTest extends TestCase
 
         self::assertSame([
             'routes/admin.php:3: route file routes/web.php is loaded recursively',
-            'route file routes/missing.php not found',
+            'routes/web.php:7: route file routes/missing.php not found',
         ], $warnings);
         $dash = $this->find($routes, 'GET /adm/dash');
         self::assertSame(['web', 'auth'], $dash->middleware);
         self::assertSame('routes/admin.php', $dash->file);
         self::assertSame(2, $dash->line);
         self::assertSame(['web'], $this->find($routes, 'POST /login')->middleware);
+    }
+
+    public function testUnresolvableMethodsAndCanModelsWarn(): void
+    {
+        [$routes, $warnings] = $this->snippet(<<<'PHP'
+            Route::match([], 'a', [FooController::class, 'a']);
+            Route::match(['get', null], 'b', [FooController::class, 'b']);
+            Route::match(['get', $verb], 'c', [FooController::class, 'c']);
+            Route::get('d', [FooController::class, 'd'])->can('view', [null]);
+            Route::get('e', [FooController::class, 'e'])->can('view', null);
+            PHP);
+
+        self::assertSame([
+            'routes/web.php:6: route methods could not be resolved',
+            'routes/web.php:7: route methods could not be resolved',
+            'routes/web.php:8: route methods could not be resolved',
+            'routes/web.php:9: route middleware could not be resolved',
+        ], $warnings);
+        self::assertSame(['web'], $this->find($routes, 'GET /d')->middleware);
+        self::assertSame(['web', 'can:view'], $this->find($routes, 'GET /e')->middleware);
+        self::assertCount(2, $routes);
+    }
+
+    public function testFullyQualifiedStringControllerKeepsLeadingBackslash(): void
+    {
+        [$routes, $warnings] = $this->snippet(<<<'PHP'
+            Route::controller('\App\Other\XController')->group(function () {
+                Route::get('x', 'show');
+            });
+            Route::controller('Admin\YController')->group(fn () => Route::get('y', 'show'));
+            PHP, new RouteFile('routes/web.php', '', ['web'], 'App\Http\Controllers'));
+
+        self::assertSame([], $warnings);
+        self::assertSame('App\Other\XController::show', $this->find($routes, 'GET /x')->action->symbol());
+        self::assertSame('App\Http\Controllers\Admin\YController::show', $this->find($routes, 'GET /y')->action->symbol());
     }
 
     public function testMissingRouteFileWarns(): void
