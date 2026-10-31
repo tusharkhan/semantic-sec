@@ -342,4 +342,14 @@ final class MiddlewareRegistryTest extends TestCase
         $plain = $this->permissionRegistry([]);
         self::assertSame(MiddlewareKind::Other, $plain->kind($plain->canonical('permission:x')));
     }
+
+    public function testListedAliasMatchesCaseSensitively(): void
+    {
+        $r = $this->permissionRegistry(['permission', 'perm']);
+        self::assertSame(MiddlewareKind::Other, $r->kind($r->canonical('PERMISSION:x')));
+        self::assertSame(MiddlewareKind::Other, $r->kind($r->canonical('PERM')));
+        self::assertSame(MiddlewareKind::Authorization, $r->kind($r->canonical('perm')));
+        $c = $this->permissionRegistry(['App\Http\Middleware\CheckPermission']);
+        self::assertSame(MiddlewareKind::Authorization, $c->kind($c->canonical('APP\HTTP\MIDDLEWARE\CHECKPERMISSION')));
+    }
 }

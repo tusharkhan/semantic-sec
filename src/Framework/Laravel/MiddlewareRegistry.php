@@ -177,16 +177,21 @@ final class MiddlewareRegistry
         return isset($parts[1]) && $parts[1] !== '' && ($parts[0] === 'can' || $this->descendsFrom($parts[0], [self::AUTHORIZE]));
     }
 
-    // An authorization_middleware entry matches the alias name, or the exact class FQN case-insensitively.
+    // An authorization_middleware entry matches the alias name exactly, or the class FQN case-insensitively.
     private function isConfiguredAuthorization(string $name): bool
     {
         if ($this->authorizationNames === []) {
             return false;
         }
         $name = ltrim($name, '\\');
+        if (isset($this->authorizationNames[$name])) {
+            return true;
+        }
         $class = isset($this->aliases[$name]) ? ltrim(explode(':', $this->aliases[$name])[0], '\\') : $name;
+        // An unaliased name is compared as a class only when it looks like one.
+        $isClass = isset($this->aliases[$name]) || str_contains($name, '\\') || $this->symbols->getClass($name) !== null;
 
-        return isset($this->authorizationNames[$name]) || isset($this->authorizationClasses[strtolower($class)]);
+        return $isClass && isset($this->authorizationClasses[strtolower($class)]);
     }
 
     // A configured entry matches the alias name, or the class (or an ancestor) case-insensitively.

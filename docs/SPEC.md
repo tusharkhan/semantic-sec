@@ -115,7 +115,7 @@ Through `&&`/`||` it follows the abort-guard any/every rule (see the table below
 |---|---|
 | `auth`, `auth:*`, `auth.basic`, `verified`, `signed` middleware, plus any middleware whose class descends from those (`Authenticate`, `AuthenticateWithBasicAuth`, `EnsureEmailIsVerified`, `ValidateSignature`), plus any middleware on the `auth_middleware` config list (an alias name, or a class FQN that the middleware's class equals or descends from). `auth.session` (`AuthenticateSession`) is not one. | Authentication only |
 | `can:ability,model` middleware or `->can()` on a route or route group | Authorization |
-| Any middleware on the `authorization_middleware` config list: an alias matched on the name before `:` (`permission:x,y` matches `permission`), or the class FQN (case-insensitive, no leading `\`). Route, group and controller middleware all count. Recorded as kind `middleware`, source `<middleware> (authorization_middleware)`, `routeWide` true. | Authorization, `covers` null |
+| Any middleware on the `authorization_middleware` config list: an alias matched exactly (case-sensitive) on the name before `:` (`permission:x,y` matches `permission`), or a class FQN matched case-insensitively with no leading `\`. Route, group and controller middleware all count. M3's subclass-to-alias fold means an unaliased subclass of a listed alias's class, or of a listed parent class that is aliased, matches too. Known non-matches, which only add candidates: a listed subclass FQN whose parent is aliased, a sibling alias of the same class, and a middleware group name. Recorded as kind `middleware`, source `<middleware> (authorization_middleware)`, `routeWide` true. | Authorization, `covers` null |
 | Policy found (registered in `AuthServiceProvider::$policies` / `Gate::policy()`, or by auto-discovery `App\Policies\{Model}Policy`) **and** invoked: `authorizeResource()` in the constructor, `$this->authorize()`, `Gate::authorize/allows/denies`, or `->can()` / `->cannot()` on the **authenticated user**. `$user->can()` on an action parameter is no check: Laravel injects an empty model when it isn't route-bound, and a route-bound one is chosen by the caller. | Authorization |
 | An ability call above whose model has no policy (unknown or unresolved model, or a Gate-only ability) | Authorization: triviality cannot be proven, and the explicit call is real intent |
 | A trivial policy: the ability method's body is only `return true;` or `return Response::allow();`, or `before()` is | **None**, flagged in the map |
@@ -337,6 +337,7 @@ laravel:
 auth_helpers: []               # e.g. "ownsOrFail", "App\\Support\\Access::check"
 auth_middleware: []            # custom authentication middleware: alias or class FQN, e.g. "login"
 authorization_middleware: []   # custom authorization middleware (§6): alias or class FQN, e.g. "permission"
+                               # group names are not expanded: list the member alias or class
 rulesets:                      # appended to the system prompt
   - name: tenancy
     prompt: "Every Eloquent query on tenant models must be scoped by team_id."
