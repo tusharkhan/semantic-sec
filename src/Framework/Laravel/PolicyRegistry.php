@@ -28,8 +28,9 @@ final class PolicyRegistry
     /**
      * @param  array<string, string>  $registered  model => policy
      * @param  array<string, string>  $attributed  model => policy from #[UsePolicy]
+     * @param  array<string, list<GateDefinition>>  $defines  ability => Gate::define calls
      */
-    private function __construct(private readonly SymbolTable $symbols, private readonly array $registered, private readonly array $attributed)
+    private function __construct(private readonly SymbolTable $symbols, private readonly array $registered, private readonly array $attributed, private readonly array $defines = [])
     {
     }
 
@@ -49,6 +50,7 @@ final class PolicyRegistry
         };
 
         $attributed = [];
+        $defines = [];
         foreach ($symbols->all() as $class) {
             foreach ($class->node->attrGroups as $group) {
                 foreach ($group->attrs as $attr) {
@@ -70,10 +72,13 @@ final class PolicyRegistry
             }
             if (in_array(self::SERVICE_PROVIDER, $ancestors, true) || in_array(self::AUTH_PROVIDER, $ancestors, true)) {
                 self::readGateCalls($class, $eval, $add, $warnings);
+                foreach (self::readGateDefines($class, $eval, $symbols) as $define) {
+                    $defines[$define->ability][] = $define;
+                }
             }
         }
 
-        return [new self($symbols, $registered, $attributed), $warnings];
+        return [new self($symbols, $registered, $attributed, $defines), $warnings];
     }
 
     public function policyFor(string $model): ?string
@@ -119,6 +124,18 @@ final class PolicyRegistry
 
         return $expr instanceof Expr\StaticCall && $expr->class instanceof Name && $expr->class->toString() === self::RESPONSE
             && $expr->name instanceof \PhpParser\Node\Identifier && strtolower($expr->name->toString()) === 'allow';
+    }
+
+    /** @return list<GateDefinition> the Gate::define calls for an ability, in source order */
+    public function gateDefinitions(string $ability): array
+    {
+        return $this->defines[$ability] ?? [];
+    }
+
+    // Gate turns kebab-case abilities into camelCase policy methods.
+    public static function abilityMethod(string $ability): string
+    {
+        return str_contains($ability, '-') ? lcfirst(str_replace(' ', '', ucwords(str_replace('-', ' ', $ability)))) : $ability;
     }
 
     public function abilityHolder(string $policy, string $ability): ?MethodSymbol
@@ -216,5 +233,50 @@ final class PolicyRegistry
             }
             $add($model, $policy, $class->file, $call->getStartLine());
         }
+    }
+
+    /** @return list<GateDefinition> */
+    private static function readGateDefines(ClassSymbol $class, ConstantEvaluator $eval, SymbolTable $symbols): array
+    {
+        $out = [];
+        foreach ((new NodeFinder())->findInstanceOf($class->node->getMethods(), Expr\StaticCall::class) as $call) {
+            if (! $call->class instanceof Name || ! in_array($call->class->toString(), [self::GATE, 'Gate'], true)
+                || ! $call->name instanceof \PhpParser\Node\Identifier || strtolower($call->name->toString()) !== 'define') {
+                continue;
+            }
+            $args = array_map(static fn ($a) => $a instanceof \PhpParser\Node\Arg ? $a->value : null, array_slice($call->args, 0, 2));
+            $ability = ($args[0] ?? null) === null ? null : $eval->string($args[0], $class->file, $class);
+            $callback = $args[1] ?? null;
+            if ($ability === null) {
+                continue;
+            }
+            [$method, $closure, $why] = self::callback($callback, $class, $eval, $symbols);
+            $out[] = new GateDefinition($ability, $class->file, $call->getStartLine(), $method, $closure, $why);
+        }
+
+        return $out;
+    }
+
+    /** @return array{?MethodSymbol, Expr\Closure|Expr\ArrowFunction|null, ?string} method, closure, or why neither resolved */
+    private static function callback(?Expr $callback, ClassSymbol $class, ConstantEvaluator $eval, SymbolTable $symbols): array
+    {
+        if ($callback instanceof Expr\Closure || $callback instanceof Expr\ArrowFunction) {
+            return [null, $callback, null];
+        }
+        $target = null;
+        if ($callback instanceof Expr\Array_ && count($callback->items) === 2) {
+            $owner = $eval->string($callback->items[0]->value, $class->file, $class);
+            $name = $eval->string($callback->items[1]->value, $class->file, $class);
+            $target = $owner === null || $name === null ? null : [$owner, $name];
+        } elseif ($callback !== null) {
+            $string = $eval->string($callback, $class->file, $class);
+            $target = $string === null ? null : (str_contains($string, '@') ? explode('@', $string, 2) : [$string, '__invoke']);
+        }
+        if ($target === null) {
+            return [null, null, 'callback not statically resolvable'];
+        }
+        $method = $symbols->findMethod(ltrim($target[0], '\\'), $target[1]);
+
+        return $method === null ? [null, null, ltrim($target[0], '\\').'::'.$target[1].' not in the project'] : [$method, null, null];
     }
 }

@@ -359,7 +359,7 @@ final class CandidateSelector
             [$found] = $this->extractor->bodyChecks($node->method, $node->file, $bound);
             foreach ($found as $c) {
                 if ($c->strength === AuthStrength::Authorization) {
-                    $out[] = new AuthCheck($c->kind, $c->strength, $c->source, $c->file, $c->line, $c->covers === null ? null : ($toRoute[$c->covers] ?? null), $c->model, $c->routeWide);
+                    $out[] = new AuthCheck($c->kind, $c->strength, $c->source, $c->file, $c->line, $c->covers === null ? null : ($toRoute[$c->covers] ?? null), $c->model, $c->routeWide, $c->abilities, $c->abilityModel);
                 }
             }
         }

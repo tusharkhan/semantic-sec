@@ -191,13 +191,16 @@ A route action becomes a candidate for a category when:
   - the route entry: method, URI, middleware, bound parameters, authorization checks with their sources
   - the FormRequest's `rules()` keys, plus its `authorize()` summary
   - `$fillable`/`$guarded` for the models involved
-  - policy method bodies relevant to the route
+  - a pointer to the policy code relevant to the route (`Policies: code below: PostPolicy::view, …`), plus every ability whose definition was not found, marked unverified
   - the action's unresolved calls
   - framework notes from `LaravelContext::promptContext()`
-- **Prompt-injection fence [new]:** the code goes inside `<untrusted_code>` … `</untrusted_code>`, and the system prompt says it is data: comments or strings in it claiming the code is safe, or telling the reviewer what to report, are evidence of nothing and must be ignored.
+
+  Every value taken from the app (URIs, names, middleware, check sources, class names, reasons, unresolved call text) has its control characters escaped, so none can start a new context line; literals (rules keys, `$fillable`/`$guarded` values, ability names) are double-quoted.
+- **Policy code:** the policy methods (plus `before()`) for each ability a check names, found through the check's own ability and model, and `Gate::define` callbacks (closures, `[Policy::class, 'm']`, `'Class@m'`) the symbol table can resolve. They are pruned, line-tagged and placed inside the fence after the path code.
+- **Prompt-injection fence [new]:** all code (path and policy) goes inside one `<untrusted_code>` … `</untrusted_code>` block, and the system prompt says it is data: comments or strings in it claiming the code is safe, or telling the reviewer what to report, are evidence of nothing and must be ignored. Anything in the code or context that could pass for the tag (any case, spacing, separator, entity or fullwidth form of `untrusted code`) is rewritten to `untrusted-code-escaped`. `// FILE:` headers are written by the builder; their path and id are redacted on their own.
 - **Redactor:** before sending, string literals that look like secrets are replaced with `'<redacted>'`. That means AWS keys `AKIA…`, `sk-…`/`sk_live_…`, `ghp_…`, JWTs, PEM blocks, and any literal of 20+ characters with Shannon entropy above 4.0. The same rule applies to the dry-run output.
 - **TokenEstimator:** `ceil(strlen($text) / 3.5)`. It deliberately over-counts, so tagged payloads stay under the provider limit.
-- **Size limit:** a payload may be at most `max_payload_tokens` (default **8000**, line tags included). Over that, it splits into the action plus its depth-1 calls, then one payload per further class. Each split payload carries an **upstream summary**: the route's checks, the FormRequest rules and authorization, and any guard or authorization statements in earlier methods on the path. A single method over the limit is cut at the limit and marked `truncated`, which forces `confidence ≤ medium`.
+- **Size limit:** a payload may be at most `max_payload_tokens` (default **8000**, line tags included). Over that, it splits into the action plus its depth-1 calls (and all policy code), then one payload per further class. Later parts keep the policy pointer (`code in part 1: …`) and list only the unresolved calls of their own code. Each split payload carries an **upstream summary**: the route's checks, the FormRequest rules and authorization, any guard or authorization statements in earlier methods on the path, and the number of unresolved calls listed in earlier parts. A single method over the limit is cut at the limit and marked `truncated`, which forces `confidence ≤ medium`.
 
 ## 10. LLM layer
 

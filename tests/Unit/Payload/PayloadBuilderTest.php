@@ -204,7 +204,7 @@ final class PayloadBuilderTest extends TestCase
     public function testEveryLineTagMatchesSource(): void
     {
         $checked = 0;
-        foreach ([8000, 1350, 1000, 900] as $limit) {
+        foreach ([8000, 1350, 1050, 950] as $limit) {
             foreach (self::all($limit) as $payload) {
                 $checked += self::assertTagsMatchSource($payload->text());
             }
@@ -252,12 +252,13 @@ final class PayloadBuilderTest extends TestCase
         self::assertStringContainsString('  parameters: {post} bound to App\Models\Post', $context);
         self::assertMatchesRegularExpression('~  - form_request/none: FormRequest UpdatePostRequest::authorize returns true \(app/Http/Controllers/PostController\.php:\d+\)~', $context);
         self::assertStringContainsString("\nCandidate categories:\n  - ", $context);
-        self::assertStringContainsString("\nFormRequest:\n  App\\Http\\Requests\\UpdatePostRequest\n    rules keys: title, body\n    authorize: none: FormRequest UpdatePostRequest::authorize returns true", $context);
+        self::assertStringContainsString("\nFormRequest:\n  App\\Http\\Requests\\UpdatePostRequest\n    rules keys: \"title\", \"body\"\n    authorize: none: FormRequest UpdatePostRequest::authorize returns true", $context);
         self::assertStringContainsString("\nModels:\n", $context);
-        self::assertStringContainsString("  App\\Models\\Post: \$fillable = ['title', 'body', 'user_id']; \$guarded not declared", $context);
+        self::assertStringContainsString('  App\\Models\\Post: $fillable = ["title", "body", "user_id"]; $guarded not declared', $context);
         self::assertStringContainsString('  App\\Models\\Tag: $fillable not declared; $guarded = []', $context);
         self::assertStringNotContainsString('App\Models\User:', $context);
-        self::assertStringContainsString("\nPolicies:\n// FILE: app/Policies/PostPolicy.php :: App\\Policies\\PostPolicy::update (L9-L12)\nL9|     public function update(User \$user, Post \$post): bool\n", $context);
+        self::assertStringContainsString("\nPolicies:\n  code below: App\\Policies\\PostPolicy::update\n", $context);
+        self::assertStringContainsString("\n\n// FILE: app/Policies/PostPolicy.php :: App\\Policies\\PostPolicy::update (L9-L12)\nL9|     public function update(User \$user, Post \$post): bool\n", $payload->code);
         self::assertStringNotContainsString('PostPolicy::delete', $context);
         self::assertStringContainsString("\nUnresolved calls:\n  - ", $context);
         self::assertStringContainsString('  - app/Services/PostService.php:21: [not-found] $this->mystery() → App\Services\PostService::mystery', $context);
@@ -284,7 +285,7 @@ final class PayloadBuilderTest extends TestCase
         [$payload] = self::payloads('PUT /posts/{post}');
         preg_match_all('~^// FILE: (\S+) :: (\S+) \(L(\d+)-L(\d+)\)$~m', $payload->code, $m);
 
-        self::assertSame(['App\Http\Controllers\PostController::update', 'App\Services\PostService::save', 'App\Services\PostRepository::persist', 'App\Services\AuditLog::record'], $m[2]);
+        self::assertSame(['App\Http\Controllers\PostController::update', 'App\Services\PostService::save', 'App\Services\PostRepository::persist', 'App\Services\AuditLog::record', 'App\Policies\PostPolicy::update'], $m[2]);
         self::assertSame('app/Http/Controllers/PostController.php', $m[1][0]);
         self::assertSame(1, $payload->part);
         self::assertSame(1, $payload->parts);
@@ -324,7 +325,7 @@ final class PayloadBuilderTest extends TestCase
             self::assertStringStartsWith("Route:\n", $payload->context);
             self::assertStringContainsString("\nUpstream summary:\n", $payload->context);
             self::assertStringContainsString('  route check: form_request/none: FormRequest UpdatePostRequest::authorize returns true', $payload->context);
-            self::assertStringContainsString('  FormRequest App\Http\Requests\UpdatePostRequest: rules keys: title, body; authorize: none: FormRequest UpdatePostRequest::authorize returns true', $payload->context);
+            self::assertStringContainsString('  FormRequest App\Http\Requests\UpdatePostRequest: rules keys: "title", "body"; authorize: none: FormRequest UpdatePostRequest::authorize returns true', $payload->context);
             self::assertSame(1, substr_count($payload->text(), '<untrusted_code>'));
             self::assertSame(1, substr_count($payload->text(), '</untrusted_code>'));
             preg_match_all('~^// FILE: \S+ :: (\S+) ~m', $payload->code, $m);
@@ -333,11 +334,11 @@ final class PayloadBuilderTest extends TestCase
         self::assertStringContainsString('App\Http\Controllers\PostController::update', $payloads[0]->code);
         self::assertStringContainsString('App\Services\PostService::save', $payloads[0]->code);
         self::assertStringNotContainsString('PostRepository::persist', $payloads[0]->code);
-        self::assertSame(['App\Http\Controllers\PostController::update', 'App\Services\PostService::save', 'App\Services\PostRepository::persist', 'App\Services\AuditLog::record'], $ids);
+        self::assertSame(['App\Http\Controllers\PostController::update', 'App\Services\PostService::save', 'App\Policies\PostPolicy::update', 'App\Services\PostRepository::persist', 'App\Services\AuditLog::record'], $ids);
 
         $last = $payloads[count($payloads) - 1];
-        self::assertStringContainsString('  earlier check: app/Services/PostService.php:17 controller_ability/', $last->context);
-        self::assertStringContainsString('  earlier check: app/Services/PostRepository.php:14 abort_guard/', $last->context);
+        self::assertMatchesRegularExpression('~^  earlier check in App\\\\Services\\\\PostService::save: controller_ability/\w+: Gate::authorize\(\'update\', \$post\).* \(app/Services/PostService\.php:17\) \[ability "update", on App\\\\Models\\\\Post\]$~m', $last->context);
+        self::assertMatchesRegularExpression('~^  earlier check in App\\\\Services\\\\PostRepository::persist: abort_guard/\w+: .* \(app/Services/PostRepository\.php:14\) \[covers \$post\]$~m', $last->context);
         self::assertStringNotContainsString('earlier check', $payloads[0]->context);
     }
 
@@ -363,14 +364,14 @@ final class PayloadBuilderTest extends TestCase
     public function testTruncatesASingleNodeOverTheLimit(): void
     {
         $payloads = self::payloads('PUT /posts/{post}', 1350);
-        $tight = self::payloads('PUT /posts/{post}', 1000);
+        $tight = self::payloads('PUT /posts/{post}', 1050);
 
         self::assertFalse($payloads[count($payloads) - 1]->truncated);
         $truncated = array_values(array_filter($tight, static fn (Payload $p): bool => $p->truncated));
         self::assertNotSame([], $truncated);
         foreach ($truncated as $payload) {
-            self::assertStringEndsWith("\n// … truncated\n</untrusted_code>", $payload->code);
-            self::assertLessThanOrEqual(1000, $payload->tokens());
+            self::assertMatchesRegularExpression('~\n// … truncated\n(?:\n// FILE: app/Policies/|</untrusted_code>$)~u', $payload->code);
+            self::assertLessThanOrEqual(1050, $payload->tokens());
         }
         $kept = array_filter($truncated, static fn (Payload $p): bool => preg_match('~^L\\d+\\| ~m', $p->code) === 1);
         self::assertNotSame([], $kept);
@@ -378,7 +379,7 @@ final class PayloadBuilderTest extends TestCase
 
     public function testEveryPartStaysWithinTheLimitWhenTheContextFits(): void
     {
-        foreach ([1350, 1000] as $limit) {
+        foreach ([1350, 1050] as $limit) {
             foreach (self::payloads('PUT /posts/{post}', $limit) as $payload) {
                 self::assertLessThanOrEqual($limit, $payload->tokens(), $payload->id);
             }
@@ -451,7 +452,7 @@ final class PayloadBuilderTest extends TestCase
             self::assertNotNull($file, $line);
             $source = rtrim($sources[$file][(int) $m[1] - 1] ?? '');
             $pattern = '~^'.str_replace(preg_quote('<redacted>', '~'), '.*', preg_quote($m[2], '~')).'$~';
-            $escaped = (string) preg_replace('~<\s*(/?)\s*untrusted[_-]code~i', '<$1untrusted-code-escaped', $source);
+            $escaped = (string) preg_replace('~untrusted(?:[\s_\-]|＿|－)*code(?!-escaped)~iu', 'untrusted-code-escaped', $source);
             self::assertMatchesRegularExpression($pattern, $escaped, $file.':'.$m[1]);
             $checked++;
         }

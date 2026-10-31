@@ -245,6 +245,14 @@ final class RedactorTest extends TestCase
         self::assertSame("L2| AWS_KEY=<redacted>\nL3| X=<redacted>", $out);
     }
 
+    public function testTelegramBotTokenStopsAtSlash(): void
+    {
+        $r = new Redactor();
+
+        self::assertSame('POST /bot5512345678:<redacted>/webhook', $r->redact('POST /bot5512345678:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/webhook'));
+        self::assertSame("\$u = 'https://api.telegram.org/bot5512345678:<redacted>/sendMessage';", $r->redact("\$u = 'https://api.telegram.org/bot5512345678:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/sendMessage';"));
+    }
+
     public function testEmptyAndPlainTextUnchanged(): void
     {
         self::assertSame('', (new Redactor())->redact(''));

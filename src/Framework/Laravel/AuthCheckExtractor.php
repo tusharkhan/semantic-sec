@@ -140,6 +140,7 @@ final class AuthCheckExtractor
                 continue;
             }
             $kind = $this->middleware->kind($m);
+            $abilityOf = [null, null];
             if ($kind === MiddlewareKind::Authentication) {
                 $check = [AuthCheckKind::Authentication, AuthStrength::Authentication, 'middleware '.$m];
             } elseif ($kind === MiddlewareKind::Ability) {
@@ -151,6 +152,7 @@ final class AuthCheckExtractor
                     $covered[$parameter->name] = true;
                 }
                 $check = [AuthCheckKind::RouteAbility, $reason === null ? AuthStrength::Authorization : AuthStrength::None, 'middleware '.$m.($reason === null ? '' : ': '.$reason), $parameter?->name, $ability !== null && $ability['arguments'] === []];
+                $abilityOf = [$ability === null ? [] : [$ability['ability']], $model === null ? null : ltrim($model, '\\')];
             } else {
                 continue;
             }
@@ -158,7 +160,7 @@ final class AuthCheckExtractor
                 $check = [$check[0], AuthStrength::None, $check[2].' (may be removed by unresolved withoutMiddleware)', $check[3] ?? null];
             }
             $authorization = $check[1] === AuthStrength::Authorization;
-            $checks[] = new AuthCheck($check[0], $check[1], $check[2], $route->file, $route->line, $authorization ? ($check[3] ?? null) : null, null, $authorization && ($check[4] ?? false));
+            $checks[] = new AuthCheck($check[0], $check[1], $check[2], $route->file, $route->line, $authorization ? ($check[3] ?? null) : null, null, $authorization && ($check[4] ?? false), $abilityOf[0], $abilityOf[1]);
         }
 
         return $checks;
@@ -307,7 +309,7 @@ final class AuthCheckExtractor
                 }
                 $covers = $this->routeParameter($route, $covers)?->name;
                 $source = sprintf('authorizeResource(%s) %s -> %s', $model === null ? '?' : self::short($model).'::class', $method->name, $ability);
-                $checks[] = new AuthCheck(AuthCheckKind::ControllerAbility, $reason === null ? AuthStrength::Authorization : AuthStrength::None, $source.($reason === null ? '' : ': '.$reason), $ctor->file, $call->getStartLine(), $reason === null ? $covers : null);
+                $checks[] = new AuthCheck(AuthCheckKind::ControllerAbility, $reason === null ? AuthStrength::Authorization : AuthStrength::None, $source.($reason === null ? '' : ': '.$reason), $ctor->file, $call->getStartLine(), $reason === null ? $covers : null, null, false, [$ability], $model === null ? null : ltrim($model, '\\'));
             }
         }
 
@@ -537,9 +539,9 @@ final class AuthCheckExtractor
             if (! $positions->isUnconditional($node, $ability !== null && ! $ability[3])) {
                 continue;
             }
-            $add = static function (AuthCheckKind $kind, AuthStrength $strength, string $source, ?string $covers = null, ?string $model = null, bool $routeWide = false) use (&$checks, $file, $node): void {
+            $add = static function (AuthCheckKind $kind, AuthStrength $strength, string $source, ?string $covers = null, ?string $model = null, bool $routeWide = false, ?array $abilities = null, ?string $abilityModel = null) use (&$checks, $file, $node): void {
                 $authorization = $strength === AuthStrength::Authorization;
-                $checks[] = new AuthCheck($kind, $strength, $source, $file, $node->getStartLine(), $authorization ? $covers : null, $model, $authorization && $routeWide);
+                $checks[] = new AuthCheck($kind, $strength, $source, $file, $node->getStartLine(), $authorization ? $covers : null, $model, $authorization && $routeWide, $abilities === null ? null : array_values($abilities), $abilityModel);
             };
             // A non-throwing check counts only where its result decides a blocking branch or a guard.
             if ($ability !== null && ($ability[3] || ($this->decidingAbility($node, $context) && $positions->isConditionPosition($node, false, $leaf, ! in_array(AuthExpressions::name($node), self::DENYING, true))))) {
@@ -547,7 +549,7 @@ final class AuthCheckExtractor
                 $reason = $this->abilityReason($abilityArg, $modelArg, $any, $context, $file, $class);
                 $variable = $modelArg instanceof Expr\Array_ ? ($modelArg->items[0]->value ?? null) : $modelArg;
                 $untouched = $variable instanceof Expr\Variable && is_string($variable->name) && $context->isUntouchedParam($variable->name, $variable->getStartFilePos());
-                $add(AuthCheckKind::ControllerAbility, $reason === null ? AuthStrength::Authorization : AuthStrength::None, $this->describe($node).($reason === null ? '' : ': '.$reason), $untouched ? ($parameters[$variable->name] ?? null) : null, null, $modelArg === null);
+                $add(AuthCheckKind::ControllerAbility, $reason === null ? AuthStrength::Authorization : AuthStrength::None, $this->describe($node).($reason === null ? '' : ': '.$reason), $untouched ? ($parameters[$variable->name] ?? null) : null, null, $modelArg === null, $this->abilityNames($abilityArg, $file, $class), $modelArg === null ? null : $this->modelOf($modelArg, $context, $modelArg->getStartFilePos()));
                 if ($reason === null && $untouched) {
                     $covered[$variable->name] = true;
                 }
@@ -682,6 +684,24 @@ final class AuthCheckExtractor
         return null;
     }
 
+    /** @return list<string> the ability names an argument holds, or [] when any cannot be resolved */
+    private function abilityNames(?Expr $abilityArg, string $file, ?ClassSymbol $class): array
+    {
+        if ($abilityArg === null) {
+            return [];
+        }
+        $names = [];
+        foreach ($abilityArg instanceof Expr\Array_ ? array_map(static fn (Node\ArrayItem $i): Expr => $i->value, $abilityArg->items) : [$abilityArg] as $expr) {
+            $name = $this->eval->string($expr, $file, $class);
+            if ($name === null) {
+                return [];
+            }
+            $names[] = $name;
+        }
+
+        return $names;
+    }
+
     /** Why the ability call is trivially allowed, or null when it may deny. */
     private function abilityReason(?Expr $abilityArg, ?Expr $modelArg, bool $any, AuthExpressions $context, string $file, ?ClassSymbol $class): ?string
     {
@@ -728,7 +748,7 @@ final class AuthCheckExtractor
     // Gate turns kebab-case abilities into camelCase policy methods.
     private static function abilityMethod(string $ability): string
     {
-        return str_contains($ability, '-') ? lcfirst(str_replace(' ', '', ucwords(str_replace('-', ' ', $ability)))) : $ability;
+        return PolicyRegistry::abilityMethod($ability);
     }
 
     /** The model class an ability argument refers to, or null when unknown. */

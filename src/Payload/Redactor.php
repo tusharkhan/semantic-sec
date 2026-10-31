@@ -114,6 +114,8 @@ final class Redactor
             $text = preg_replace($pattern, self::MARK, $text) ?? $text;
         }
         $text = preg_replace('~(hooks\.slack\.com/services/)[A-Za-z0-9/_-]+~', '$1' . self::MARK, $text) ?? $text;
+        // Telegram bot token `bot<id>:<secret>`: only the secret, never the path after it.
+        $text = preg_replace('~(?<![A-Za-z0-9])((?:bot)?\d{6,12}:)[A-Za-z0-9_-]{30,}~', '$1' . self::MARK, $text) ?? $text;
 
         // URL password: scheme://user:pass@host (user may be empty)
         return preg_replace('~(\b[a-z][a-z0-9+.-]{1,15}://[^/\s:@\'"]*:)[^@\s\'"]+@~i', '$1' . self::MARK . '@', $text) ?? $text;
