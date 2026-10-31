@@ -123,7 +123,7 @@ final class AnalyzeCommand extends Command
             return $this->fail($output, '--format must be console, json or sarif');
         }
         if ($dryRun && $format === 'sarif') {
-            return $this->fail($output, '--format sarif is available in a later release');
+            return $this->fail($output, '--format sarif cannot be used with --dry-run');
         }
         $report = $this->stringOption($input, 'output');
         if ($report !== null) {

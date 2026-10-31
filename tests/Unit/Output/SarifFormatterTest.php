@@ -27,6 +27,8 @@ final class SarifFormatterTest extends TestCase
     // Keywords whose meaning is identical in draft-04 and draft-07, so the vendored schema can be validated as draft-07.
     private const SAME_IN_04_AND_07 = ['$schema', 'id', 'title', 'description', 'type', '$ref', 'default', 'items', 'uniqueItems', 'minItems', 'additionalProperties', 'properties', 'required', 'minimum', 'maximum', 'pattern', 'format', 'enum', 'anyOf', 'oneOf', 'definitions'];
 
+    private const SECURITY_SEVERITY = ['CWE-502' => '9.1', 'CWE-862' => '8.5', 'CWE-639' => '8.1', 'CWE-915' => '7.5', 'CWE-841' => '5.5'];
+
     private static ?AnalysisResult $replayed = null;
 
     public function testIsAFormatter(): void
@@ -48,15 +50,19 @@ final class SarifFormatterTest extends TestCase
         $doc = self::decode((new SarifFormatter())->format(self::analysis([[self::vuln(), true]]), self::META));
         self::assertSame([], self::schemaErrors($doc));
 
+        $loc = '/runs/0/results/0/locations/0/physicalLocation';
         $badUri = $doc;
         $badUri['runs'][0]['results'][0]['locations'][0]['physicalLocation']['artifactLocation']['uri'] = 'a b';
-        self::assertNotSame([], self::schemaErrors($badUri), 'uri-reference format is checked');
+        self::assertSchemaCause($loc.'/artifactLocation/uri: The data must match the \'uri-reference\' format', $badUri);
         $badLine = $doc;
         $badLine['runs'][0]['results'][0]['locations'][0]['physicalLocation']['region']['startLine'] = 0;
-        self::assertNotSame([], self::schemaErrors($badLine), 'startLine >= 1 is checked');
+        self::assertSchemaCause($loc.'/region/startLine: Number must be greater than or equal to 1', $badLine);
         $badFix = $doc;
         $badFix['runs'][0]['results'][0]['fixes'] = [['description' => ['text' => 'x']]];
-        self::assertNotSame([], self::schemaErrors($badFix), 'a fix without artifactChanges is invalid');
+        self::assertSchemaCause('/runs/0/results/0/fixes/0: The required properties (artifactChanges) are missing', $badFix);
+        $badLevel = $doc;
+        $badLevel['runs'][0]['results'][0]['level'] = 'critical';
+        self::assertSchemaCause('/runs/0/results/0/level: The data should match one item from enum', $badLevel);
     }
 
     public function testValidatesAgainstOfficialSchema(): void
@@ -78,6 +84,7 @@ final class SarifFormatterTest extends TestCase
             self::assertSame('2.1.0', $doc['version']);
             self::assertCount(1, $doc['runs']);
         }
+        self::assertCount(1, self::decode((new SarifFormatter())->format($mixed, self::META))['runs'][0]['results'], 'only the live finding');
         $empty = self::decode((new SarifFormatter())->format(new AnalysisResult([], [], [], [], self::stats()), self::META));
         self::assertSame([], $empty['runs'][0]['results']);
         self::assertCount(5, $empty['runs'][0]['tool']['driver']['rules']);
@@ -95,11 +102,19 @@ final class SarifFormatterTest extends TestCase
         self::assertSame(['CWE-639', 'CWE-862', 'CWE-915', 'CWE-502', 'CWE-841'], array_column($driver['rules'], 'id'));
         foreach ($driver['rules'] as $i => $rule) {
             $category = Category::cases()[$i];
-            self::assertSame(['id', 'name', 'shortDescription', 'helpUri', 'properties'], array_keys($rule));
+            $n = substr($category->cweId(), 4);
+            self::assertSame(['id', 'name', 'shortDescription', 'fullDescription', 'help', 'helpUri', 'properties'], array_keys($rule));
             self::assertMatchesRegularExpression('~^[A-Z][A-Za-z]+$~', $rule['name']);
             self::assertSame($category->label(), $rule['shortDescription']['text']);
-            self::assertSame('https://cwe.mitre.org/data/definitions/'.substr($category->cweId(), 4).'.html', $rule['helpUri']);
-            self::assertSame(['security'], $rule['properties']['tags']);
+            self::assertGreaterThan(40, mb_strlen($rule['fullDescription']['text']));
+            self::assertSame(['text', 'markdown'], array_keys($rule['help']));
+            self::assertStringContainsString('Laravel', $rule['help']['text']);
+            self::assertStringContainsString('Laravel', $rule['help']['markdown']);
+            self::assertSame('https://cwe.mitre.org/data/definitions/'.$n.'.html', $rule['helpUri']);
+            self::assertSame(['tags' => ['security', 'external/cwe/cwe-'.$n], 'precision' => 'high', 'security-severity' => self::SECURITY_SEVERITY[$rule['id']]], $rule['properties']);
+            foreach ([$rule['shortDescription']['text'], $rule['fullDescription']['text']] as $text) {
+                self::assertLessThanOrEqual(1024, mb_strlen($text));
+            }
         }
         self::assertArrayNotHasKey('uri', $doc['runs'][0]['originalUriBaseIds']['%SRCROOT%'], 'no absolute project path');
     }
@@ -138,13 +153,11 @@ final class SarifFormatterTest extends TestCase
         $doc = self::decode($first);
 
         self::assertSame($first, (new SarifFormatter())->format($result, self::META));
-        $expected = [
-            ...array_map(static fn (array $f): string => $f['vulnerability']->fingerprint, $result->findings),
-            ...array_map(static fn (array $s): string => $s['vulnerability']->fingerprint, $result->suppressed),
-        ];
+        $expected = array_map(static fn (array $f): string => $f['vulnerability']->fingerprint, $result->findings);
         $actual = array_map(static fn (array $r): string => $r['partialFingerprints']['semanticSec/v1'], $doc['runs'][0]['results']);
-        self::assertCount(13, $result->findings);
-        self::assertCount(13 + count($result->suppressed), $actual, 'every finding and suppressed finding is a result');
+        self::assertCount(13, $actual);
+        self::assertCount(1, $result->suppressed);
+        self::assertSame(1, $doc['runs'][0]['properties']['summary']['suppressed']);
         sort($expected);
         sort($actual);
         self::assertSame($expected, $actual);
@@ -184,19 +197,45 @@ final class SarifFormatterTest extends TestCase
         self::assertArrayNotHasKey('codeFlows', $results[1]);
     }
 
-    public function testSuppressedAndBaselined(): void
+    public function testSuppressedAndBaselinedAreCountsNotResults(): void
     {
-        $sup = self::vuln(['title' => 'quiet']);
-        $result = new AnalysisResult([], [['vulnerability' => $sup, 'suppression' => new Suppression('app/S.php', Category::Idor, 1, 9, 1, 'reviewed')], ['vulnerability' => $sup, 'suppression' => new Suppression('app/S.php', null, 1, 9, 1, null)]], [self::vuln(['title' => 'known'])], [], self::stats(), [self::vuln(['title' => 'below'])]);
-        $results = self::decode((new SarifFormatter())->format($result, self::META))['runs'][0]['results'];
+        $sup = self::vuln(['title' => 'quiet', 'fingerprint' => str_repeat('b', 64)]);
+        $live = self::vuln(['title' => 'live', 'line' => 5]);
+        $result = new AnalysisResult([['vulnerability' => $live, 'failing' => true]], [['vulnerability' => $sup, 'suppression' => new Suppression('app/S.php', Category::Idor, 1, 9, 1, 'reviewed')], ['vulnerability' => $sup, 'suppression' => new Suppression('app/S.php', null, 1, 9, 1, null)]], [self::vuln(['title' => 'known', 'fingerprint' => str_repeat('c', 64)])], [], [...self::stats(), 'filtered' => 1], [self::vuln(['title' => 'below'])]);
+        $out = (new SarifFormatter())->format($result, self::META);
+        $run = self::decode($out)['runs'][0];
 
-        self::assertCount(3, $results, 'filtered findings are below --level and not results');
-        self::assertSame([['kind' => 'inSource', 'justification' => 'reviewed']], $results[0]['suppressions']);
-        self::assertSame([['kind' => 'inSource', 'justification' => '']], $results[1]['suppressions']);
-        self::assertFalse($results[0]['properties']['failing']);
-        self::assertSame('unchanged', $results[2]['baselineState']);
-        self::assertSame('known', $results[2]['message']['text']);
-        self::assertArrayNotHasKey('suppressions', $results[2]);
+        self::assertSame(['live'], array_map(static fn (array $r): string => $r['message']['text'], $run['results']), 'GitHub would open suppressed and baselined results as live alerts');
+        self::assertStringNotContainsString('suppressions', $out);
+        self::assertStringNotContainsString('baselineState', $out);
+        self::assertStringNotContainsString(str_repeat('b', 64), $out);
+        self::assertSame(2, $run['properties']['summary']['suppressed']);
+        self::assertSame(1, $run['properties']['summary']['baselined']);
+        self::assertSame(1, $run['properties']['summary']['filtered']);
+    }
+
+    public function testLengthCaps(): void
+    {
+        $title = str_repeat("a\u{00E9}", 200_000);
+        $long = str_repeat("\u{1F600}x", 10_000);
+        $v = self::vuln(['title' => $title, 'flaw' => $long, 'fix' => $long, 'patch' => $long]);
+        $out = (new SarifFormatter())->format(self::analysis([[$v, true]]), self::META);
+        $doc = self::decode($out);
+        $r = $doc['runs'][0]['results'][0];
+
+        self::assertLessThan(64_000, strlen($out));
+        self::assertSame([], self::schemaErrors($doc));
+        self::assertSame(4000, mb_strlen($r['message']['text']));
+        self::assertStringEndsWith("a\u{00E9}a\u{00E9}a…", $r['message']['text']);
+        self::assertSame(8000, mb_strlen($r['properties']['fix']));
+        self::assertSame(8000, mb_strlen($r['properties']['patch']));
+        self::assertStringEndsWith("\u{1F600}x\u{1F600}…", $r['properties']['patch'], 'cut on a character boundary');
+        foreach ([$r['message']['text'], $r['properties']['fix'], $r['properties']['patch']] as $text) {
+            self::assertSame(1, preg_match('//u', $text));
+        }
+
+        $short = self::decode((new SarifFormatter())->format(self::analysis([[self::vuln(['title' => str_repeat('t', 10), 'flaw' => str_repeat('f', 3988)]), true]]), self::META));
+        self::assertSame(str_repeat('t', 10)."\n\n".str_repeat('f', 3988), $short['runs'][0]['results'][0]['message']['text'], 'exactly 4000 is not cut');
     }
 
     public function testRelativeUris(): void
@@ -241,8 +280,18 @@ final class SarifFormatterTest extends TestCase
         self::assertStringContainsString("\u{FFFD}", $r['message']['text']);
         self::assertStringNotContainsString("\n", $r['properties']['symbol']);
         self::assertSame('app/%1B%5B31mEvil%20%C3%28.php', $r['locations'][0]['physicalLocation']['artifactLocation']['uri'], 'paths are percent-encoded, not altered');
-        self::assertSame('r [2J', $doc['runs'][0]['results'][1]['suppressions'][0]['justification']);
         self::assertSame("+  [2J<error>p</error>\n-    ok\\", $r['properties']['patch']);
+    }
+
+    // The leaf error is the cause; opis also reports each ancestor's additionalProperties as failed.
+    /** @param array<mixed> $doc */
+    private static function assertSchemaCause(string $expected, array $doc): void
+    {
+        $errors = self::schemaErrors($doc);
+        self::assertSame($expected, $errors[0] ?? null);
+        foreach (array_slice($errors, 1) as $e) {
+            self::assertMatchesRegularExpression('~^/[^:]*: Additional object properties are not allowed: ~', $e);
+        }
     }
 
     /**

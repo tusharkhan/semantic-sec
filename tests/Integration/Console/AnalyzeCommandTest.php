@@ -384,12 +384,12 @@ final class AnalyzeCommandTest extends TestCase
         self::assertSame(0, $mapper->parses());
     }
 
-    public function testDryRunSarifIsALaterRelease(): void
+    public function testDryRunSarifIsRejected(): void
     {
         [$code, , $err] = $this->analyze(['--dry-run' => true, '--format' => 'sarif'], $this->answers(self::finding()));
 
         self::assertSame(2, $code);
-        self::assertSame("Error: --format sarif is available in a later release\n", $err);
+        self::assertSame("Error: --format sarif cannot be used with --dry-run\n", $err);
     }
 
     public function testPartialResultsWrittenOnBudget(): void
