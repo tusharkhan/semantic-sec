@@ -178,6 +178,19 @@ YAML);
         (new ConfigLoader())->load($this->dir, $this->dir.'/missing.yaml');
     }
 
+    public function testEffortDefaultsHighAndRejectsUnknown(): void
+    {
+        self::assertSame('high', (new ConfigLoader())->load($this->dir)->effort);
+
+        foreach (['low', 'medium', 'high', 'xhigh', 'max'] as $level) {
+            $this->write("effort: {$level}\n");
+            self::assertSame($level, (new ConfigLoader())->load($this->dir)->effort);
+        }
+
+        $this->assertLoadFails("effort: extreme\n", 'effort', 'low, medium, high, xhigh, max');
+        $this->assertLoadFails("effort: 3\n", 'effort');
+    }
+
     public function testAuthMiddlewareDefaultsAndParses(): void
     {
         self::assertSame([], (new ConfigLoader())->load($this->dir)->authMiddleware);

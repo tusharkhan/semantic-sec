@@ -18,6 +18,6 @@ interface FrameworkContext
     /** @return array<string, string> facade FQN and short alias (bare and with a leading backslash) => stable facade id */
     public function facadeMap(): array;
 
-    // Short fixed framework notes for the payload.
+    // Short fixed framework notes, appended once to the system prompt.
     public function promptContext(): string;
 }

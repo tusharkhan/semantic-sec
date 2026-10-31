@@ -7,7 +7,6 @@ namespace TusharKhan\SemanticSec\Tests\Unit\Payload;
 use PHPUnit\Framework\TestCase;
 use TusharKhan\SemanticSec\Analysis\Category;
 use TusharKhan\SemanticSec\Candidates\Candidate;
-use TusharKhan\SemanticSec\Framework\Laravel\LaravelContext;
 use TusharKhan\SemanticSec\Framework\Laravel\RouteAction;
 use TusharKhan\SemanticSec\Framework\Laravel\RouteEntry;
 use TusharKhan\SemanticSec\Parsing\CallGraph\ExecutionPath;
@@ -266,15 +265,14 @@ final class PayloadBuilderHardeningTest extends TestCase
 
     public function testNoAppSourcedValueStartsAContextLine(): void
     {
-        $notes = array_flip(explode("\n", trim((new LaravelContext())->promptContext())));
-        $headings = ['Route:', 'Candidate categories:', 'FormRequest:', 'Models:', 'Policies:', 'Unresolved calls:', 'Framework notes:', 'Upstream summary:'];
+        $headings = ['Route:', 'Candidate categories:', 'FormRequest:', 'Models:', 'Policies:', 'Unresolved calls:', 'Upstream summary:'];
         $checked = 0;
-        foreach ([8000, 1080, 1000] as $limit) {
+        foreach ([8000, 813, 733] as $limit) {
             foreach (self::project($limit)[1] as $key => $candidate) {
                 [$payloads] = self::project($limit)[0]->build($candidate, 1);
                 foreach ($payloads as $payload) {
                     foreach (explode("\n", $payload->context) as $line) {
-                        $ok = $line === '' || in_array($line, $headings, true) || isset($notes[$line]) || str_starts_with($line, '  ');
+                        $ok = $line === '' || in_array($line, $headings, true) || str_starts_with($line, '  ');
                         self::assertTrue($ok, $key.': stray context line: '.$line);
                         $checked++;
                     }
@@ -344,12 +342,12 @@ final class PayloadBuilderHardeningTest extends TestCase
     {
         $payload = self::payloads('GET /gate4/{post}')[0];
 
-        self::assertStringContainsString("\nPolicies:\n  ability \"missing-ability\": definition not found (unverified)\n", $payload->context);
+        self::assertStringContainsString("\nPolicies:\n  ability \"missing-ability\": definition not found (unverified)\n", $payload->context."\n");
     }
 
     public function testSplitKeepsPolicyCodeInPartOne(): void
     {
-        $payloads = self::payloads('PUT /evil/{post}', 1080);
+        $payloads = self::payloads('PUT /evil/{post}', 813);
 
         self::assertGreaterThan(1, count($payloads), 'limit too high to split');
         self::assertStringContainsString(':: App\Policies\PostPolicy::update ', $payloads[0]->code);
@@ -391,7 +389,7 @@ final class PayloadBuilderHardeningTest extends TestCase
 
     public function testEarlierChecksKeepCoversAndModelAndCountUnresolved(): void
     {
-        $payloads = self::payloads('PUT /evil/{post}', 1080);
+        $payloads = self::payloads('PUT /evil/{post}', 813);
         $last = $payloads[count($payloads) - 1];
 
         self::assertMatchesRegularExpression('~^  Unresolved calls in earlier parts: [1-9]\d*$~m', $last->context);

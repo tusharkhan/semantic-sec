@@ -61,7 +61,6 @@ final class PayloadBuilder
         private readonly SymbolTable $symbols,
         private readonly AuthCheckExtractor $extractor,
         private readonly PolicyRegistry $policies,
-        private readonly string $frameworkNotes,
         Config $config,
     ) {
         $this->pruner = new Pruner($parsed);
@@ -120,11 +119,11 @@ final class PayloadBuilder
             array_push($checks, ...$found);
         }
         [$policyBlocks, $policyNotes] = $this->policies($checks, $warnings);
-        [$head, $notes] = $this->context($candidate, $formRequests);
+        $head = $this->context($candidate, $formRequests);
         // Facade and Eloquent calls are framework code the LLM already knows; they only add noise.
         $unresolved = array_values(array_filter($path->unresolved, static fn (string $u): bool => ! str_contains($u, ': [facade] ') && ! str_contains($u, ': [eloquent] ')));
         $allIds = array_fill_keys(array_map(static fn (PathNode $n): string => $n->id, $path->nodes), true);
-        $context = self::assemble($head, self::policySection($policyBlocks, $policyNotes, true), self::listed($unresolved, $allIds), $notes);
+        $context = self::assemble($head, self::policySection($policyBlocks, $policyNotes, true), self::listed($unresolved, $allIds));
 
         if ($this->fits($context, [...$blocks, ...$policyBlocks])) {
             return [new Payload($this->id($number, $route, 1), $candidate, $this->finish($context), $this->code([...$blocks, ...$policyBlocks]), 1, 1, false)];
@@ -135,7 +134,7 @@ final class PayloadBuilder
         $summary = $this->upstreamBase($route, $formRequests);
         $parts = [];
         $earlier = [];
-        $ctxFor = function (array $partBlocks, bool $first, array $earlier) use ($head, $notes, $unresolved, $owners, $summary, $nodeChecks, $policyBlocks, $policyNotes): string {
+        $ctxFor = function (array $partBlocks, bool $first, array $earlier) use ($head, $unresolved, $owners, $summary, $nodeChecks, $policyBlocks, $policyNotes): string {
             $ids = [];
             foreach ($partBlocks as $b) {
                 $ids[$b['node']->id] = true;
@@ -154,7 +153,7 @@ final class PayloadBuilder
                 }
             }
 
-            return $this->withSummary(self::assemble($head, self::policySection($policyBlocks, $policyNotes, $first), self::listed($own, $ids), $notes), $summary, array_values($earlier), $nodeChecks, $elsewhere);
+            return $this->withSummary(self::assemble($head, self::policySection($policyBlocks, $policyNotes, $first), self::listed($own, $ids)), $summary, array_values($earlier), $nodeChecks, $elsewhere);
         };
         foreach ($this->groups($blocks) as $group) {
             $current = [];
@@ -354,7 +353,7 @@ final class PayloadBuilder
 
     /**
      * @param  list<array{class: string, rules: string, authorize: string}>  $formRequests
-     * @return array{list<string>, string} the sections before the policies, and the framework notes section
+     * @return list<string> the sections before the policies
      */
     private function context(Candidate $candidate, array $formRequests): array
     {
@@ -375,18 +374,16 @@ final class PayloadBuilder
         $models = $this->models($candidate);
         $sections[] = self::section('Models', array_map(fn (string $m): string => '  '.self::enc($m).': '.$this->modelAttributes($m), $models));
 
-        $notes = trim($this->frameworkNotes);
-
-        return [array_values(array_filter($sections, static fn (string $s): bool => $s !== '')), $notes === '' ? '' : "Framework notes:\n".$notes];
+        return array_values(array_filter($sections, static fn (string $s): bool => $s !== ''));
     }
 
     /**
      * @param  list<string>  $head  sections before the policies
      * @param  list<string>  $unresolved
      */
-    private static function assemble(array $head, string $policies, array $unresolved, string $notes): string
+    private static function assemble(array $head, string $policies, array $unresolved): string
     {
-        $sections = [...$head, $policies, self::section('Unresolved calls', array_map(static fn (string $u): string => '  - '.self::enc($u), $unresolved)), $notes];
+        $sections = [...$head, $policies, self::section('Unresolved calls', array_map(static fn (string $u): string => '  - '.self::enc($u), $unresolved))];
 
         return implode("\n\n", array_values(array_filter($sections, static fn (string $s): bool => $s !== '')));
     }
