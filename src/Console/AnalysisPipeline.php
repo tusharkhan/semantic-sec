@@ -61,6 +61,7 @@ final class AnalysisPipeline
             $c->rulesets,
             $c->authMiddleware,
             $c->effort,
+            $c->authorizationMiddleware,
         );
     }
 }

@@ -153,6 +153,9 @@ final class AuthCheckExtractor
                 }
                 $check = [AuthCheckKind::RouteAbility, $reason === null ? AuthStrength::Authorization : AuthStrength::None, 'middleware '.$m.($reason === null ? '' : ': '.$reason), $parameter?->name, $ability !== null && $ability['arguments'] === []];
                 $abilityOf = [$ability === null ? [] : [$ability['ability']], $model === null ? null : ltrim($model, '\\')];
+            } elseif ($kind === MiddlewareKind::Authorization) {
+                // Authorizes the route as a whole, so it covers no parameter.
+                $check = [AuthCheckKind::Middleware, AuthStrength::Authorization, $m.' (authorization_middleware)', null, true];
             } else {
                 continue;
             }

@@ -508,7 +508,7 @@ final class CandidateSelector
 
     /**
      * (a) a check covering the parameter; (b) the lookup receiving the identifier is itself scoped to the user;
-     * (c) a route-wide check.
+     * (c) a route-wide check other than an authorization_middleware one.
      *
      * @param  array{label: string, param: ?string, bound: bool, models: list<string>, flows: list<array{known: bool, lookup: bool, model: ?string, scoped: bool, firm: bool, throws: bool, loose: bool, text: string}>}  $identifier
      * @param  list<AuthCheck>  $checks
@@ -532,7 +532,8 @@ final class CandidateSelector
             return implode('; ', array_unique(array_map(static fn (array $f): string => $f['text'], $flows)));
         }
         foreach ($checks as $c) {
-            if ($c->routeWide && $c->covers === null) {
+            // An authorization_middleware check is opaque: it authorizes the route, not access to this identifier.
+            if ($c->routeWide && $c->covers === null && $c->kind !== AuthCheckKind::Middleware) {
                 return $this->checkText($c);
             }
         }

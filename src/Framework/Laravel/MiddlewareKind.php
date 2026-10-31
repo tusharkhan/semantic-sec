@@ -8,5 +8,6 @@ enum MiddlewareKind: string
 {
     case Authentication = 'authentication';
     case Ability = 'ability';
+    case Authorization = 'authorization';
     case Other = 'other';
 }

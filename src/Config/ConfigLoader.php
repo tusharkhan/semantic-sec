@@ -16,7 +16,7 @@ final class ConfigLoader
     private const KEYS = [
         'provider', 'model', 'api_key_env', 'base_url', 'concurrency', 'budget_tokens',
         'max_payload_tokens', 'max_depth', 'level', 'min_confidence', 'paths', 'exclude',
-        'laravel', 'auth_helpers', 'auth_middleware', 'rulesets', 'effort',
+        'laravel', 'auth_helpers', 'auth_middleware', 'authorization_middleware', 'rulesets', 'effort',
     ];
 
     private const LARAVEL_KEYS = ['route_files', 'sensitive_fields'];
@@ -76,8 +76,9 @@ final class ConfigLoader
             sensitiveFields: $sensitive,
             authHelpers: $this->stringList($data['auth_helpers'] ?? [], 'auth_helpers'),
             rulesets: $this->rulesets($data['rulesets'] ?? []),
-            authMiddleware: $this->authMiddleware($data['auth_middleware'] ?? []),
+            authMiddleware: $this->middlewareList($data['auth_middleware'] ?? [], 'auth_middleware'),
             effort: $this->effort($data['effort'] ?? 'high'),
+            authorizationMiddleware: $this->middlewareList($data['authorization_middleware'] ?? [], 'authorization_middleware'),
         );
     }
 
@@ -182,12 +183,12 @@ final class ConfigLoader
     }
 
     /** @return list<string> */
-    private function authMiddleware(mixed $value): array
+    private function middlewareList(mixed $value, string $key): array
     {
-        $list = $this->stringList($value, 'auth_middleware', true);
+        $list = $this->stringList($value, $key, true);
         foreach ($list as $entry) {
             if (str_contains($entry, ':')) {
-                throw new ConfigException(sprintf('Config key "auth_middleware" entry "%s" must be an alias or class name without ":" parameters.', $entry));
+                throw new ConfigException(sprintf('Config key "%s" entry "%s" must be an alias or class name without ":" parameters.', $key, $entry));
             }
         }
 

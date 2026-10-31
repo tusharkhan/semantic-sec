@@ -24,6 +24,7 @@ final readonly class Config
      * @param  list<string>  $authHelpers
      * @param  list<CustomRuleset>  $rulesets
      * @param  list<string>  $authMiddleware
+     * @param  list<string>  $authorizationMiddleware
      */
     public function __construct(
         public string $projectRoot,
@@ -45,6 +46,7 @@ final readonly class Config
         public array $rulesets,
         public array $authMiddleware = [],
         public string $effort = 'high',
+        public array $authorizationMiddleware = [],
     ) {
     }
 }

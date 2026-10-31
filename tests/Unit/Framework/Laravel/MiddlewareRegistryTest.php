@@ -292,4 +292,54 @@ final class MiddlewareRegistryTest extends TestCase
         self::assertSame(MiddlewareKind::Other, $x->kind('auth_other'));
         self::assertSame(MiddlewareKind::Authentication, $x->kind('auth'));
     }
+
+    /** @return array<string, string> */
+    private function permissionFiles(): array
+    {
+        return [
+            'app/Http/Middleware/CheckPermission.php' => '<?php namespace App\Http\Middleware; class CheckPermission {}',
+            'app/Http/Middleware/SubPermission.php' => '<?php namespace App\Http\Middleware; class SubPermission extends CheckPermission {}',
+            'app/Http/Kernel.php' => '<?php namespace App\Http; class Kernel extends \Illuminate\Foundation\Http\Kernel { protected $middlewareAliases = ["permission" => \App\Http\Middleware\CheckPermission::class, "login" => \App\Http\Middleware\Login::class]; }',
+        ];
+    }
+
+    /**
+     * @param  list<string>  $listed
+     * @param  list<string>  $auth
+     */
+    private function permissionRegistry(array $listed, array $auth = []): MiddlewareRegistry
+    {
+        [$result, $symbols] = $this->project($this->permissionFiles());
+
+        return MiddlewareRegistry::fromProject($result, $symbols, new DetectedFramework('laravel', 10), new ConstantEvaluator(), $auth, $listed)[0];
+    }
+
+    public function testListedAliasIsAuthorization(): void
+    {
+        $r = $this->permissionRegistry(['permission']);
+        self::assertSame(MiddlewareKind::Authorization, $r->kind($r->canonical('permission')));
+        self::assertSame(MiddlewareKind::Authorization, $r->kind($r->canonical('permission:some,args')));
+        self::assertSame(MiddlewareKind::Authorization, $r->kind($r->canonical('App\Http\Middleware\CheckPermission:x')));
+        self::assertSame(MiddlewareKind::Other, $r->kind($r->canonical('perm')));
+        self::assertSame(MiddlewareKind::Other, $r->kind($r->canonical('permissionx')));
+    }
+
+    public function testListedClassFqnIsAuthorization(): void
+    {
+        $r = $this->permissionRegistry(['\app\http\middleware\CHECKPERMISSION']);
+        self::assertSame(MiddlewareKind::Authorization, $r->kind($r->canonical('permission:a,b')));
+        self::assertSame(MiddlewareKind::Authorization, $r->kind($r->canonical('\App\Http\Middleware\CheckPermission')));
+        // The match itself is exact-FQN; canonical() already folds a subclass into its parent's alias.
+        self::assertSame(MiddlewareKind::Other, $r->kind('App\Http\Middleware\SubPermission'));
+    }
+
+    public function testUnlistedStaysAuthentication(): void
+    {
+        $r = $this->permissionRegistry(['permission'], ['login']);
+        self::assertSame(MiddlewareKind::Authentication, $r->kind($r->canonical('login')));
+        self::assertSame(MiddlewareKind::Authentication, $r->kind('auth:sanctum'));
+        self::assertSame(MiddlewareKind::Ability, $r->kind('can:update,post'));
+        $plain = $this->permissionRegistry([]);
+        self::assertSame(MiddlewareKind::Other, $plain->kind($plain->canonical('permission:x')));
+    }
 }

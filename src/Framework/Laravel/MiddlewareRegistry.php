@@ -50,6 +50,12 @@ final class MiddlewareRegistry
     /** @var list<string> */
     private array $authClasses = [];
 
+    /** @var array<string, true> authorization_middleware entries, backslash-trimmed */
+    private array $authorizationNames = [];
+
+    /** @var array<string, true> the same entries lower-cased, for class matching */
+    private array $authorizationClasses = [];
+
     /** @var array<string, string> target class => alias (first alias wins) */
     private array $targets = [];
 
@@ -71,9 +77,10 @@ final class MiddlewareRegistry
 
     /**
      * @param  list<string>  $authMiddleware  configured alias names or class FQNs that authenticate
+     * @param  list<string>  $authorizationMiddleware  configured alias names or class FQNs that authorize
      * @return array{0: self, 1: list<string>}
      */
-    public static function fromProject(ParseResult $parsed, SymbolTable $symbols, DetectedFramework $fw, ConstantEvaluator $eval, array $authMiddleware = []): array
+    public static function fromProject(ParseResult $parsed, SymbolTable $symbols, DetectedFramework $fw, ConstantEvaluator $eval, array $authMiddleware = [], array $authorizationMiddleware = []): array
     {
         $aliases = [];
         $groups = self::DEFAULT_GROUPS;
@@ -92,6 +99,10 @@ final class MiddlewareRegistry
         $registry = new self($aliases + self::DEFAULT_ALIASES, $groups, $symbols);
         $registry->authMiddleware = array_map(static fn (string $m): string => ltrim($m, '\\'), $authMiddleware);
         $registry->authClasses = array_map('strtolower', $registry->authMiddleware);
+        foreach ($authorizationMiddleware as $m) {
+            $registry->authorizationNames[ltrim($m, '\\')] = true;
+            $registry->authorizationClasses[strtolower(ltrim($m, '\\'))] = true;
+        }
 
         return [$registry, $warnings];
     }
@@ -140,6 +151,9 @@ final class MiddlewareRegistry
         if ($this->isAbility($canonical)) {
             return MiddlewareKind::Ability;
         }
+        if ($this->isConfiguredAuthorization($name)) {
+            return MiddlewareKind::Authorization;
+        }
 
         return $this->descendsFrom($name, self::AUTHENTICATION_CLASSES) || $this->isConfiguredAuth($name) ? MiddlewareKind::Authentication : MiddlewareKind::Other;
     }
@@ -161,6 +175,18 @@ final class MiddlewareRegistry
         $parts = explode(':', $canonical, 2);
 
         return isset($parts[1]) && $parts[1] !== '' && ($parts[0] === 'can' || $this->descendsFrom($parts[0], [self::AUTHORIZE]));
+    }
+
+    // An authorization_middleware entry matches the alias name, or the exact class FQN case-insensitively.
+    private function isConfiguredAuthorization(string $name): bool
+    {
+        if ($this->authorizationNames === []) {
+            return false;
+        }
+        $name = ltrim($name, '\\');
+        $class = isset($this->aliases[$name]) ? ltrim(explode(':', $this->aliases[$name])[0], '\\') : $name;
+
+        return isset($this->authorizationNames[$name]) || isset($this->authorizationClasses[strtolower($class)]);
     }
 
     // A configured entry matches the alias name, or the class (or an ancestor) case-insensitively.
