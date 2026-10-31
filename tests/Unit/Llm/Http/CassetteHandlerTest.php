@@ -7,6 +7,7 @@ namespace TusharKhan\SemanticSec\Tests\Unit\Llm\Http;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use TusharKhan\SemanticSec\Llm\Http\Cassette;
 use TusharKhan\SemanticSec\Llm\Http\CassetteHandler;
@@ -14,6 +15,8 @@ use TusharKhan\SemanticSec\Llm\Http\HttpClientFactory;
 
 final class CassetteHandlerTest extends TestCase
 {
+    private const KEY = 'sk-live/ab+c=9Z';
+
     private string $dir;
 
     protected function setUp(): void
@@ -191,6 +194,83 @@ final class CassetteHandlerTest extends TestCase
         self::assertSame('got <scrubbed>', $saved['response']['headers']['X-Echo']);
         self::assertSame('{"prompt":"use <scrubbed> please"}', $saved['request']['body']);
         self::assertSame('{"error":"bad key <scrubbed>"}', $saved['response']['body']);
+    }
+
+    public function testReplayMatchesARealRequestWithTheKeyInPathAndQuery(): void
+    {
+        $path = $this->dir . '/replay-secret.json';
+        $uri = 'https://api.example.test/v1/' . self::KEY . '/x?q=' . urlencode(self::KEY) . '&mode=1';
+        $inner = new MockHandler([new Response(200, [], '{"ok":true}')]);
+        HttpClientFactory::create(new CassetteHandler(Cassette::load($path), 'record', $inner, [self::KEY]))->get($uri);
+
+        self::assertSame('https://api.example.test/v1/<scrubbed>/x?q=<scrubbed>&mode=1', $this->saved($path)['interactions'][0]['request']['uri']);
+        $handler = new CassetteHandler(Cassette::load($path), 'replay', secrets: [self::KEY]);
+        self::assertSame('{"ok":true}', (string) HttpClientFactory::create($handler)->get($uri)->getBody());
+        $handler->assertExhausted();
+    }
+
+    public function testReplayMismatchNeverEchoesTheKey(): void
+    {
+        $path = $this->writeCassette([$this->interaction('GET', 'https://api.example.test/v1/<scrubbed>/x', 200, '{}')]);
+        $client = HttpClientFactory::create(new CassetteHandler(Cassette::load($path), 'replay', secrets: [self::KEY]));
+
+        try {
+            $client->get('https://api.example.test/v2/' . self::KEY . '/x');
+            self::fail('expected a mismatch');
+        } catch (\LogicException $e) {
+            self::assertStringNotContainsString(self::KEY, $e->getMessage());
+            self::assertStringContainsString('got GET https://api.example.test/v2/<scrubbed>/x', $e->getMessage());
+        }
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function encodedKeys(): iterable
+    {
+        yield 'raw' => [self::KEY];
+        yield 'urlencode' => [urlencode(self::KEY)];
+        yield 'rawurlencode' => [rawurlencode(self::KEY)];
+        yield 'json escaped' => [substr((string) json_encode(self::KEY), 1, -1)];
+        yield 'base64' => [base64_encode(self::KEY)];
+    }
+
+    #[DataProvider('encodedKeys')]
+    public function testRecordScrubsEveryEncodingInEveryLocation(string $variant): void
+    {
+        $path = $this->dir . '/variants.json';
+        $leaf = '{"leaf":"x ' . $variant . ' y"}';
+        $key = '{"' . $variant . '":{"deep":["t ' . $variant . '"]}}';
+        $inner = new MockHandler([
+            new Response(200, ['X-Echo' => 'a' . $variant], $leaf),
+            new Response(200, [], $key),
+            new Response(200, [], 'plain ' . $variant . ' text'),
+        ]);
+        $handler = new CassetteHandler(Cassette::load($path), 'record', $inner, ['', self::KEY]);
+        $client = HttpClientFactory::create($handler);
+        $first = 'https://api.example.test/v1/' . $variant . '/x?q=' . $variant . '&mode=1';
+        $client->post($first, ['headers' => ['X-Custom' => 'a' . $variant], 'body' => $leaf]);
+        $client->post('https://api.example.test/v1/keys', ['body' => $key]);
+        $client->post('https://api.example.test/v1/plain', ['body' => 'plain ' . $variant . ' text']);
+
+        $json = (string) file_get_contents($path);
+        foreach (self::encodedKeys() as $name => [$needle]) {
+            self::assertStringNotContainsString($needle, $json, "{$name} survived");
+        }
+        $saved = $this->saved($path)['interactions'];
+        self::assertSame('https://api.example.test/v1/<scrubbed>/x?q=<scrubbed>&mode=1', $saved[0]['request']['uri']);
+        self::assertSame('a<scrubbed>', $saved[0]['request']['headers']['X-Custom']);
+        self::assertSame('a<scrubbed>', $saved[0]['response']['headers']['X-Echo']);
+        foreach (['request', 'response'] as $side) {
+            self::assertSame(['leaf' => 'x <scrubbed> y'], json_decode($saved[0][$side]['body'], true, flags: JSON_THROW_ON_ERROR));
+            self::assertSame(['<scrubbed>' => ['deep' => ['t <scrubbed>']]], json_decode($saved[1][$side]['body'], true, flags: JSON_THROW_ON_ERROR));
+            self::assertSame('plain <scrubbed> text', $saved[2][$side]['body']);
+        }
+
+        $replay = new CassetteHandler(Cassette::load($path), 'replay', secrets: [self::KEY]);
+        $replayClient = HttpClientFactory::create($replay);
+        $replayClient->post($first);
+        $replayClient->post('https://api.example.test/v1/keys');
+        $replayClient->post('https://api.example.test/v1/plain');
+        $replay->assertExhausted();
     }
 
     public function testRecordRedactsSecretLookingBodyValuesAndKeepsJsonValid(): void

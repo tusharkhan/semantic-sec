@@ -34,12 +34,12 @@ final class CassetteHandler
 
     private int $position = 0;
 
-    /** @var list<string> */
-    private readonly array $secrets;
+    /** @var list<string> every encoded form of every secret, longest first */
+    private readonly array $needles;
 
     /**
      * @param (callable(RequestInterface, array<string, mixed>): PromiseInterface)|null $inner real handler for record mode; defaults to cURL
-     * @param list<string> $secrets literal key values replaced everywhere in recorded interactions
+     * @param list<string> $secrets key values scrubbed from recordings (raw, URL, JSON and base64 forms) and from replayed URIs
      */
     public function __construct(private readonly Cassette $cassette, private readonly string $mode, ?callable $inner = null, array $secrets = [])
     {
@@ -53,7 +53,7 @@ final class CassetteHandler
             $this->inner = $inner ?? Utils::chooseHandler();
             $cassette->clear();
         }
-        $this->secrets = array_values(array_filter($secrets, static fn (string $s): bool => $s !== ''));
+        $this->needles = self::needles($secrets);
     }
 
     /** @param array<string, mixed> $options */
@@ -72,14 +72,15 @@ final class CassetteHandler
 
     private function replay(RequestInterface $request): PromiseInterface
     {
-        $actual = $request->getMethod() . ' ' . self::scrubUri((string) $request->getUri());
+        $actualUri = $this->normalizeUri((string) $request->getUri());
+        $actual = $request->getMethod() . ' ' . $actualUri;
         $interaction = $this->cassette->interactions()[$this->position] ?? null;
         if ($interaction === null) {
             throw new \LogicException("cassette {$this->cassette->path}: expected no more requests, got {$actual}");
         }
-        $expectedUri = self::scrubUri($interaction['request']['uri']);
+        $expectedUri = $this->normalizeUri($interaction['request']['uri']);
         $expected = $interaction['request']['method'] . ' ' . $expectedUri;
-        if (strcasecmp($interaction['request']['method'], $request->getMethod()) !== 0 || $expectedUri !== self::scrubUri((string) $request->getUri())) {
+        if (strcasecmp($interaction['request']['method'], $request->getMethod()) !== 0 || $expectedUri !== $actualUri) {
             throw new \LogicException("cassette {$this->cassette->path}: expected {$expected}, got {$actual}");
         }
         $this->position++;
@@ -97,7 +98,7 @@ final class CassetteHandler
         return $inner($request, $options)->then(function (ResponseInterface $response) use ($request, $requestBody): ResponseInterface {
             $responseBody = self::readBody($response);
             $this->cassette->add($this->clean([
-                'request' => ['method' => $request->getMethod(), 'uri' => self::scrubUri((string) $request->getUri()), 'headers' => self::headers($request), 'body' => $requestBody],
+                'request' => ['method' => $request->getMethod(), 'uri' => (string) $request->getUri(), 'headers' => self::headers($request), 'body' => $requestBody],
                 'response' => ['status' => $response->getStatusCode(), 'headers' => self::headers($response, self::TRANSPORT_HEADERS), 'body' => $responseBody],
             ]));
             $this->cassette->save();
@@ -107,28 +108,83 @@ final class CassetteHandler
     }
 
     /**
-     * Replaces configured secrets in every string, then runs the Redactor over header values and bodies.
+     * Replaces every secret form in every string first, then runs the Redactor over header values and bodies.
      *
      * @param Interaction $interaction
      * @return Interaction
      */
     private function clean(array $interaction): array
     {
+        $interaction['request']['uri'] = $this->normalizeUri($interaction['request']['uri']);
+        foreach (['request', 'response'] as $side) {
+            $headers = [];
+            foreach ($interaction[$side]['headers'] as $name => $value) {
+                $headers[$this->replaceSecrets($name)] = $this->replaceSecrets($value);
+            }
+            $interaction[$side]['headers'] = $headers;
+            $interaction[$side]['body'] = $this->replaceSecrets($interaction[$side]['body']);
+        }
+
         $redactor = new Redactor();
         foreach (['request', 'response'] as $side) {
-            foreach ($interaction[$side]['headers'] as $name => $value) {
-                $interaction[$side]['headers'][$name] = $redactor->redact($this->replaceSecrets($value));
-            }
-            $interaction[$side]['body'] = self::redactBody($redactor, $this->replaceSecrets($interaction[$side]['body']));
+            $interaction[$side]['headers'] = array_map($redactor->redact(...), $interaction[$side]['headers']);
+            $interaction[$side]['body'] = self::redactBody($redactor, $interaction[$side]['body']);
         }
-        $interaction['request']['uri'] = $this->replaceSecrets($interaction['request']['uri']);
+        $this->assertNoSecretLeft($interaction);
 
         return $interaction;
     }
 
+    // Last net over the serialized form; never names the secret.
+    /** @param Interaction $interaction */
+    private function assertNoSecretLeft(array $interaction): void
+    {
+        foreach ([JSON_UNESCAPED_SLASHES, 0] as $flags) {
+            $json = json_encode($interaction, $flags | JSON_THROW_ON_ERROR);
+            foreach ($this->needles as $needle) {
+                if (str_contains($json, $needle)) {
+                    throw new \LogicException("cassette {$this->cassette->path}: a secret survived scrubbing; nothing was saved");
+                }
+            }
+        }
+    }
+
+    private function normalizeUri(string $uri): string
+    {
+        return $this->replaceSecrets(self::scrubUri($uri));
+    }
+
     private function replaceSecrets(string $text): string
     {
-        return $this->secrets === [] ? $text : str_replace($this->secrets, self::MARK, $text);
+        return $this->needles === [] ? $text : str_replace($this->needles, self::MARK, $text);
+    }
+
+    /**
+     * @param list<string> $secrets
+     * @return list<string>
+     */
+    private static function needles(array $secrets): array
+    {
+        $needles = [];
+        foreach ($secrets as $secret) {
+            if ($secret === '') {
+                continue;
+            }
+            $forms = [$secret, base64_encode($secret)];
+            foreach ([0, JSON_UNESCAPED_SLASHES, JSON_UNESCAPED_UNICODE, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE] as $flags) {
+                $json = json_encode($secret, $flags);
+                if ($json !== false) {
+                    $forms[] = substr($json, 1, -1);
+                }
+            }
+            foreach ($forms as $form) {
+                array_push($needles, $form, urlencode($form), rawurlencode($form), self::uriEncode($form));
+            }
+        }
+        $needles = array_values(array_unique(array_filter($needles, static fn (string $n): bool => $n !== '')));
+        usort($needles, static fn (string $a, string $b): int => strlen($b) <=> strlen($a));
+
+        return $needles;
     }
 
     // JSON bodies are redacted per string leaf so the result stays valid JSON; untouched bodies keep their bytes.
@@ -169,6 +225,16 @@ final class CassetteHandler
         }
 
         return $value;
+    }
+
+    // Percent-encodes the way Guzzle's Uri does for paths and queries.
+    private static function uriEncode(string $text): string
+    {
+        return (string) preg_replace_callback(
+            '/(?:[^a-zA-Z0-9_\-\.~!\$&\'\(\)\*\+,;=%:@\/\?]++|%(?![A-Fa-f0-9]{2}))/',
+            static fn (array $m): string => rawurlencode($m[0]),
+            $text,
+        );
     }
 
     // Replaces the value of every query parameter whose name looks secret.
