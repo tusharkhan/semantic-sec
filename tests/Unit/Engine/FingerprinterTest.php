@@ -187,6 +187,47 @@ final class FingerprinterTest extends TestCase
         self::assertNotSame($fp(self::ROUTE_FILE, 3), $fp($changed, 3));
     }
 
+    public function testGateIdHashesItsDefinitionNotTheVisibleLines(): void
+    {
+        $provider = static fn (string $body): string => "<?php\n\nnamespace App\\Providers;\n\nuse Illuminate\\Support\\Facades\\Gate;\n\nclass AuthServiceProvider extends \\Illuminate\\Foundation\\Support\\Providers\\AuthServiceProvider\n{\n    public function boot(): void\n    {\n{$body}\n    }\n}\n";
+        $base = $provider("        Gate::define('edit post', function (\$user, \$post) {\n            return \$user->id === \$post->user_id;\n        });\n        Gate::define('delete-post', [\\App\\Policies\\PostPolicy::class, 'delete']);");
+        $edited = $provider("        // gates\n\n        Gate::define('edit post', function (\$user, \$post) { /* owner */\n            return   \$user->id === \$post->user_id;\n        });\n        Gate::define('delete-post', [\\App\\Policies\\PostPolicy::class, 'delete']);");
+        $changed = str_replace('$user->id === $post->user_id', 'true', $base);
+        $policy = static fn (string $ret): string => "<?php\n\nnamespace App\\Policies;\n\nclass PostPolicy\n{\n    public function delete(\$user, \$post): bool\n    {\n        return {$ret};\n    }\n}\n";
+        $full = "<untrusted_code>\n// FILE: app/Providers/AuthServiceProvider.php :: gate:edit_post (L11-L13)\nL11|         Gate::define('edit post', function (\$user, \$post) {\nL12|             return \$user->id === \$post->user_id;\nL13|         });\n</untrusted_code>";
+        $cut = "<untrusted_code>\n// FILE: app/Providers/AuthServiceProvider.php :: gate:edit_post (L11-L11)\nL11|         Gate::define('edit post', function (\$user, \$post) {\n</untrusted_code>";
+        $fp = function (string $source, string $id, string $code, string $ret = '$user->id === $post->user_id') use ($policy): string {
+            [$parsed, $symbols] = $this->project(['app/Providers/AuthServiceProvider.php' => $source, 'app/Policies/PostPolicy.php' => $policy($ret)]);
+
+            return (new Fingerprinter($parsed, $symbols))->fingerprint('app/Providers/AuthServiceProvider.php', $id, Category::MissingAuthorization, self::payload($code));
+        };
+
+        self::assertSame($fp($base, 'gate:edit_post', $full), $fp($base, 'gate:edit_post', $cut), 'truncation must not change it');
+        self::assertSame($fp($base, 'gate:edit_post', $full), $fp($edited, 'gate:edit_post', $full));
+        self::assertNotSame($fp($base, 'gate:edit_post', $full), $fp($changed, 'gate:edit_post', $full));
+        self::assertSame($fp($base, 'gate:delete-post', ''), $fp($base, 'gate:delete-post', $full));
+        self::assertNotSame($fp($base, 'gate:delete-post', ''), $fp($base, 'gate:delete-post', '', 'false'));
+    }
+
+    public function testMultiItemPropertyHashesOnlyItsItem(): void
+    {
+        $source = str_replace("    protected \$fillable = ['title'];", "    protected \$fillable = ['title'];\n    public static ?int \$x = 1, \$y = 2;", self::BASE);
+        $x = self::CLS.'::$x';
+
+        self::assertSame($this->print($source, $x), $this->print(str_replace('$y = 2', '$y = 3', $source), $x));
+        self::assertNotSame($this->print($source, $x), $this->print(str_replace('$x = 1', '$x = 5', $source), $x));
+        self::assertNotSame($this->print($source, $x), $this->print(str_replace('public static ?int $x', 'public ?int $x', $source), $x), 'modifiers count');
+        self::assertNotSame($this->print($source, $x), $this->print(str_replace('?int $x', '?string $x', $source), $x), 'the type counts');
+    }
+
+    public function testClassCaseIsCanonicalButUnknownStaysAsWritten(): void
+    {
+        self::assertSame($this->print(self::BASE, self::SHOW), $this->print(self::BASE, strtolower(self::CLS).'::Show'));
+        self::assertSame($this->print(self::BASE, self::CLS), $this->print(self::BASE, strtoupper(self::CLS)));
+        self::assertSame($this->print(self::BASE, self::CLS.'::$fillable'), $this->print(self::BASE, strtolower(self::CLS).'::$fillable'));
+        self::assertNotSame($this->print(self::BASE, 'X\Unknown::show'), $this->print(self::BASE, 'x\unknown::show'));
+    }
+
     public function testCategoryChangesFingerprint(): void
     {
         $fp = $this->fingerprinter(self::BASE);

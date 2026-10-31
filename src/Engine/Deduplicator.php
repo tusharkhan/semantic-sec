@@ -8,13 +8,15 @@ namespace TusharKhan\SemanticSec\Engine;
 final class Deduplicator
 {
     /**
-     * Keeps the highest severity, then the highest confidence (the first on a tie), with every path step merged uniquely: the winner's first, then the rest in input order.
+     * Keeps the highest severity, then the highest confidence, with every path step merged uniquely: the winner's first, then the rest in sorted order.
      *
      * @param  list<Vulnerability>  $findings
-     * @return list<Vulnerability>  one per fingerprint, in first-seen order
+     * @return list<Vulnerability>  one per fingerprint, sorted by fingerprint
      */
     public function merge(array $findings): array
     {
+        // Pool completion order varies, so ties resolve by fingerprint, payloadId, line, then title.
+        usort($findings, static fn (Vulnerability $a, Vulnerability $b): int => strcmp($a->fingerprint, $b->fingerprint) ?: strcmp($a->payloadId, $b->payloadId) ?: $a->line <=> $b->line ?: strcmp($a->title, $b->title));
         $groups = [];
         foreach ($findings as $finding) {
             $groups[$finding->fingerprint][] = $finding;

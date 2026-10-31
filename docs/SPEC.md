@@ -248,7 +248,10 @@ A route action becomes a candidate for a category when:
 
 1. **Suppressions:** a finding covered by a matching suppression goes to `suppressed`.
 2. **Fingerprint:** `sha256(file | symbol | CWE | normalisedHash)`. `symbol` is `Class::method`, or **[new]** `Class::$property` / `Class` for class-level findings (mass assignment on `$guarded`). `normalisedHash` is the sha256 of the symbol's AST printed by `PrettyPrinter\Standard` after comments are removed, so whitespace, comments and edits elsewhere in the file don't change it.
-3. **Dedup:** for the same fingerprint, keep the highest severity, then the highest confidence, and merge the `path`s.
+   - Node per id: a method prints its `ClassMethod`; `Class::$prop` prints only its own item with the statement's modifiers, type and attributes; `Class` prints the whole class; `name()` the function; `closure@<file>:<line>` the closure starting on that line; `gate:<ability>` the last `Gate::define` callback (closure, else method). The class part is canonicalised to its declared FQN and the method to its declared name; unknown symbols stay as written.
+   - A closure id drops its `:<line>` in the fingerprint input, so lines added above it don't change it. Two closures starting on the same line share an id, and byte-identical closures in one file share a fingerprint; both collide by design.
+   - An id with no node falls back to the sha256 of its header's tagged lines in the payload, without `L<n>| ` tags, comments or layout. Those fingerprints depend on the visible lines, so truncation (`max_payload_tokens`) can change them.
+3. **Dedup:** for the same fingerprint, keep the highest severity, then the highest confidence, and merge the `path`s. The input is sorted first by fingerprint, payload id, line and title, so ties resolve the same way whatever order the requests complete in.
 4. **Baseline:** a finding whose fingerprint is in the baseline file goes to `baselined`.
 5. **Filters:** keep findings with `severity ≥ --level`. Those with `confidence < --min-confidence` are still **reported**, marked "not failing", but don't affect the exit code.
 

@@ -132,6 +132,12 @@ final class PolicyRegistry
         return $this->defines[$ability] ?? [];
     }
 
+    /** @return list<string> every ability with a Gate::define call */
+    public function gateAbilities(): array
+    {
+        return array_map('strval', array_keys($this->defines));
+    }
+
     // Gate turns kebab-case abilities into camelCase policy methods.
     public static function abilityMethod(string $ability): string
     {

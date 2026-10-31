@@ -12,6 +12,8 @@ use PhpParser\NodeVisitor\CloningVisitor;
 use PhpParser\NodeVisitorAbstract;
 use PhpParser\PrettyPrinter\Standard;
 use TusharKhan\SemanticSec\Analysis\Category;
+use TusharKhan\SemanticSec\Framework\Laravel\ConstantEvaluator;
+use TusharKhan\SemanticSec\Framework\Laravel\PolicyRegistry;
 use TusharKhan\SemanticSec\Parsing\ParseResult;
 use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTable;
 use TusharKhan\SemanticSec\Payload\Payload;
@@ -30,7 +32,10 @@ final class Fingerprinter
     /** @var array<string, array{string, ?string}> symbol => [canonical symbol, node hash or null] */
     private array $resolved = [];
 
-    public function __construct(private readonly ParseResult $parsed, private readonly SymbolTable $symbols)
+    /** @var array<string, string>|null lower-cased class name => declared FQN */
+    private ?array $classes = null;
+
+    public function __construct(private readonly ParseResult $parsed, private readonly SymbolTable $symbols, private ?PolicyRegistry $policies = null)
     {
         $this->printer = new Standard();
     }
@@ -52,37 +57,80 @@ final class Fingerprinter
 
             return $node === null ? [$name, null] : ['closure@'.$m[1], $this->hash($node)];
         }
+        if (str_starts_with($name, 'gate:')) {
+            $node = $this->gate($name);
+
+            return [$name, $node === null ? null : $this->hash($node)];
+        }
         if (str_ends_with($name, '()') && !str_contains($name, '::')) {
             $function = $this->symbols->getFunction(substr($name, 0, -2));
 
             return $function === null ? [$name, null] : [$function->name.'()', $this->hash($function->node)];
         }
         $at = strpos($name, '::');
-        if ($at === false) {
-            $class = $this->symbols->getClass($name);
-
-            return $class === null ? [$name, null] : [$class->name, $this->hash($class->node)];
+        $class = $this->className($at === false ? $name : substr($name, 0, $at));
+        if ($class === null) {
+            return [$name, null];
         }
-        $class = substr($name, 0, $at);
+        if ($at === false) {
+            $symbol = $this->symbols->getClass($class);
+
+            return $symbol === null ? [$name, null] : [$class, $this->hash($symbol->node)];
+        }
         $member = substr($name, $at + 2);
         if (str_starts_with($member, '$')) {
             $node = $this->property($class, substr($member, 1));
 
-            return [$name, $node === null ? null : $this->hash($node)];
+            return $node === null ? [$name, null] : [$class.'::'.$member, $this->hash($node)];
         }
         $method = $this->symbols->findMethod($class, (string) preg_replace('~\(\)$~', '', $member));
 
         return $method === null ? [$name, null] : [$class.'::'.$method->name, $this->hash($method->node)];
     }
 
-    // The property statement that declares it, along the class lineage; a promoted parameter has none.
+    // The declared FQN for a class name in any letter case; null when the table doesn't know it.
+    private function className(string $name): ?string
+    {
+        if ($this->symbols->getClass($name) !== null) {
+            return $name;
+        }
+        if ($this->classes === null) {
+            $this->classes = [];
+            foreach ($this->symbols->all() as $class) {
+                $this->classes[strtolower($class->name)] ??= $class->name;
+            }
+        }
+
+        return $this->classes[strtolower($name)] ?? null;
+    }
+
+    // The last Gate::define callback behind a gate:<ability> id, as PayloadBuilder names it: a closure first, else a method.
+    private function gate(string $id): ?Node
+    {
+        $this->policies ??= PolicyRegistry::fromProject($this->symbols, new ConstantEvaluator())[0];
+        $closure = null;
+        $method = null;
+        foreach ($this->policies->gateAbilities() as $ability) {
+            if ('gate:'.preg_replace('~\s+~', '_', $ability) !== $id) {
+                continue;
+            }
+            foreach ($this->policies->gateDefinitions($ability) as $define) {
+                $closure = $define->closure ?? $closure;
+                $method = $define->method->node ?? $method;
+            }
+        }
+
+        return $closure ?? $method;
+    }
+
+    // Only the matching item of its declaring statement, with that statement's modifiers, type and attributes, along the lineage.
     private function property(string $class, string $name): ?Node\Stmt\Property
     {
         foreach ($this->symbols->lineage($class) as $owner) {
             foreach ($owner->node->getProperties() as $stmt) {
                 foreach ($stmt->props as $item) {
                     if ($item->name->toString() === $name) {
-                        return $stmt;
+                        return new Node\Stmt\Property($stmt->flags, [$item], [], $stmt->type, $stmt->attrGroups, $stmt->hooks);
                     }
                 }
             }
