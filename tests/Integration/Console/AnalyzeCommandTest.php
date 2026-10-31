@@ -184,7 +184,6 @@ final class AnalyzeCommandTest extends TestCase
     public function testM7OptionsRejected(): void
     {
         foreach ([
-            [['--format' => 'sarif'], '--format sarif is available in a later release'],
             [['--baseline' => 'b.json'], '--baseline is available in a later release'],
             [['--generate-baseline' => true], '--generate-baseline is available in a later release'],
             [['--since' => 'main'], '--since is available in a later release'],
@@ -221,6 +220,42 @@ final class AnalyzeCommandTest extends TestCase
         self::assertCount(1, $doc['findings']);
         self::assertMatchesRegularExpression('~^Summary$~m', $err);
         self::assertStringContainsString('Report written to '.$file, $err);
+    }
+
+    public function testSarifStdoutIsOnlyTheDocument(): void
+    {
+        [$code, $out, $err] = $this->analyze(['--format' => 'sarif'], $this->answers(self::finding()));
+
+        self::assertSame(1, $code, $err);
+        $doc = json_decode($out, true, 512, JSON_THROW_ON_ERROR);
+        self::assertSame('2.1.0', $doc['version']);
+        self::assertCount(1, $doc['runs'][0]['results']);
+        self::assertSame('error', $doc['runs'][0]['results'][0]['level']);
+        self::assertStringEndsWith("}\n", $out);
+        self::assertStringNotContainsString($this->root, $out);
+        self::assertMatchesRegularExpression('~^Summary$~m', $err, 'the summary goes to stderr');
+        self::assertStringNotContainsString('"runs"', $err);
+    }
+
+    public function testSarifOutputWritesTheDocumentToTheFile(): void
+    {
+        $file = $this->base.'/reports/report.sarif';
+        [$code, $out, $err] = $this->analyze(['--format' => 'sarif', '--output' => $file], $this->answers(self::finding()));
+
+        self::assertSame(1, $code, $err);
+        self::assertSame('', $out);
+        $doc = json_decode((string) file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
+        self::assertCount(1, $doc['runs'][0]['results']);
+        self::assertStringContainsString('Report written to '.$file, $err);
+    }
+
+    public function testUnknownFormatNamesSarif(): void
+    {
+        [$code, , $err] = $this->analyze(['--format' => 'xml'], $this->answers(self::finding()));
+
+        self::assertSame(2, $code);
+        self::assertSame("Error: --format must be console, json or sarif\n", $err);
+        self::assertSame([], $this->requests);
     }
 
     public function testOutputWritesFileSummaryToStderr(): void

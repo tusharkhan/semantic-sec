@@ -36,6 +36,7 @@ use TusharKhan\SemanticSec\Llm\ValidatingClient;
 use TusharKhan\SemanticSec\Output\ConsoleFormatter;
 use TusharKhan\SemanticSec\Output\JsonFormatter;
 use TusharKhan\SemanticSec\Output\SafeWriter;
+use TusharKhan\SemanticSec\Output\SarifFormatter;
 use TusharKhan\SemanticSec\Payload\Payload;
 use TusharKhan\SemanticSec\Payload\Redactor;
 
@@ -84,7 +85,7 @@ final class AnalyzeCommand extends Command
             ->addOption('budget', null, InputOption::VALUE_REQUIRED, 'Hard cap on provider tokens; below one request\'s reservation (~35k at the default max_tokens) nothing is sent (config: budget_tokens)')
             ->addOption('no-cache', null, InputOption::VALUE_NONE, 'Ignore cached answers (new answers are still cached)')
             ->addOption('strict', null, InputOption::VALUE_NONE, 'Exit 2 if any request failed, was refused, invalid or truncated, or any payload went unsent (ignored with --dry-run)')
-            ->addOption('format', null, InputOption::VALUE_REQUIRED, 'console or json', 'console')
+            ->addOption('format', null, InputOption::VALUE_REQUIRED, 'console, json or sarif', 'console')
             ->addOption('output', null, InputOption::VALUE_REQUIRED, 'Write the report to this file (never through a symlink); the summary and warnings go to stderr')
             ->addOption('baseline', null, InputOption::VALUE_REQUIRED, 'Baseline file (available in a later release)')
             ->addOption('generate-baseline', null, InputOption::VALUE_NONE, 'Write a baseline (available in a later release)')
@@ -118,11 +119,11 @@ final class AnalyzeCommand extends Command
         if ($dryRun && $input->getOption('output') !== null) {
             return $this->fail($output, '--output cannot be used with --dry-run');
         }
-        if ($format === 'sarif') {
-            return $this->fail($output, "--format {$format} is available in a later release");
+        if ($format !== 'console' && $format !== 'json' && $format !== 'sarif') {
+            return $this->fail($output, '--format must be console, json or sarif');
         }
-        if ($format !== 'console' && $format !== 'json') {
-            return $this->fail($output, '--format must be console or json');
+        if ($dryRun && $format === 'sarif') {
+            return $this->fail($output, '--format sarif is available in a later release');
         }
         $report = $this->stringOption($input, 'output');
         if ($report !== null) {
@@ -271,14 +272,18 @@ final class AnalyzeCommand extends Command
         ];
 
         $file = $this->stringOption($input, 'output');
-        $json = $input->getOption('format') === 'json';
-        if ($file === null && ! $json) {
+        $format = $input->getOption('format');
+        if ($file === null && $format === 'console') {
             $output->write((new ConsoleFormatter($output->isDecorated()))->format($report, $meta), false, OutputInterface::OUTPUT_RAW);
 
             return $exit;
         }
         $err = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
-        $formatter = $json ? new JsonFormatter() : new ConsoleFormatter();
+        $formatter = match ($format) {
+            'json' => new JsonFormatter(),
+            'sarif' => new SarifFormatter(),
+            default => new ConsoleFormatter(),
+        };
         $document = $formatter->format($report, $meta);
         if ($file === null) {
             $output->write($document, false, OutputInterface::OUTPUT_RAW);

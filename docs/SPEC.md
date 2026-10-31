@@ -290,7 +290,7 @@ semantic-sec baseline             # alias for analyze --generate-baseline
 | `--framework` | auto | `laravel` |
 | `--level` | **`high`** [new] | Minimum severity to report and to fail on: `low`, `medium`, `high`, `critical` |
 | `--min-confidence` | **`medium`** [new] | Below this: reported (marked `not failing`), but never fails the build |
-| `--format` | `console` | `console`, `json`, `sarif`. Until M7 only `console`, plus `json` with `--dry-run` |
+| `--format` | `console` | `console`, `json`, `sarif`. With `--dry-run`, `json` lists the payloads and `sarif` is exit 2 |
 | `--output` | stdout | Writes the formatter output to this file (relative to the cwd; may be outside the project) and the summary, strict line and warnings to stderr; stdout stays empty and exit codes are unchanged. Checked before the project is parsed: exit 2 when the target is a symlink or not a regular file, or any existing ancestor directory is a symlink or not a directory. A missing parent is created; the write is temp-then-rename, keeps an existing file's mode, and creates a new one as 0644 within the umask. `--output` with `--dry-run` is exit 2 |
 | `--provider` / `--model` | from config | |
 | `--concurrency` | 5 | A positive integer |
@@ -303,7 +303,7 @@ semantic-sec baseline             # alias for analyze --generate-baseline
 | `--no-cache` | off | Skips cache reads; validated answers are still written (§12) |
 | `--strict` | off | Exit 2 if any sent request ended `failed`, `refused`, `invalid` or `truncated`, or any payload was `unsent`. Accepted and ignored with `--dry-run`, since nothing is sent |
 
-**Overrides:** `--level`, `--min-confidence`, `--provider`, `--model`, `--concurrency` and `--budget` override the config file and are validated the same way; an invalid value is exit 2 with a message naming the flag (e.g. `--budget must be an integer ≥ 0.`). Flags, the config file and, outside `--dry-run`, the API key are checked before the project is parsed. `--baseline`, `--generate-baseline`, `--since`, `--format sarif`, and `--format json` without `--dry-run` exit 2 with `<option> is available in a later release` until M7.
+**Overrides:** `--level`, `--min-confidence`, `--provider`, `--model`, `--concurrency` and `--budget` override the config file and are validated the same way; an invalid value is exit 2 with a message naming the flag (e.g. `--budget must be an integer ≥ 0.`). Flags, the config file and, outside `--dry-run`, the API key are checked before the project is parsed. `--baseline`, `--generate-baseline`, `--since`, and `--format sarif` with `--dry-run` exit 2 with `<option> is available in a later release`.
 
 **Console output:** the §14 report on stdout (or in the `--output` file, undecorated). Findings below `--level` are kept in `AnalysisResult::$filtered` (for baselines and the JSON/SARIF formatters) but only their count is printed. Model-controlled and source-derived text has control characters replaced and console tags escaped. Errors go to stderr as `Error: <message>`; a missing key names the env var, never its value.
 
@@ -341,10 +341,15 @@ Precedence, from `AnalysisResult`, is `1 > strict-2 > 3 > all-failed-2 > 0`: `1`
   - each finding has the section 10 fields in the order `title, category, severity, confidence, file, line, symbol, context, flaw, fix, patch, path[{file,line,symbol}]`, then `fingerprint`, `failing`, `routeKey`, `model`; findings are sorted by file then line
   - a `suppressed` entry adds `suppression: {file, line, category|null, reason|null}` (the comment's location); `baselined` and `filtered` entries use the same shape with `failing: false`
   - model text has control characters and bidi marks stripped and invalid UTF-8 replaced by U+FFFD, with no console-tag escaping; prose and patches keep their line breaks; fingerprints, paths and keys are never redacted
-- **SARIF 2.1.0:**
-  - one `rule` per category: `id = CWE-xxx`, name, `helpUri` = the cwe.mitre.org page
-  - `results` with `ruleId`, `level` (critical/high → `error`, medium → `warning`, low → `note`), `message`, `locations` (relative URI and `startLine`), `partialFingerprints: {"semanticSec/v1": <fingerprint>}`, `properties.confidence`, `fixes` when a patch exists, and `codeFlows[].threadFlows[].locations` from `path`
-  - must validate against the official SARIF 2.1.0 JSON schema, which tests check
+- **SARIF 2.1.0** (`--format sarif`; stdout carries only the document, the summary and warnings go to stderr; with `--output` the document goes to the file):
+  - `$schema` (the OASIS errata01 URL), `version: "2.1.0"` and one `run`; `tool.driver` has `name`, `version`, `informationUri` (the GitHub repo) and `rules`
+  - `rules`: all five categories in fixed order (`idor`, `missing_authorization`, `mass_assignment`, `insecure_deserialization`, `workflow_bypass`), each `{id: CWE-xxx, name, shortDescription.text, helpUri: https://cwe.mitre.org/data/definitions/<n>.html, properties.tags: ["security"]}`
+  - `results`: findings, then suppressed, then baselined, each sorted by file then line; filtered findings (below `--level`) are not results. Each has `ruleId`, `ruleIndex`, `level` (critical/high → `error`, medium → `warning`, low → `note`), `message.text` (the title, a blank line, then the flaw), `locations[0].physicalLocation` (`artifactLocation {uri, uriBaseId: "%SRCROOT%"}` and `region.startLine`), `partialFingerprints: {"semanticSec/v1": <fingerprint>}`, `codeFlows[0].threadFlows[0].locations` from `path` when it is not empty, and `properties {severity, confidence, failing, category, symbol, routeKey, fix, patch?}`
+  - a suppressed result adds `suppressions: [{kind: "inSource", justification: <reason or "">}]`; a baselined one adds `baselineState: "unchanged"`
+  - URIs are the root-relative path with each segment percent-encoded; a line below 1 omits `region`. `run.originalUriBaseIds."%SRCROOT%"` has only a `description`, never the absolute project path. `run.properties.summary` is the JSON `summary`
+  - **no `fixes`:** the schema requires `fixes[].artifactChanges` with exact replacement regions, which a model-written unified diff cannot give reliably, so the fix text and the diff go in `properties.fix` and `properties.patch` (the latter only when the finding has a patch)
+  - text is cleaned as in JSON (control characters and bidi marks stripped, invalid UTF-8 replaced, no console escaping); fingerprints, paths and keys are never redacted
+  - must validate against the official SARIF 2.1.0 JSON schema, vendored at `tests/Fixtures/sarif-schema-2.1.0.json` (source in the sibling `.source` file); it is draft-04, so the test validates it as draft-07 after checking it uses only keywords that mean the same in both
 
 ## 15. Quality bar & benchmark
 
