@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Tests\Unit\Llm;
 
+use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\Promise;
 use GuzzleHttp\Promise\PromiseInterface;
 use PHPUnit\Framework\TestCase;
@@ -14,6 +15,8 @@ use TusharKhan\SemanticSec\Llm\LlmOutcome;
 use TusharKhan\SemanticSec\Llm\LlmRequest;
 use TusharKhan\SemanticSec\Llm\LlmResponse;
 use TusharKhan\SemanticSec\Llm\RequestPool;
+use TusharKhan\SemanticSec\Llm\ValidatingClient;
+use TusharKhan\SemanticSec\Payload\TokenEstimator;
 
 final class RequestPoolTest extends TestCase
 {
@@ -41,10 +44,10 @@ final class RequestPoolTest extends TestCase
 
     public function testBudgetStopsDispatchKeepsInFlight(): void
     {
-        // Each request estimates 10 tokens and each answer costs 15.
+        // Each request reserves 2 × (10 + 5) = 30 tokens and each answer costs 15.
         $client = new DeferredClient(tokens: 15);
 
-        $result = (new RequestPool($client, 2, 20))->run(self::requests(5));
+        $result = (new RequestPool($client, 2, 60))->run(self::requests(5));
 
         self::assertTrue($result->budgetExceeded);
         self::assertCount(2, $client->requests);
@@ -56,36 +59,115 @@ final class RequestPoolTest extends TestCase
     {
         $client = new DeferredClient(tokens: 10);
 
-        $result = (new RequestPool($client, 1, 20))->run(self::requests(3));
+        // The second dispatch lands exactly on 10 used + 30 reserved = 40.
+        $result = (new RequestPool($client, 1, 40))->run(self::requests(3));
 
         self::assertCount(2, $result->responses);
         self::assertSame(20, $result->usedTokens);
         self::assertTrue($result->budgetExceeded);
 
-        $single = (new RequestPool(new DeferredClient(tokens: 10), 1, 10))->run(self::requests(1));
+        $single = (new RequestPool(new DeferredClient(tokens: 10), 1, 30))->run(self::requests(1));
         self::assertCount(1, $single->responses);
         self::assertFalse($single->budgetExceeded);
     }
 
-    public function testOvershootWithoutSkipStillMarksBudgetExceeded(): void
+    public function testActualAboveReservationStillMarksBudgetExceeded(): void
     {
-        $client = new DeferredClient(tokens: 15);
+        // A client that bills more than it reserved is the only way past the cap.
+        $client = new DeferredClient(tokens: 45);
 
-        $result = (new RequestPool($client, 2, 20))->run(self::requests(2));
+        $result = (new RequestPool($client, 2, 60))->run(self::requests(2));
 
         self::assertCount(2, $result->responses);
-        self::assertSame(30, $result->usedTokens);
+        self::assertSame(90, $result->usedTokens);
         self::assertTrue($result->budgetExceeded);
     }
 
-    public function testBudgetCountsSystemAndUser(): void
+    public function testBudgetCountsSystemAndUserAndMaxTokens(): void
     {
-        $request = new LlmRequest('p1', str_repeat('s', 35), str_repeat('u', 35), [], 'm');
+        // Estimate 20, so the reservation is 2 × (20 + 5) = 50.
+        $request = new LlmRequest('p1', str_repeat('s', 35), str_repeat('u', 35), [], 'm', maxTokens: 5);
 
-        $result = (new RequestPool(new DeferredClient(tokens: 1), 1, 19))->run([$request]);
+        $result = (new RequestPool(new DeferredClient(tokens: 1), 1, 49))->run([$request]);
+        self::assertTrue($result->budgetExceeded);
+        self::assertSame([], $result->responses);
+
+        $result = (new RequestPool(new DeferredClient(tokens: 1), 1, 50))->run([$request]);
+        self::assertFalse($result->budgetExceeded);
+        self::assertCount(1, $result->responses);
+    }
+
+    public function testDefaultMaxTokensIsReserved(): void
+    {
+        $request = new LlmRequest('p1', '', str_repeat('x', 35), [], 'm');
+
+        $result = (new RequestPool(new DeferredClient(tokens: 1), 1, 32019))->run([$request]);
 
         self::assertTrue($result->budgetExceeded);
         self::assertSame([], $result->responses);
+    }
+
+    public function testBudgetBelowOneReservationDispatchesNothing(): void
+    {
+        $client = new DeferredClient(tokens: 1);
+
+        $result = (new RequestPool($client, 5, 29))->run(self::requests(3));
+
+        self::assertSame([], $client->requests);
+        self::assertSame([], $result->responses);
+        self::assertSame([], $result->failures);
+        self::assertSame(0, $result->usedTokens);
+        self::assertTrue($result->budgetExceeded);
+    }
+
+    public function testReservationReleasedOnFailure(): void
+    {
+        $client = new ScriptedClient([
+            'p1' => new LlmException('anthropic request failed (HTTP 500)', 500, true, spentTokens: 5),
+            'p2' => new \RuntimeException('sync'),
+            'p3' => 'not a response',
+            'p4' => new LlmResponse('p4', LlmOutcome::Ok, ['findings' => []], 10, 0, 'm'),
+            'p5' => new LlmResponse('p5', LlmOutcome::Ok, ['findings' => []], 10, 0, 'm'),
+            'p6' => new LlmResponse('p6', LlmOutcome::Ok, ['findings' => []], 10, 0, 'm'),
+            'p7' => new LlmResponse('p7', LlmOutcome::Ok, ['findings' => []], 10, 0, 'm'),
+        ]);
+
+        // Failures free their 30; p6 lands on 25 + 30 = 55, and p7 would need 35 + 30 = 65.
+        $result = (new RequestPool($client, 1, 60))->run(self::requests(7));
+
+        self::assertSame(['p1', 'p2', 'p3', 'p4', 'p5', 'p6'], array_map(static fn (LlmRequest $r): string => $r->payloadId, $client->requests));
+        self::assertCount(3, $result->failures);
+        self::assertSame(35, $result->usedTokens);
+        self::assertTrue($result->budgetExceeded);
+    }
+
+    public function testNullBudgetUnchanged(): void
+    {
+        $client = new DeferredClient(tokens: 1_000_000);
+
+        $result = (new RequestPool($client, 2, null))->run(self::requests(5, maxTokens: 16000));
+
+        self::assertCount(5, $client->requests);
+        self::assertCount(5, $result->responses);
+        self::assertSame(5_000_000, $result->usedTokens);
+        self::assertFalse($result->budgetExceeded);
+    }
+
+    public function testNeverExceedsBudgetWithConcurrencyAndRetries(): void
+    {
+        $budget = 400;
+        $inner = new BillingClient(budget: $budget);
+
+        $result = (new RequestPool(new ValidatingClient($inner), 5, $budget))->run(self::requests(50));
+
+        self::assertGreaterThan(5, count($inner->dispatched));
+        self::assertLessThan(50, count($inner->dispatched));
+        self::assertGreaterThan(0, $inner->retries);
+        self::assertGreaterThan(0, $inner->maxInFlight - 1);
+        self::assertSame($inner->billed, $result->usedTokens);
+        self::assertLessThanOrEqual($budget, $inner->peak);
+        self::assertLessThanOrEqual($budget, $result->usedTokens);
+        self::assertTrue($result->budgetExceeded);
     }
 
     public function testZeroRequests(): void
@@ -175,11 +257,11 @@ final class RequestPoolTest extends TestCase
     }
 
     /** @return \Generator<int, LlmRequest> */
-    private static function requests(int $n): \Generator
+    private static function requests(int $n, int $maxTokens = 5): \Generator
     {
         for ($i = 1; $i <= $n; $i++) {
-            // 35 bytes estimate to exactly 10 tokens.
-            yield new LlmRequest("p{$i}", '', str_repeat('x', 35), [], 'm');
+            // 35 bytes estimate to exactly 10 tokens, so the default reservation is 30.
+            yield new LlmRequest("p{$i}", '', str_repeat('x', 35), [], 'm', $maxTokens);
         }
     }
 }
@@ -208,6 +290,104 @@ final class DeferredClient implements ClientInterface
             assert($promise instanceof Promise);
             $this->inFlight--;
             $promise->resolve(new LlmResponse($request->payloadId, LlmOutcome::Ok, ['findings' => []], $this->tokens, 0, 'm'));
+        });
+
+        return $promise;
+    }
+}
+
+/** Answers from a script: a response or LlmException settles, any other Throwable is thrown synchronously, anything else resolves as is. */
+final class ScriptedClient implements ClientInterface
+{
+    /** @var list<LlmRequest> */
+    public array $requests = [];
+
+    /** @param array<string, mixed> $script */
+    public function __construct(private readonly array $script)
+    {
+    }
+
+    public function analyze(LlmRequest $request): PromiseInterface
+    {
+        $this->requests[] = $request;
+        $answer = $this->script[$request->payloadId] ?? null;
+        if ($answer instanceof LlmException) {
+            return Create::rejectionFor($answer);
+        }
+        if ($answer instanceof \Throwable) {
+            throw $answer;
+        }
+
+        return Create::promiseFor($answer);
+    }
+}
+
+/** Bills each call up to its share of the reservation, mixing instant and deferred answers, invalid first attempts and failed retries. */
+final class BillingClient implements ClientInterface
+{
+    /** @var array<string, int> per-call ceiling keyed by payload id, from the first attempt */
+    public array $dispatched = [];
+
+    public int $retries = 0;
+
+    public int $billed = 0;
+
+    public int $peak = 0;
+
+    public int $maxInFlight = 0;
+
+    private int $inFlight = 0;
+
+    private int $calls = 0;
+
+    public function __construct(public readonly int $budget)
+    {
+    }
+
+    public function analyze(LlmRequest $request): PromiseInterface
+    {
+        $retry = isset($this->dispatched[$request->payloadId]);
+        $this->dispatched[$request->payloadId] ??= TokenEstimator::estimate($request->system.$request->user) + $request->maxTokens;
+        $ceiling = $this->dispatched[$request->payloadId];
+        $n = ++$this->calls;
+        $this->retries += $retry ? 1 : 0;
+        $id = (int) substr($request->payloadId, 1);
+        // Every third payload is invalid first time; every ninth fails its retry.
+        $answer = match (true) {
+            !$retry && $id % 3 === 0 => 'invalid',
+            $retry && $id % 9 === 0 => 'fail',
+            default => 'ok',
+        };
+        // Mostly the full ceiling, so the cap is tested at its edge.
+        $tokens = $n % 4 === 0 ? intdiv($ceiling, 2) : $ceiling;
+        $this->inFlight++;
+        $this->maxInFlight = max($this->maxInFlight, $this->inFlight);
+        $settle = function () use ($request, $answer, $tokens): LlmResponse {
+            $this->inFlight--;
+            $this->billed += $tokens;
+            $this->peak = max($this->peak, $this->billed);
+            if ($answer === 'fail') {
+                throw new LlmException('openai request failed (HTTP 500)', 500, true, spentTokens: $tokens);
+            }
+            $outcome = $answer === 'invalid' ? LlmOutcome::Invalid : LlmOutcome::Ok;
+
+            return new LlmResponse($request->payloadId, $outcome, $outcome === LlmOutcome::Ok ? ['findings' => []] : null, $tokens, 0, 'm', $outcome === LlmOutcome::Ok ? null : 'bad json');
+        };
+        if ($n % 2 === 0) {
+            try {
+                return Create::promiseFor($settle());
+            } catch (LlmException $e) {
+                return Create::rejectionFor($e);
+            }
+        }
+        $promise = null;
+        $promise = new Promise(function () use (&$promise, $settle): void {
+            assert($promise instanceof Promise);
+            try {
+                $promise->resolve($settle());
+            } catch (LlmException $e) {
+                $promise->reject($e);
+            }
         });
 
         return $promise;

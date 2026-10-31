@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Llm;
 
-/** Responses arrive in completion order; usedTokens includes failed schema retries, and the budget may overshoot by up to `concurrency` slots, each spending up to two calls (the schema retry reuses its slot). */
+/** Responses arrive in completion order; usedTokens includes failed schema retries and stays within the budget, since each dispatch first reserves its worst case (two calls). */
 final readonly class PoolResult
 {
     /**
@@ -15,7 +15,7 @@ final readonly class PoolResult
         public array $responses,
         public array $failures,
         public int $usedTokens,
-        // True when a dispatch was skipped or usedTokens ended above the budget.
+        // True when a dispatch was skipped, or usedTokens ended above the budget (only if billing beats the reservation).
         public bool $budgetExceeded,
     ) {
     }

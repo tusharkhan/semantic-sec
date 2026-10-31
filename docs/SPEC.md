@@ -264,7 +264,11 @@ A route action becomes a candidate for a category when:
   - Only validated `Ok` answers are written, atomically (temp file, then rename). An entry that is over 4 MB, unreadable, malformed or fails `ResponseValidator` is a miss with the warning `cache entry <key> ignored`. Temp files older than an hour are removed when the cache opens.
   - `--no-cache` skips reads; writes always happen.
   - Cache entries are trusted local files: anyone who can write the cache dir can plant or hide findings, so use `--no-cache` in CI when the workspace is not trusted.
-- **Budget:** `budget_tokens` (default unset, meaning unlimited) counts provider-reported input and output tokens. Before dispatching, if `used + estimate(next)` would go over the budget, dispatching stops, in-flight requests finish, and `budgetExceeded = true`. In-flight requests are not reserved, and a schema retry spends a second call in the same slot, so the budget may overshoot by up to `concurrency` slots of two calls each; `budgetExceeded` is also true whenever the final `used` is above the budget. A failed schema retry still counts the first attempt's tokens; tokens spent on HTTP attempts that the retry middleware discards are not reported by the provider and are not counted.
+- **Budget:** `budget_tokens` (default unset, meaning unlimited) is a hard cap on provider-reported input and output tokens.
+  - Before each dispatch the pool reserves `r = 2 × (estimate(system . user) + maxTokens)`; the factor 2 covers the one schema retry, which reuses the slot.
+  - It dispatches only if `used + reserved + r ≤ budget`. Otherwise dispatching stops, in-flight requests finish, and `budgetExceeded = true`. A budget below one reservation dispatches nothing.
+  - On settle, success or failure, `r` is released and the actual tokens are added: the response's input plus output, or the failure's spent tokens (a failed schema retry still counts the first attempt).
+  - So `used` never goes over the budget, apart from HTTP attempts that the retry middleware discards: the provider never reports them, so they can't be counted. `budgetExceeded` is also true if the final `used` is above the budget, which needs an input the estimator undercounts by more than the unused output allowance, or a provider billing past `maxTokens`.
 - **`--since=<ref>`:**
   1. Run `git diff --name-only <ref>...HEAD` (through `symfony/process`), then parse the whole project as usual.
   2. Mark affected candidates: those whose execution path touches a changed file, those whose route is in a changed route file, those using changed middleware, policy, FormRequest or model files, plus every candidate if `Kernel.php`, `bootstrap/app.php`, `AuthServiceProvider` or `RouteServiceProvider` changed.
@@ -333,7 +337,7 @@ effort: high                   # anthropic only: low | medium | high | xhigh | m
 api_key_env: null              # override env var name
 base_url: null                 # e.g. https://api.groq.com/openai/v1 with provider: openai
 concurrency: 5                 # parallel slots; a schema retry reuses its slot
-budget_tokens: null            # provider-reported tokens, schema retries included (§12)
+budget_tokens: null            # hard cap on provider-reported tokens, schema retries reserved (§12)
 max_payload_tokens: 8000
 max_depth: 3
 level: high
