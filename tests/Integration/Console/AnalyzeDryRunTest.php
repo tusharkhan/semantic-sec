@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Tests\Integration\Console;
 
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Tester\CommandTester;
 use TusharKhan\SemanticSec\Console\Application;
@@ -359,6 +360,8 @@ final class AnalyzeDryRunTest extends TestCase
     }
 
     // Proves only that no known HTTP client class was loaded and no http(s) stream was opened in-process; raw curl_* or socket calls are not intercepted.
+    // Separate process because the LLM unit tests load Guzzle into the shared one.
+    #[RunInSeparateProcess]
     public function testDryRunUsesNoNetworkAndNoApiKey(): void
     {
         $saved = [];
