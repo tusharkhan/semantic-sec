@@ -16,6 +16,7 @@ use TusharKhan\SemanticSec\Payload\Redactor;
 
 /**
  * Guzzle handler that replays a cassette in order or by request body, or records real traffic into one.
+ * Body mode replays a request carrying a key in its body only when the same secrets are passed at replay.
  *
  * @phpstan-import-type Interaction from Cassette
  */

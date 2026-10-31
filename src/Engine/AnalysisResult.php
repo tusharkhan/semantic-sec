@@ -7,9 +7,10 @@ namespace TusharKhan\SemanticSec\Engine;
 use TusharKhan\SemanticSec\Parsing\Suppression;
 
 /**
- * What one engine run produced; payloads = skipped + cacheHits + sent, and sent = ok + refused + truncated + invalid + failed.
+ * What one engine run produced; payloads = skipped + unsent + cacheHits + sent, and sent = ok + refused + truncated + invalid + failed.
+ * skipped: no source code; unsent: stopped by the budget; filtered: reported findings below `level`.
  *
- * @phpstan-type Stats array{candidates:int, payloads:int, skipped:int, sent:int, cacheHits:int, ok:int, refused:int, truncated:int, invalid:int, failed:int, dropped:int, tokens:int, budgetExceeded:bool}
+ * @phpstan-type Stats array{candidates:int, payloads:int, skipped:int, unsent:int, sent:int, cacheHits:int, ok:int, refused:int, truncated:int, invalid:int, failed:int, dropped:int, filtered:int, tokens:int, budgetExceeded:bool}
  */
 final readonly class AnalysisResult
 {

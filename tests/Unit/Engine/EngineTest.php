@@ -214,7 +214,7 @@ final class EngineTest extends TestCase
         self::assertSame(Severity::Critical, $result->findings[0]['vulnerability']->severity);
     }
 
-    public function testDuplicateOfSuppressedFindingStaysSuppressed(): void
+    public function testUncoveredLineInSuppressedMethodIsReported(): void
     {
         $one = $this->payload('p1', self::POST, self::DESTROY, 12, 20);
         $two = $this->payload('p2', self::POST, self::DESTROY, 12, 20);
@@ -225,9 +225,48 @@ final class EngineTest extends TestCase
 
         $result = $this->engine($client)->run([$one, $two], 1);
 
-        self::assertSame([], $result->findings, 'same fingerprint as a suppressed finding');
+        self::assertCount(1, $result->findings, 'L19 has no idor suppression');
+        self::assertSame([19, Severity::Critical], [$result->findings[0]['vulnerability']->line, $result->findings[0]['vulnerability']->severity]);
         self::assertCount(1, $result->suppressed);
-        self::assertSame(14, $result->suppressed[0]['suppression']->commentLine);
+        self::assertSame([15, 14], [$result->suppressed[0]['vulnerability']->line, $result->suppressed[0]['suppression']->commentLine]);
+    }
+
+    public function testUncoveredLineInOneAnswerIsReported(): void
+    {
+        $payload = $this->payload('p1', self::POST, self::DESTROY, 12, 20);
+        $client = new FakeClient(['p1' => self::ok('p1', [
+            ResponseValidatorTest::finding(self::finding(self::DESTROY, 15)),
+            ResponseValidatorTest::finding([...self::finding(self::DESTROY, 19), 'severity' => 'critical', 'title' => 'other statement']),
+        ])]);
+
+        $result = $this->engine($client)->run([$payload], 1);
+
+        self::assertSame([19], array_map(static fn (array $f): int => $f['vulnerability']->line, $result->findings));
+        self::assertSame([15], array_map(static fn (array $s): int => $s['vulnerability']->line, $result->suppressed));
+    }
+
+    public function testCoveredLineStaysSuppressedAcrossPayloads(): void
+    {
+        $one = $this->payload('p1', self::POST, self::DESTROY, 12, 20);
+        $two = $this->payload('p2', self::POST, self::DESTROY, 12, 20);
+        $answer = static fn (string $sev): array => [ResponseValidatorTest::finding([...self::finding(self::DESTROY, 15), 'severity' => $sev])];
+        $client = new FakeClient(['p1' => self::ok('p1', $answer('medium')), 'p2' => self::ok('p2', $answer('critical'))]);
+
+        $result = $this->engine($client)->run([$one, $two], 1);
+
+        self::assertSame([], $result->findings);
+        self::assertCount(1, $result->suppressed);
+        self::assertSame(Severity::Critical, $result->suppressed[0]['vulnerability']->severity);
+    }
+
+    public function testDuplicatePayloadIdFailsFast(): void
+    {
+        $payload = $this->payload('p1', self::POST, self::SHOW, 7, 10);
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('duplicate payload id p1');
+
+        $this->engine(new FakeClient([]))->run([$payload, $this->payload('p1', self::POST, self::SHOW, 7, 9)], 1);
     }
 
     public function testBaselined(): void
@@ -255,6 +294,7 @@ final class EngineTest extends TestCase
 
         self::assertCount(1, $result->findings);
         self::assertSame(Severity::High, $result->findings[0]['vulnerability']->severity);
+        self::assertSame(1, $result->stats['filtered']);
     }
 
     public function testLowConfidenceNotFailing(): void
@@ -327,8 +367,9 @@ final class EngineTest extends TestCase
 
         self::assertSame(3, $s['candidates']);
         self::assertSame(7, $s['payloads']);
-        self::assertSame($s['payloads'], $s['skipped'] + $s['cacheHits'] + $s['sent']);
-        self::assertSame([1, 1, 5], [$s['skipped'], $s['cacheHits'], $s['sent']]);
+        self::assertSame($s['payloads'], $s['skipped'] + $s['unsent'] + $s['cacheHits'] + $s['sent']);
+        self::assertSame([1, 0, 1, 5], [$s['skipped'], $s['unsent'], $s['cacheHits'], $s['sent']]);
+        self::assertSame(0, $s['filtered']);
         self::assertSame($s['sent'], $s['ok'] + $s['refused'] + $s['truncated'] + $s['invalid'] + $s['failed']);
         self::assertSame([1, 1, 1, 1, 1], [$s['ok'], $s['refused'], $s['truncated'], $s['invalid'], $s['failed']]);
         self::assertSame(1, $s['dropped']);
@@ -337,7 +378,7 @@ final class EngineTest extends TestCase
         self::assertCount(1, $result->findings, 'the cache hit and the ok answer dedupe');
     }
 
-    public function testBudgetStopCountsUnsentAsSkipped(): void
+    public function testBudgetStopCountsUnsent(): void
     {
         $payload = $this->payload('p1', self::POST, self::SHOW, 7, 10);
         $client = new FakeClient([]);
@@ -346,8 +387,27 @@ final class EngineTest extends TestCase
 
         self::assertSame([], $client->requests);
         self::assertTrue($result->stats['budgetExceeded']);
-        self::assertSame(1, $result->stats['skipped']);
+        self::assertSame([0, 1], [$result->stats['skipped'], $result->stats['unsent']]);
+        self::assertSame(1, $result->stats['payloads']);
         self::assertContains('1 payload not sent: token budget exhausted', $result->warnings);
+    }
+
+    public function testStatsAddUpWhenTheBudgetStopsDispatch(): void
+    {
+        $payloads = [
+            new Payload('p0', self::candidate(), 'ctx', '<untrusted_code></untrusted_code>', 1, 1, false),
+            $this->payload('hit', self::POST, self::SHOW, 7, 10),
+            $this->payload('sent', self::POST, self::SHOW, 7, 9),
+            $this->payload('late', self::POST, self::SHOW, 8, 10),
+        ];
+        $this->cache()->put($payloads[1], self::ok('hit', []));
+        $client = new FakeClient(['sent' => self::ok('sent', [], 20000, 5), 'late' => self::ok('late', [])]);
+
+        $s = $this->engine($client, budget: 40000)->run($payloads, 1)->stats;
+
+        self::assertSame([1, 1, 1, 1], [$s['skipped'], $s['unsent'], $s['cacheHits'], $s['sent']]);
+        self::assertSame($s['payloads'], $s['skipped'] + $s['unsent'] + $s['cacheHits'] + $s['sent']);
+        self::assertTrue($s['budgetExceeded']);
     }
 
     public function testUnvalidatedOkIsTreatedAsInvalid(): void

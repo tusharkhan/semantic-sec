@@ -44,9 +44,16 @@ final class Engine
     {
         /** @var Stats $stats */
         $stats = [
-            'candidates' => $candidates, 'payloads' => count($payloads), 'skipped' => 0, 'sent' => 0, 'cacheHits' => 0,
-            'ok' => 0, 'refused' => 0, 'truncated' => 0, 'invalid' => 0, 'failed' => 0, 'dropped' => 0, 'tokens' => 0, 'budgetExceeded' => false,
+            'candidates' => $candidates, 'payloads' => count($payloads), 'skipped' => 0, 'unsent' => 0, 'sent' => 0, 'cacheHits' => 0,
+            'ok' => 0, 'refused' => 0, 'truncated' => 0, 'invalid' => 0, 'failed' => 0, 'dropped' => 0, 'filtered' => 0, 'tokens' => 0, 'budgetExceeded' => false,
         ];
+        $seen = [];
+        foreach ($payloads as $p) {
+            if (isset($seen[$p->id])) {
+                throw new \LogicException("duplicate payload id {$p->id}");
+            }
+            $seen[$p->id] = true;
+        }
         $warnings = $this->directiveWarnings();
 
         /** @var list<array{Payload, LlmResponse}> $answers */
@@ -90,6 +97,8 @@ final class Engine
                 $baselined[] = $v;
             } elseif ($v->severity->atLeast($this->config->level)) {
                 $findings[] = ['vulnerability' => $v, 'failing' => $v->confidence->atLeast($this->config->minConfidence)];
+            } else {
+                $stats['filtered']++;
             }
         }
 
@@ -152,7 +161,7 @@ final class Engine
             }
         }
         if ($unsent > 0) {
-            $stats['skipped'] += $unsent;
+            $stats['unsent'] = $unsent;
             $warnings[] = sprintf('%d payload%s not sent: token budget exhausted', $unsent, $unsent === 1 ? '' : 's');
         }
 
@@ -194,7 +203,7 @@ final class Engine
     }
 
     /**
-     * A finding its own file suppresses goes to suppressed, and so does any finding sharing its fingerprint.
+     * A finding goes to suppressed only when a directive in its own file covers its own line and category (SPEC §11.1).
      *
      * @param  list<Vulnerability>  $vulnerabilities  sorted
      * @return array{list<Vulnerability>, list<array{vulnerability: Vulnerability, suppression: Suppression}>, list<string>}
@@ -203,12 +212,12 @@ final class Engine
     {
         $by = [];
         $hidden = [];
-        $rest = [];
+        $active = [];
         $reasonless = [];
         foreach ($vulnerabilities as $v) {
             $s = $this->parsed->file($v->file)?->suppressions->find($v->line, $v->category);
             if ($s === null) {
-                $rest[] = $v;
+                $active[] = $v;
 
                 continue;
             }
@@ -218,14 +227,7 @@ final class Engine
                 $reasonless[$s->file.':'.$s->commentLine] = "{$s->file}:{$s->commentLine}: suppression without a reason honoured";
             }
         }
-        $active = [];
-        foreach ($rest as $v) {
-            if (isset($by[$v->fingerprint])) {
-                $hidden[] = $v;
-            } else {
-                $active[] = $v;
-            }
-        }
+        // Only covered findings are merged here; an uncovered one with the same fingerprint stays active.
         $suppressed = array_map(static fn (Vulnerability $v): array => ['vulnerability' => $v, 'suppression' => $by[$v->fingerprint]], (new Deduplicator())->merge($hidden));
 
         return [$active, $suppressed, array_values($reasonless)];
