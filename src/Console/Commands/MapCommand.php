@@ -9,7 +9,6 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
-use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use TusharKhan\SemanticSec\Config\ConfigException;
 use TusharKhan\SemanticSec\Console\ExitCode;
@@ -23,6 +22,8 @@ use TusharKhan\SemanticSec\Framework\Laravel\RouteEntry;
 #[AsCommand(name: 'map', description: 'Print the Laravel authorization map (no LLM, no API key)')]
 final class MapCommand extends Command
 {
+    use ProjectOptions;
+
     protected function configure(): void
     {
         $this
@@ -61,36 +62,6 @@ final class MapCommand extends Command
         }
 
         return ExitCode::OK;
-    }
-
-    private function fail(OutputInterface $output, string $message): int
-    {
-        $err = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
-        $err->writeln('Error: '.$message);
-
-        return ExitCode::ERROR;
-    }
-
-    private function stringOption(InputInterface $input, string $name): ?string
-    {
-        $value = $input->getOption($name);
-
-        return is_string($value) && $value !== '' ? $value : null;
-    }
-
-    private function resolveRoot(mixed $option): ?string
-    {
-        $path = is_string($option) && $option !== '' ? $option : getcwd();
-        if ($path === false) {
-            return null;
-        }
-        if (! str_starts_with($path, '/')) {
-            $cwd = getcwd();
-            $path = ($cwd === false ? '' : $cwd).'/'.$path;
-        }
-        $real = realpath($path);
-
-        return $real !== false && is_dir($real) ? $real : null;
     }
 
     /** @param  list<string>  $warnings */

@@ -19,6 +19,13 @@ final class MapBuilder
     /** @return array{0: AuthorizationMap, 1: DetectedFramework, 2: list<string>} */
     public function build(string $root, ?string $configPath, ?string $framework): array
     {
+        $project = $this->project($root, $configPath, $framework);
+
+        return [$project->map, $project->framework, $project->warnings];
+    }
+
+    public function project(string $root, ?string $configPath, ?string $framework): MappedProject
+    {
         $config = (new ConfigLoader())->load($root, $configPath);
         $detected = (new FrameworkDetector())->detect($root, $framework);
         $parsed = (new ProjectParser(new FileFinder(), new AstGenerator()))->parse($root, $config->exclude);
@@ -33,6 +40,6 @@ final class MapBuilder
         }
         array_push($warnings, ...$symbols->duplicates(), ...$symbols->failures(), ...$map->warnings);
 
-        return [$map, $detected, $warnings];
+        return new MappedProject($config, $detected, $parsed, $symbols, $map, $warnings);
     }
 }
