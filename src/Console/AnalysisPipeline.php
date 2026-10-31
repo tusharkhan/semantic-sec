@@ -7,14 +7,15 @@ namespace TusharKhan\SemanticSec\Console;
 use TusharKhan\SemanticSec\Candidates\Candidate;
 use TusharKhan\SemanticSec\Config\Config;
 use TusharKhan\SemanticSec\Framework\Laravel\LaravelContext;
+use TusharKhan\SemanticSec\Llm\SecurityPrompt;
 use TusharKhan\SemanticSec\Payload\Payload;
 
-/** Map, then candidates (SPEC §7), then payloads (SPEC §9); no LLM. */
+/** Map, then candidates (SPEC §7), then payloads (SPEC §9) and the system prompt they go with; no LLM. */
 final class AnalysisPipeline
 {
     /**
      * @param  list<string>|null  $paths  project-relative report scope; null keeps the config's `paths`
-     * @return array{0: list<array{candidate: Candidate, payloads: list<Payload>}>, 1: list<string>}
+     * @return array{0: list<array{candidate: Candidate, payloads: list<Payload>}>, 1: list<string>, 2: string} results, warnings, system prompt
      */
     public function run(string $root, ?string $configPath, ?string $framework, bool $deep, ?array $paths): array
     {
@@ -34,7 +35,7 @@ final class AnalysisPipeline
             $results[] = ['candidate' => $candidate, 'payloads' => $payloads];
         }
 
-        return [$results, $warnings];
+        return [$results, $warnings, SecurityPrompt::system($context->promptContext(), $config->rulesets)];
     }
 
     /** @param list<string> $paths */

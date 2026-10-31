@@ -20,12 +20,15 @@ use TusharKhan\SemanticSec\Framework\FrameworkNotDetected;
 use TusharKhan\SemanticSec\Payload\Payload;
 use TusharKhan\SemanticSec\Payload\Redactor;
 
-#[AsCommand(name: 'analyze', description: 'Select candidate routes and build their LLM payloads (M4: --dry-run only)')]
+#[AsCommand(name: 'analyze', description: 'Select candidate routes and build their LLM payloads (--dry-run only until the engine lands in M6)')]
 final class AnalyzeCommand extends Command
 {
     use ProjectOptions;
 
     public const DRY_RUN_DIR = '.semantic-sec/dry-run';
+
+    // Sorts before every payload file, whose ids start at 001.
+    public const SYSTEM_FILE = '000-system.txt';
 
     protected function configure(): void
     {
@@ -35,7 +38,7 @@ final class AnalyzeCommand extends Command
             ->addOption('config', null, InputOption::VALUE_REQUIRED, 'Path to semantic-sec.yaml')
             ->addOption('framework', null, InputOption::VALUE_REQUIRED, 'Force the framework (laravel)')
             ->addOption('deep', null, InputOption::VALUE_NONE, 'Do not exclude routes that have an authorization check')
-            ->addOption('dry-run', null, InputOption::VALUE_NONE, 'Write every payload to .semantic-sec/dry-run; no network, no API key')
+            ->addOption('dry-run', null, InputOption::VALUE_NONE, 'Write the system prompt and every payload to .semantic-sec/dry-run; no network, no API key')
             ->addOption('format', null, InputOption::VALUE_REQUIRED, 'console or json (the summary)', 'console');
     }
 
@@ -46,7 +49,7 @@ final class AnalyzeCommand extends Command
             return $this->fail($output, '--format must be console or json');
         }
         if ($input->getOption('dry-run') !== true) {
-            return $this->fail($output, 'analysis needs the LLM layer (M5); use --dry-run');
+            return $this->fail($output, 'analysis needs the engine (M6); use --dry-run');
         }
 
         if ($input->getOption('project-root') === '') {
@@ -66,7 +69,7 @@ final class AnalyzeCommand extends Command
         }
 
         try {
-            [$results, $warnings] = (new AnalysisPipeline())->run(
+            [$results, $warnings, $system] = (new AnalysisPipeline())->run(
                 $root,
                 $this->stringOption($input, 'config'),
                 $this->stringOption($input, 'framework'),
@@ -78,7 +81,7 @@ final class AnalyzeCommand extends Command
         }
 
         try {
-            $this->write($root, $results);
+            $this->write($root, $results, $system);
         } catch (\RuntimeException $e) {
             return $this->fail($output, $redactor->redact($e->getMessage()));
         }
@@ -93,6 +96,7 @@ final class AnalyzeCommand extends Command
                     'payloads' => array_sum(array_map(static fn (array $r): int => count($r['payloads']), $rows)),
                     'tokens' => array_sum(array_column($rows, 'tokens')),
                     'directory' => $dir,
+                    'system' => self::SYSTEM_FILE,
                 ],
                 'candidates' => $rows,
                 'warnings' => $warnings,
@@ -128,19 +132,25 @@ final class AnalyzeCommand extends Command
     }
 
     /** @param list<array{candidate: Candidate, payloads: list<Payload>}> $results */
-    private function write(string $root, array $results): void
+    private function write(string $root, array $results, string $system): void
     {
         $dir = self::guard($root, true);
+        self::put($dir.'/'.self::SYSTEM_FILE, $system);
         foreach ($results as $result) {
             foreach ($result['payloads'] as $payload) {
-                $file = $dir.'/'.$payload->id.'.txt';
-                $handle = @fopen($file, 'x');
-                if ($handle === false || @fwrite($handle, $payload->text()."\n") === false) {
-                    throw new \RuntimeException('Cannot write '.$file);
-                }
-                fclose($handle);
+                self::put($dir.'/'.$payload->id.'.txt', $payload->text()."\n");
             }
         }
+    }
+
+    // Creates the file, never overwriting one that appeared since the directory was emptied.
+    private static function put(string $file, string $text): void
+    {
+        $handle = @fopen($file, 'x');
+        if ($handle === false || @fwrite($handle, $text) === false) {
+            throw new \RuntimeException('Cannot write '.$file);
+        }
+        fclose($handle);
     }
 
     // Refuses a symlinked or escaping .semantic-sec or dry-run dir; with $create, empties dry-run (creating dirs one level at a time).

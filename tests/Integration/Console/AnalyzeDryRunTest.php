@@ -7,7 +7,10 @@ namespace TusharKhan\SemanticSec\Tests\Integration\Console;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Tester\CommandTester;
+use TusharKhan\SemanticSec\Config\ConfigLoader;
 use TusharKhan\SemanticSec\Console\Application;
+use TusharKhan\SemanticSec\Framework\Laravel\LaravelContext;
+use TusharKhan\SemanticSec\Llm\SecurityPrompt;
 use TusharKhan\SemanticSec\Payload\PayloadBuilder;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkCorpus;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkMaps;
@@ -78,12 +81,12 @@ final class AnalyzeDryRunTest extends TestCase
         return self::$runs[$key];
     }
 
-    /** @return array<string, string> file name => contents */
+    /** @return array<string, string> payload file name => contents (the system prompt file is left out) */
     private static function files(string $app): array
     {
         $dir = self::copy($app).'/.semantic-sec/dry-run';
         $files = [];
-        foreach (glob($dir.'/*') ?: [] as $path) {
+        foreach (array_diff(glob($dir.'/*') ?: [], [$dir.'/000-system.txt']) as $path) {
             $files[basename($path)] = (string) file_get_contents($path);
         }
         ksort($files);
@@ -103,7 +106,7 @@ final class AnalyzeDryRunTest extends TestCase
         $code = $t->execute(['--project-root' => self::copy('laravel11-app')], ['capture_stderr_separately' => true]);
 
         self::assertSame(2, $code);
-        self::assertStringContainsString('analysis needs the LLM layer (M5); use --dry-run', $t->getErrorOutput());
+        self::assertStringContainsString('analysis needs the engine (M6); use --dry-run', $t->getErrorOutput());
     }
 
     public function testBadFormatExitsTwo(): void
@@ -140,6 +143,19 @@ final class AnalyzeDryRunTest extends TestCase
             }
             sort($expected);
             self::assertSame($expected, $ids, $app);
+        }
+    }
+
+    public function testWritesTheSystemPromptExactlyAsSent(): void
+    {
+        foreach (self::APPS as $app) {
+            $data = self::dryRun($app);
+            $path = self::copy($app).'/.semantic-sec/dry-run/000-system.txt';
+            $rulesets = (new ConfigLoader())->load(self::copy($app))->rulesets;
+
+            self::assertFileExists($path);
+            self::assertSame(SecurityPrompt::system((new LaravelContext())->promptContext(), $rulesets), file_get_contents($path), $app);
+            self::assertSame('000-system.txt', $data['summary']['system']);
         }
     }
 

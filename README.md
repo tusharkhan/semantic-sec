@@ -13,7 +13,7 @@ vendor/bin/semantic-sec analyze --dry-run --project-root=/path/to/laravel-app
 vendor/bin/semantic-sec analyze --dry-run --deep --format=json   # also review routes that have an authorization check
 ```
 
-Payloads land in `.semantic-sec/dry-run/NNN-<verb-uri-slug>-<part>.txt` inside the project, secrets redacted. `semantic-sec map` prints the authorization map on its own.
+The system prompt lands in `.semantic-sec/dry-run/000-system.txt` and the payloads in `NNN-<verb-uri-slug>-<part>.txt` beside it, inside the project, secrets redacted. `semantic-sec map` prints the authorization map on its own.
 
 ## Groq
 

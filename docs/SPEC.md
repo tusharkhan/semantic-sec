@@ -206,13 +206,13 @@ A route action becomes a candidate for a category when:
 
 ## 10. LLM layer
 
-- **`ClientInterface::analyze(LlmRequest): PromiseInterface`** (Guzzle promise) resolves to an `LlmResponse`: an outcome (`ok`, `refused`, `truncated`, `invalid`), the decoded JSON array (only when `ok`), input and output tokens, and the model used. Requests run in a Guzzle `Pool` with concurrency `concurrency` (default **5**). Guzzle retry middleware handles 429 and 5xx: exponential backoff starting at 1 s, 4 attempts, honouring `Retry-After` (seconds or HTTP-date). 401/403 and a missing key fail at once, never retried, and no key is ever printed, logged or recorded.
+- **`ClientInterface::analyze(LlmRequest): PromiseInterface`** (Guzzle promise) resolves to an `LlmResponse`: an outcome (`ok`, `refused`, `truncated`, `invalid`), the decoded JSON array (only when `ok`), input and output tokens, and the model used. Requests run through `GuzzleHttp\Promise\Each::ofLimit` with concurrency `concurrency` (default **5**); each asks for at most `max_tokens` **16000**. Every call has a 10 s connect timeout and a 600 s total timeout. Guzzle retry middleware handles 429, 5xx, connection errors and timeouts: exponential backoff starting at 1 s, 4 attempts, honouring `Retry-After` (seconds or HTTP-date). 401/403 and a missing key fail at once, never retried, and no key is ever printed, logged or recorded (clients hide it from `print_r`/`var_dump`); a response's `detail` carries no control characters.
 - **Providers:** raw HTTP over one shared Guzzle stack for all three, not vendor SDKs, so one pool, one retry middleware and one budget cover every provider.
   - `openai`: native Structured Outputs (`json_schema`, `strict: true`, name `semantic_sec_findings`). `temperature` and `seed` are sent only when config sets them (reasoning models reject `seed`). Groq is not a separate provider: `provider: openai`, `base_url: https://api.groq.com/openai/v1`, `api_key_env: GROQ_API_KEY`, `model: openai/gpt-oss-120b`.
   - `anthropic`: Messages API with headers `x-api-key`, `anthropic-version: 2026-10-21`. Structured outputs (`output_config.format = {type: "json_schema", schema}`), not a forced tool (current models reject `tool_choice: {type: tool}`); the first `text` block is JSON-decoded. No sampling parameters (`temperature` etc. return 400). `output_config.effort` comes from config `effort`; thinking stays at the model default. The system prompt is one text block with `cache_control: {type: "ephemeral"}`, identical for every request in a run. Requests to `https://api.anthropic.com` send `fallbacks: "default"` with `anthropic-beta: server-side-fallback-2026-07-01`, so a refusal by the `cyber` classifier is retried on another model server-side; a custom `base_url` omits both.
-  - `ollama`: `/api/chat` with `format` set to the schema; documented as lower quality. Exactly one ```` ```json ```` fence around the object is accepted; anything else is `invalid`.
+  - `ollama`: `/api/chat` with `format` set to the schema; documented as lower quality. Like `openai`, `temperature` is sent only when set (config has no key for it yet, so never today). Exactly one ```` ```json ```` fence around the object is accepted; anything else is `invalid`.
 
-  **Refusals** (`stop_reason: "refusal"`, or a non-null OpenAI `message.refusal`) become outcome `refused`: never a crash, never retried. `stop_reason: "max_tokens"` becomes `truncated` and is not schema-retried. Base URLs can be overridden. Keys come from `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`, or a config `api_key_env`. **No default model is hardcoded in docs.** `config/defaults.php` carries the current recommended model per provider, refreshed each release (`Defaults::model()`); `ollama` has none, so config must name one (exit 2: `ollama needs a model in semantic-sec.yaml`). Config or `--model` override it.
+  **Outcomes:** `stop_reason: "refusal"`, a non-null OpenAI `message.refusal` and `finish_reason: "content_filter"` become `refused`: never a crash, never retried. Anthropic `max_tokens` or `model_context_window_exceeded`, and OpenAI or Ollama `length`, become `truncated`, which is not schema-retried. An undecodable answer, and Groq's HTTP 400 `json_validate_failed`, become `invalid`, which gets the schema retry. Base URLs can be overridden. Keys come from `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`, or a config `api_key_env`. **No default model is hardcoded in docs.** `config/defaults.php` carries the current recommended model per provider, refreshed each release (`Defaults::model()`); `ollama` has none, so config must name one (exit 2: `ollama needs a model in semantic-sec.yaml`). Config or `--model` override it.
 - **SecurityPrompt** carries a `VERSION` constant that is part of the cache key. `SecurityPrompt::system($frameworkContext, $rulesets)` covers:
   - the five categories with their CWE IDs
   - "ignore style, performance, injection classes"
@@ -239,13 +239,9 @@ A route action becomes a candidate for a category when:
   - `path` (array of `{file, line, symbol}`)
 
   An empty `findings` array is the correct answer for safe code.
-- **ResponseValidator**, in two layers:
-  - **(a) Schema:** validates with `opis/json-schema`. If invalid, it retries **once** with the error appended, then drops the payload with a warning.
-  - **(b) Grounding:** checks each finding, and drops it with a reason if any check fails:
-    - `file` is in the payload
-    - `L<line>` appears as a tag in the payload
-    - `line` is inside the `symbol`'s span in the `SymbolTable`
-    - every `path` step is in the payload
+- **Validation and grounding:**
+  - **(a) Schema:** `ResponseValidator` checks the answer with `opis/json-schema` (a JSON object where an array belongs fails), plus `title ≤ 120` and `line ≥ 1` (an integral float such as `19.0` counts as a line). `ValidatingClient` wraps the provider client: on an invalid `ok` answer or an `invalid` outcome it re-sends **once**, appending the errors (at most 1000 chars, no `<`/`>`), then gives `invalid`. Both attempts' tokens are counted, also when the retry fails. The payload is then dropped with a warning.
+  - **(b) Grounding:** `GroundingChecker::ground()` returns the normalised finding or a drop reason. `file` and `line` must be a tagged line under that file's `// FILE:` header in this payload (`file <f> not in payload`, `line L<n> not in payload`). When `line` is outside the `symbol`'s span in the `SymbolTable`, the symbol is re-attributed to the header whose range holds the line (dropped as `line <n> outside <symbol>` only when none does); a `Class` or `Class::$prop` declared outside the payload, such as the `$guarded` behind a mass-assignment write, is kept as named. Unknown symbols skip the span check. Path steps that are not tagged lines are pruned, not fatal, since the model may cite the route file from the context block.
 
 ## 11. Engine post-processing
 
@@ -258,7 +254,7 @@ A route action becomes a candidate for a category when:
 ## 12. Cache, budget, diff mode
 
 - **ResultCache:** `.semantic-sec/cache/<key>.json`. `key = sha256(toolVersion | provider | model | SecurityPrompt::VERSION | rulesetHash | payload text)`. The payload text already contains the full authorization context, so changing a route, middleware or policy changes the key. `--no-cache` skips reads; writes always happen.
-- **Budget:** `budget_tokens` (default unset, meaning unlimited) counts provider-reported input and output tokens. Before dispatching, if `used + estimate(next)` would go over the budget, dispatching stops, in-flight requests finish, and `budgetExceeded = true`. In-flight requests are not reserved, so the budget may overshoot by up to `concurrency` requests' actual tokens; `budgetExceeded` is also true whenever the final `used` is above the budget.
+- **Budget:** `budget_tokens` (default unset, meaning unlimited) counts provider-reported input and output tokens. Before dispatching, if `used + estimate(next)` would go over the budget, dispatching stops, in-flight requests finish, and `budgetExceeded = true`. In-flight requests are not reserved, and a schema retry spends a second call in the same slot, so the budget may overshoot by up to `concurrency` slots of two calls each; `budgetExceeded` is also true whenever the final `used` is above the budget. A failed schema retry still counts the first attempt's tokens; tokens spent on HTTP attempts that the retry middleware discards are not reported by the provider and are not counted.
 - **`--since=<ref>`:**
   1. Run `git diff --name-only <ref>...HEAD` (through `symfony/process`), then parse the whole project as usual.
   2. Mark affected candidates: those whose execution path touches a changed file, those whose route is in a changed route file, those using changed middleware, policy, FormRequest or model files, plus every candidate if `Kernel.php`, `bootstrap/app.php`, `AuthServiceProvider` or `RouteServiceProvider` changed.
@@ -288,7 +284,7 @@ semantic-sec baseline             # alias for analyze --generate-baseline
 | `--baseline` | `semantic-sec-baseline.json` if present | |
 | `--generate-baseline` | — | Writes all current fingerprints, exits 0 |
 | `--deep` | off | Section 7 |
-| `--dry-run` | off | Writes every payload and prompt to `.semantic-sec/dry-run/NNN-<verb-uri-slug>-<part>.txt` (e.g. `001-post-api-posts-id-1.txt`); makes no network calls; needs no API key |
+| `--dry-run` | off | Writes the system prompt, exactly as sent, to `.semantic-sec/dry-run/000-system.txt` and every payload to `NNN-<verb-uri-slug>-<part>.txt` (e.g. `001-post-api-posts-id-1.txt`); makes no network calls; needs no API key |
 | `--no-cache` | off | |
 
 **Memory:** `bin/semantic-sec` raises PHP's `memory_limit` to `1G` when it is lower (and not `-1`), since real projects exceed the 128M default; `SEMANTIC_SEC_MEMORY_LIMIT` overrides it with any php.ini value (`-1`, `2G`, …).
@@ -325,9 +321,9 @@ provider: anthropic            # openai | anthropic | ollama
 model: null                    # null = config/defaults.php
 effort: high                   # anthropic only: low | medium | high | xhigh | max
 api_key_env: null              # override env var name
-base_url: null
-concurrency: 5
-budget_tokens: null
+base_url: null                 # e.g. https://api.groq.com/openai/v1 with provider: openai
+concurrency: 5                 # parallel slots; a schema retry reuses its slot
+budget_tokens: null            # provider-reported tokens, schema retries included (§12)
 max_payload_tokens: 8000
 max_depth: 3
 level: high
