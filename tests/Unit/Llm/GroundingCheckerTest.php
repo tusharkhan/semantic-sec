@@ -58,6 +58,17 @@ final class GroundingCheckerTest extends TestCase
         '}',
     ];
 
+    private const MODEL = [
+        '<?php',
+        '',
+        'namespace App\Models;',
+        '',
+        'class Post',
+        '{',
+        '    protected $guarded = [];',
+        '}',
+    ];
+
     private const SHOW_BLOCK = <<<'TXT'
         // FILE: app/Http/Controllers/PostController.php :: App\Http\Controllers\PostController::show (L11-L18)
         L11|     /**
@@ -119,9 +130,19 @@ final class GroundingCheckerTest extends TestCase
         self::assertSame('line L16 not in payload', $this->check(self::finding(['file' => self::GATES, 'line' => 16, 'symbol' => 'gate:edit-post'])));
     }
 
-    public function testLineOutsideSymbol(): void
+    public function testLineOutsideSymbolIsReattributedToItsHeader(): void
     {
-        self::assertSame('line 22 outside '.self::SHOW, $this->check(self::finding(['line' => 22])));
+        [$grounded, $reason] = $this->ground(self::finding(['line' => 22]));
+
+        self::assertNull($reason);
+        self::assertSame(self::CLS.'::index', $grounded['symbol'] ?? null);
+    }
+
+    public function testLineOutsideSymbolAndEveryHeaderRangeDropped(): void
+    {
+        $code = "<untrusted_code>\n// FILE: ".self::FILE.' :: '.self::SHOW." (L14-L18)\nL16|         \$post = 1;\nL40|     // stray\n</untrusted_code>";
+
+        self::assertSame('line 40 outside '.self::SHOW, $this->checker()->check(self::finding(['line' => 40, 'path' => []]), self::payload($code)));
     }
 
     public function testDocblockLinesCountAsMethod(): void
@@ -140,7 +161,20 @@ final class GroundingCheckerTest extends TestCase
     {
         self::assertNull($this->check(self::finding(['line' => 9, 'symbol' => self::CLS.'::$fillable'])));
         self::assertNull($this->check(self::finding(['line' => 8, 'symbol' => self::CLS.'::$fillable'])));
-        self::assertSame('line 16 outside '.self::CLS.'::$fillable', $this->check(self::finding(['line' => 16, 'symbol' => self::CLS.'::$fillable'])));
+        [$grounded] = $this->ground(self::finding(['line' => 16, 'symbol' => self::CLS.'::$fillable']));
+        self::assertSame(self::SHOW, $grounded['symbol'] ?? null, 'declared in the payload, so the line is re-attributed');
+    }
+
+    public function testClassLevelSymbolDeclaredOutsideThePayloadIsKept(): void
+    {
+        [$grounded, $reason] = $this->ground(self::finding(['line' => 16, 'symbol' => 'App\Models\Post::$guarded']));
+        self::assertNull($reason);
+        self::assertSame('App\Models\Post::$guarded', $grounded['symbol'] ?? null);
+
+        [$grounded] = $this->ground(self::finding(['line' => 16, 'symbol' => 'App\Models\Post']));
+        self::assertSame('App\Models\Post', $grounded['symbol'] ?? null);
+
+        self::assertSame('line L3 not in payload', $this->check(self::finding(['line' => 3, 'symbol' => 'App\Models\Post::$guarded'])), 'the line must still be tagged');
     }
 
     public function testClassSpanIncludesItsDocblock(): void
@@ -149,24 +183,56 @@ final class GroundingCheckerTest extends TestCase
         self::assertNull($this->check(self::finding(['line' => 5, 'symbol' => self::CLS])));
     }
 
-    public function testSymbolInAnotherFileIsOutside(): void
+    public function testSymbolInAnotherFileIsReattributed(): void
     {
-        self::assertSame('line 31 outside '.self::SHOW, $this->check(self::finding(['file' => self::GATES, 'line' => 31])));
+        [$grounded] = $this->ground(self::finding(['file' => self::GATES, 'line' => 31]));
+
+        self::assertSame('gate:edit-post', $grounded['symbol'] ?? null);
     }
 
-    public function testPathStepNotInPayload(): void
+    public function testUngroundedPathStepsArePruned(): void
     {
         $path = [
             ['file' => self::FILE, 'line' => 14, 'symbol' => self::SHOW],
             ['file' => self::FILE, 'line' => 19, 'symbol' => self::SHOW],
+            ['file' => 'routes/web.php', 'line' => 12, 'symbol' => 'route'],
+            ['file' => self::GATES, 'line' => 30.0, 'symbol' => 'gate:edit-post', 'extra' => 1],
+            'x',
+            ['file' => self::FILE, 'line' => 16],
         ];
-        self::assertSame('path step 1 not in payload', $this->check(self::finding(['path' => $path])));
 
-        $path[1] = ['file' => 'app/Other.php', 'line' => 16, 'symbol' => self::SHOW];
-        self::assertSame('path step 1 not in payload', $this->check(self::finding(['path' => $path])));
+        [$grounded, $reason] = $this->ground(self::finding(['path' => $path]));
 
-        $path[1] = ['file' => self::GATES, 'line' => 30, 'symbol' => 'gate:edit-post'];
-        self::assertNull($this->check(self::finding(['path' => $path])));
+        self::assertNull($reason);
+        self::assertSame([
+            ['file' => self::FILE, 'line' => 14, 'symbol' => self::SHOW],
+            ['file' => self::GATES, 'line' => 30, 'symbol' => 'gate:edit-post'],
+            ['file' => self::FILE, 'line' => 16, 'symbol' => ''],
+        ], $grounded['path'] ?? null);
+    }
+
+    public function testGroundReturnsNormalisedFinding(): void
+    {
+        $finding = self::finding(['line' => 16.0, 'path' => 'x']);
+
+        [$grounded, $reason] = $this->ground($finding);
+
+        self::assertNull($reason);
+        self::assertSame([...$finding, 'line' => 16, 'path' => []], $grounded);
+        self::assertSame([null, 'line L19 not in payload'], $this->ground(self::finding(['line' => 19])));
+    }
+
+    public function testIntegralFloatLinesAreAccepted(): void
+    {
+        self::assertNull($this->check(self::finding(['line' => 16.0])));
+        self::assertSame('line L16.5 not in payload', $this->check(self::finding(['line' => 16.5])));
+    }
+
+    public function testHeaderPathMayContainDoubleColon(): void
+    {
+        $code = "<untrusted_code>\n// FILE: app/odd :: dir/A.php :: App\\A::run (L3-L5)\nL4|         run();\n</untrusted_code>";
+
+        self::assertNull($this->checker()->check(['file' => 'app/odd :: dir/A.php', 'line' => 4, 'symbol' => 'App\A::run'], self::payload($code)));
     }
 
     public function testLineFromOtherPartDropped(): void
@@ -219,14 +285,15 @@ final class GroundingCheckerTest extends TestCase
             'file is a number' => [['file' => 7], 'file 7 not in payload'],
             'missing line' => [['line' => '__unset__'], 'line Lnull not in payload'],
             'line is a string' => [['line' => '16'], 'line L16 not in payload'],
-            'line is a float' => [['line' => 16.0], 'line L16.0 not in payload'],
+            'line is an integral float' => [['line' => 16.0], ''],
+            'line is a fractional float' => [['line' => 16.5], 'line L16.5 not in payload'],
             'negative line' => [['line' => -3], 'line L-3 not in payload'],
             'zero line' => [['line' => 0], 'line L0 not in payload'],
-            'path not a list' => [['path' => 'x'], 'path step 0 not in payload'],
-            'path step not an object' => [['path' => ['x']], 'path step 0 not in payload'],
-            'path step without line' => [['path' => [['file' => self::FILE, 'symbol' => self::SHOW]]], 'path step 0 not in payload'],
-            'path step negative line' => [['path' => [['file' => self::FILE, 'line' => -16]]], 'path step 0 not in payload'],
-            'path step file not a string' => [['path' => [['file' => null, 'line' => 16]]], 'path step 0 not in payload'],
+            'path not a list' => [['path' => 'x'], ''],
+            'path step not an object' => [['path' => ['x']], ''],
+            'path step without line' => [['path' => [['file' => self::FILE, 'symbol' => self::SHOW]]], ''],
+            'path step negative line' => [['path' => [['file' => self::FILE, 'line' => -16]]], ''],
+            'path step file not a string' => [['path' => [['file' => null, 'line' => 16]]], ''],
             'missing path' => [['path' => '__unset__'], ''],
             'missing symbol' => [['symbol' => '__unset__', 'line' => 22], ''],
             'symbol not a string' => [['symbol' => ['x'], 'line' => 22], ''],
@@ -270,12 +337,55 @@ final class GroundingCheckerTest extends TestCase
         self::assertSame('line L20 not in payload', $checker->check([...$finding, 'line' => 20], $payload), 'a pruned line has no tag');
     }
 
+    public function testRealMassAssignmentFindingOnModelPropertyIsKept(): void
+    {
+        $finding = ['file' => 'app/Http/Controllers/Vuln/AccountController.php', 'line' => 14, 'symbol' => 'App\Models\Account::$guarded', 'path' => []];
+
+        [$grounded, $reason] = (new GroundingChecker(BenchmarkMaps::symbols('laravel11-app')))->ground($finding, self::benchmarkPayload('PUT /vuln/account'));
+
+        self::assertNull($reason);
+        self::assertSame('App\Models\Account::$guarded', $grounded['symbol'] ?? null);
+    }
+
+    public function testRealCalleeLineUnderEntrySymbolIsReattributed(): void
+    {
+        $finding = ['file' => 'app/Services/DownloadService.php', 'line' => 10, 'symbol' => 'App\Http\Controllers\Vuln\DownloadController::show', 'path' => []];
+
+        [$grounded, $reason] = (new GroundingChecker(BenchmarkMaps::symbols('laravel11-app')))->ground($finding, self::benchmarkPayload('GET /vuln/downloads/{id}'));
+
+        self::assertNull($reason);
+        self::assertSame('App\Services\DownloadService::find', $grounded['symbol'] ?? null);
+    }
+
+    private static function benchmarkPayload(string $route): Payload
+    {
+        [$candidates] = BenchmarkMaps::selector('laravel11-app')->select(BenchmarkMaps::build('laravel11-app'), false);
+        foreach ($candidates as $candidate) {
+            if (in_array($route, $candidate->route->keys(), true)) {
+                return BenchmarkMaps::payloadBuilder('laravel11-app')->build($candidate, 1)[0][0];
+            }
+        }
+        self::fail($route.' is not a candidate');
+    }
+
+    /**
+     * @param  array<string, mixed>  $finding
+     * @return array{0: array<string, mixed>|null, 1: string|null}
+     */
+    private function ground(array $finding): array
+    {
+        return $this->checker()->ground($finding, self::payload(self::code()));
+    }
+
+    private static function code(): string
+    {
+        return implode("\n", ['<untrusted_code>', self::SHOW_BLOCK, '', self::INDEX_BLOCK, '', self::PROPERTY_BLOCK, '', self::GATE_BLOCK, '</untrusted_code>']);
+    }
+
     /** @param array<string, mixed> $finding */
     private function check(array $finding): ?string
     {
-        $code = implode("\n", ['<untrusted_code>', self::SHOW_BLOCK, '', self::INDEX_BLOCK, '', self::PROPERTY_BLOCK, '', self::GATE_BLOCK, '</untrusted_code>']);
-
-        return $this->checker()->check($finding, self::payload($code));
+        return $this->checker()->check($finding, self::payload(self::code()));
     }
 
     private function checker(): GroundingChecker
@@ -285,9 +395,12 @@ final class GroundingCheckerTest extends TestCase
 
     private static function symbols(): SymbolTable
     {
-        $file = (new AstGenerator())->parse(new SourceFile(self::FILE, '/nonexistent/'.self::FILE, implode("\n", self::SOURCE)."\n"));
+        $files = [];
+        foreach ([self::FILE => self::SOURCE, 'app/Models/Post.php' => self::MODEL] as $path => $lines) {
+            $files[] = (new AstGenerator())->parse(new SourceFile($path, '/nonexistent/'.$path, implode("\n", $lines)."\n"));
+        }
 
-        return (new SymbolTableBuilder())->build(new ParseResult([$file], []));
+        return (new SymbolTableBuilder())->build(new ParseResult($files, []));
     }
 
     private static function payload(string $code, int $part = 1, int $parts = 1): Payload

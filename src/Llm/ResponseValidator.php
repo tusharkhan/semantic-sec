@@ -32,11 +32,11 @@ final class ResponseValidator
             if (is_string($finding['title'] ?? null) && mb_strlen($finding['title']) > self::MAX_TITLE) {
                 $errors[] = "/findings/{$i}/title: must be ".self::MAX_TITLE.' characters or fewer';
             }
-            if (is_int($finding['line'] ?? null) && $finding['line'] < 1) {
+            if (self::belowOne($finding['line'] ?? null)) {
                 $errors[] = "/findings/{$i}/line: must be 1 or more";
             }
             foreach (is_array($finding['path'] ?? null) ? $finding['path'] : [] as $j => $step) {
-                if (is_array($step) && is_int($step['line'] ?? null) && $step['line'] < 1) {
+                if (is_array($step) && self::belowOne($step['line'] ?? null)) {
                     $errors[] = "/findings/{$i}/path/{$j}/line: must be 1 or more";
                 }
             }
@@ -87,6 +87,12 @@ final class ResponseValidator
         $extra = array_values(array_diff(is_array($listed) ? array_map('strval', $listed) : [], $declared));
 
         return $extra === [] ? null : 'Additional object properties are not allowed: '.implode(', ', $extra);
+    }
+
+    // A float counts too: 0.0 is below one, and a fractional line is already a schema error.
+    private static function belowOne(mixed $line): bool
+    {
+        return (is_int($line) || is_float($line)) && $line < 1;
     }
 
     private static function shorten(string $error): string

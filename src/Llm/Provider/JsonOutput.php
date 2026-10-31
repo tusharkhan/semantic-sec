@@ -27,6 +27,20 @@ final class JsonOutput
         }
 
         /** @var array<string, mixed> */
-        return json_decode($text, true, 512, JSON_THROW_ON_ERROR);
+        return self::convert($object, true);
+    }
+
+    // Objects become arrays, except a nested empty or list-keyed one, which stays a stdClass so validation can tell {} from [].
+    private static function convert(mixed $value, bool $top = false): mixed
+    {
+        if (is_array($value)) {
+            return array_map(static fn (mixed $v): mixed => self::convert($v), $value);
+        }
+        if (!$value instanceof \stdClass) {
+            return $value;
+        }
+        $array = array_map(static fn (mixed $v): mixed => self::convert($v), get_object_vars($value));
+
+        return !$top && array_is_list($array) ? (object) $array : $array;
     }
 }

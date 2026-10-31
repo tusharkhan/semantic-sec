@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace TusharKhan\SemanticSec\Tests\Unit\Llm;
 
 use PHPUnit\Framework\TestCase;
+use TusharKhan\SemanticSec\Llm\Provider\JsonOutput;
 use TusharKhan\SemanticSec\Llm\ResponseValidator;
 
 final class ResponseValidatorTest extends TestCase
@@ -36,6 +37,27 @@ final class ResponseValidatorTest extends TestCase
         $finding = self::finding(['line' => 0, 'path' => [['file' => 'a.php', 'line' => 3, 'symbol' => 'A'], ['file' => 'a.php', 'line' => -2, 'symbol' => 'A']]]);
 
         self::assertSame(['/findings/0/line: must be 1 or more', '/findings/0/path/1/line: must be 1 or more'], ResponseValidator::errors(['findings' => [$finding]]));
+    }
+
+    public function testFloatLines(): void
+    {
+        self::assertSame([], ResponseValidator::errors(['findings' => [self::finding(['line' => 19.0])]]));
+        self::assertNotSame([], ResponseValidator::errors(['findings' => [self::finding(['line' => 19.5])]]));
+        self::assertSame(['/findings/0/line: must be 1 or more'], ResponseValidator::errors(['findings' => [self::finding(['line' => 0.0])]]));
+
+        $step = ['file' => 'a.php', 'line' => 0.0, 'symbol' => 'A'];
+        self::assertSame(['/findings/0/path/0/line: must be 1 or more'], ResponseValidator::errors(['findings' => [self::finding(['path' => [$step]])]]));
+        $step['line'] = 2.5;
+        self::assertNotSame([], ResponseValidator::errors(['findings' => [self::finding(['path' => [$step]])]]));
+    }
+
+    public function testObjectsWhereArraysAreRequiredFail(): void
+    {
+        foreach (['{"findings":{}}', '{"findings":{"0":'.json_encode(self::finding()).'}}', '{"findings":['.json_encode(self::finding(['path' => new \stdClass()])).']}'] as $json) {
+            $data = JsonOutput::decode($json);
+            self::assertIsArray($data);
+            self::assertNotSame([], ResponseValidator::errors($data), $json);
+        }
     }
 
     public function testSchemaErrorsReported(): void

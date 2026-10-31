@@ -202,6 +202,18 @@ final class ValidatingClientTest extends TestCase
         self::assertSame(0, $mock->count());
     }
 
+    public function testEmptyObjectFindingsRetriedThroughRealDecode(): void
+    {
+        $body = static fn (string $content): string => (string) json_encode(['model' => 'llama4', 'message' => ['role' => 'assistant', 'content' => $content], 'done' => true, 'prompt_eval_count' => 1, 'eval_count' => 1]);
+        $mock = new MockHandler([new Response(200, [], $body('{"findings":{}}')), new Response(200, [], $body('{"findings":[]}'))]);
+
+        $response = (new ValidatingClient(new OllamaClient(HttpClientFactory::create($mock))))->analyze(self::request('llama4'))->wait();
+
+        self::assertInstanceOf(LlmResponse::class, $response);
+        self::assertSame(LlmOutcome::Ok, $response->outcome);
+        self::assertSame(0, $mock->count(), 'the object-shaped findings were retried');
+    }
+
     private static function send(ClientInterface $client): LlmResponse
     {
         $response = (new ValidatingClient($client))->analyze(self::request())->wait();

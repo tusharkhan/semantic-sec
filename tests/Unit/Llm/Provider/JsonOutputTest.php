@@ -51,6 +51,17 @@ final class JsonOutputTest extends TestCase
         yield 'two objects' => ['{"a":1}{"b":2}'];
     }
 
+    public function testListShapedObjectsStayObjects(): void
+    {
+        $data = JsonOutput::decode('{"findings":{},"a":{"0":{"path":{}}},"b":{"k":[]}}');
+
+        self::assertIsArray($data);
+        self::assertEquals(new \stdClass(), $data['findings']);
+        self::assertInstanceOf(\stdClass::class, $data['a']);
+        self::assertSame(['k' => []], $data['b']);
+        self::assertSame('{"findings":{},"a":{"0":{"path":{}}},"b":{"k":[]}}', json_encode($data));
+    }
+
     #[DataProvider('invalid')]
     public function testRejects(string $text): void
     {

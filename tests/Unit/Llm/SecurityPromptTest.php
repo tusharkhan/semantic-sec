@@ -33,7 +33,8 @@ final class SecurityPromptTest extends TestCase
         ] as $clause) {
             self::assertStringContainsString($clause, $prompt);
         }
-        self::assertSame('1', SecurityPrompt::VERSION);
+        self::assertStringContainsString('The symbol must be the Class::method or Class::$property that contains the cited line', $prompt);
+        self::assertSame('2', SecurityPrompt::VERSION);
         self::assertStringNotContainsString('Company conventions:', $prompt);
     }
 
