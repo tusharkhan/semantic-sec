@@ -252,7 +252,10 @@ A route action becomes a candidate for a category when:
    - A closure id drops its `:<line>` in the fingerprint input, so lines added above it don't change it. Two closures starting on the same line share an id, and byte-identical closures in one file share a fingerprint; both collide by design.
    - An id with no node falls back to the sha256 of its header's tagged lines in the payload, without `L<n>| ` tags, comments or layout. Those fingerprints depend on the visible lines, so truncation (`max_payload_tokens`) can change them.
 3. **Dedup:** for the same fingerprint, keep the highest severity, then the highest confidence, and merge the `path`s. The input is sorted first by fingerprint, payload id, line and title, so ties resolve the same way whatever order the requests complete in.
-4. **Baseline:** a finding whose fingerprint is in the baseline file goes to `baselined`.
+4. **Baseline:** a finding whose fingerprint is in the baseline file goes to `baselined`. This runs before the level filter, so a baselined finding is never reported or filtered.
+   - File (`BaselineFile`): `{"version": 1, "tool": "semantic-sec", "fingerprints": [{fingerprint, category, file, symbol, title}]}`, sorted by fingerprint, pretty-printed with unescaped slashes and unicode and a trailing newline; the same findings always give the same bytes. Text fields have control characters replaced. Loading reads only `fingerprint`.
+   - Generating writes every reported (failing or not), filtered (below `--level`) and baselined finding, once per fingerprint; suppressed findings are left out, since their comments already silence them.
+   - Loading fails (exit 2, naming the file) on invalid JSON, a `version` other than the integer `1`, a missing `fingerprints` list, an entry without a 64-hex lowercase `fingerprint`, a path that is not a regular file, or a file over 16 MB.
 5. **Filters:** keep findings with `severity ≥ --level`. Those with `confidence < --min-confidence` are still **reported**, marked "not failing", but don't affect the exit code.
 
 ## 12. Cache, budget, diff mode
@@ -296,14 +299,14 @@ semantic-sec baseline             # alias for analyze --generate-baseline
 | `--concurrency` | 5 | A positive integer |
 | `--budget` | unlimited | Hard token cap (§12), an integer ≥ 0. Below one request's reservation (~35k+ at the default 16000 `max_tokens`), nothing is sent and the run exits 3 |
 | `--since` | — | git ref. M7 |
-| `--baseline` | `semantic-sec-baseline.json` if present | M7 |
-| `--generate-baseline` | — | Writes all current fingerprints, exits 0. M7 |
+| `--baseline` | `semantic-sec-baseline.json` in the project root, if present | Findings whose fingerprint is in the file are `baselined` (§11.4). A missing default file is an empty baseline; a missing explicit path (relative to the cwd) is exit 2, as is a bad file (§11.4). Read before the project is parsed; ignored with `--dry-run` |
+| `--generate-baseline` | — | Runs the full analysis (needs the API key), prints the normal report, then writes every current fingerprint (§11.4) to the `--baseline` path (default `<root>/semantic-sec-baseline.json`) through the same safe writer as `--output`, and prints `wrote N fingerprints to <path>` to stderr. Exits 0 whatever the findings or budget; only when every request failed, or `--strict` trips, is it exit 2 with nothing written. The target is checked before parsing. With `--dry-run` it is exit 2 (`--generate-baseline cannot be used with --dry-run`). `semantic-sec baseline` takes every `analyze` option and behaves exactly like this flag |
 | `--deep` | off | Section 7 |
 | `--dry-run` | off | Writes the system prompt, exactly as sent, to `.semantic-sec/dry-run/000-system.txt` and every payload to `NNN-<verb-uri-slug>-<part>.txt` (e.g. `001-post-api-posts-id-1.txt`); makes no network calls; needs no API key |
 | `--no-cache` | off | Skips cache reads; validated answers are still written (§12) |
 | `--strict` | off | Exit 2 if any sent request ended `failed`, `refused`, `invalid` or `truncated`, or any payload was `unsent`. Accepted and ignored with `--dry-run`, since nothing is sent |
 
-**Overrides:** `--level`, `--min-confidence`, `--provider`, `--model`, `--concurrency` and `--budget` override the config file and are validated the same way; an invalid value is exit 2 with a message naming the flag (e.g. `--budget must be an integer ≥ 0.`). Flags, the config file and, outside `--dry-run`, the API key are checked before the project is parsed. `--baseline`, `--generate-baseline` and `--since` exit 2 with `<option> is available in a later release`.
+**Overrides:** `--level`, `--min-confidence`, `--provider`, `--model`, `--concurrency` and `--budget` override the config file and are validated the same way; an invalid value is exit 2 with a message naming the flag (e.g. `--budget must be an integer ≥ 0.`). Flags, the config file and, outside `--dry-run`, the API key are checked before the project is parsed. `--since` exits 2 with `--since is available in a later release`.
 
 **Console output:** the §14 report on stdout (or in the `--output` file, undecorated). Findings below `--level` are kept in `AnalysisResult::$filtered` (for baselines and the JSON/SARIF formatters) but only their count is printed. Model-controlled and source-derived text has control characters replaced and console tags escaped. Errors go to stderr as `Error: <message>`; a missing key names the env var, never its value.
 

@@ -184,8 +184,6 @@ final class AnalyzeCommandTest extends TestCase
     public function testM7OptionsRejected(): void
     {
         foreach ([
-            [['--baseline' => 'b.json'], '--baseline is available in a later release'],
-            [['--generate-baseline' => true], '--generate-baseline is available in a later release'],
             [['--since' => 'main'], '--since is available in a later release'],
         ] as [$args, $message]) {
             [$code, , $err] = $this->analyze($args, $this->answers(self::finding()));

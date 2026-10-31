@@ -6,6 +6,7 @@ namespace TusharKhan\SemanticSec\Console;
 
 use Symfony\Component\Console\Application as BaseApplication;
 use TusharKhan\SemanticSec\Console\Commands\AnalyzeCommand;
+use TusharKhan\SemanticSec\Console\Commands\BaselineCommand;
 use TusharKhan\SemanticSec\Console\Commands\MapCommand;
 
 final class Application extends BaseApplication
@@ -18,5 +19,6 @@ final class Application extends BaseApplication
         parent::__construct(self::NAME, self::VERSION);
         $this->add(new MapCommand());
         $this->add(new AnalyzeCommand());
+        $this->add(new BaselineCommand());
     }
 }

@@ -37,6 +37,18 @@ authorization_middleware:
 
 **Trust boundary.** `semantic-sec.yaml`, `@semantic-sec-ignore` suppression comments and `.semantic-sec/cache/` are all trusted input. Anyone who can change them can hide a finding. Add `.semantic-sec/` to your `.gitignore`. In CI on pull requests you don't trust, run with `--no-cache`, because a committed cache entry can hide a finding.
 
+## Baselines
+
+Accept today's findings and fail only on new ones:
+
+```
+vendor/bin/semantic-sec baseline --project-root=/path/to/laravel-app      # same as analyze --generate-baseline
+vendor/bin/semantic-sec analyze --project-root=/path/to/laravel-app       # uses semantic-sec-baseline.json if present
+vendor/bin/semantic-sec analyze --baseline=ci/baseline.json               # or an explicit file (must exist)
+```
+
+Generating runs the full analysis and writes the fingerprint of every finding, including non-failing and below-`--level` ones (not suppressed ones), to `semantic-sec-baseline.json` in the project root. It exits 0 whatever it found, unless every request failed. The file is sorted and pretty-printed, so commit it and review its diffs. Later runs list matching findings as baselined instead of reporting them. A fingerprint covers the file, symbol, category and the symbol's code, so editing a baselined method brings its finding back. A malformed baseline file is exit 2. The baseline is trusted input, like suppression comments: anyone who can edit it can hide a finding.
+
 ## Dry run
 
 Pick candidate routes and write the payloads an LLM would get, without sending anything (no API key, no network):

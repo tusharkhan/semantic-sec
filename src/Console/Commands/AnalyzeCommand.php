@@ -33,6 +33,7 @@ use TusharKhan\SemanticSec\Llm\ClientFactory;
 use TusharKhan\SemanticSec\Llm\ClientInterface;
 use TusharKhan\SemanticSec\Llm\GroundingChecker;
 use TusharKhan\SemanticSec\Llm\ValidatingClient;
+use TusharKhan\SemanticSec\Output\BaselineFile;
 use TusharKhan\SemanticSec\Output\ConsoleFormatter;
 use TusharKhan\SemanticSec\Output\JsonFormatter;
 use TusharKhan\SemanticSec\Output\SafeWriter;
@@ -41,12 +42,12 @@ use TusharKhan\SemanticSec\Payload\Payload;
 use TusharKhan\SemanticSec\Payload\Redactor;
 
 #[AsCommand(name: 'analyze', description: 'Find authorization flaws: map, select candidates, build payloads, then ask the LLM')]
-final class AnalyzeCommand extends Command
+class AnalyzeCommand extends Command
 {
     use ProjectOptions;
 
-    // Rejected until M7 (plan decision 7).
-    private const LATER = ['baseline', 'generate-baseline', 'since'];
+    // Rejected until a later M7 task.
+    private const LATER = ['since'];
 
     // CLI option => Config::with() key.
     private const OVERRIDES = ['level' => 'level', 'min-confidence' => 'min_confidence', 'provider' => 'provider', 'model' => 'model', 'concurrency' => 'concurrency', 'budget' => 'budget_tokens'];
@@ -87,8 +88,8 @@ final class AnalyzeCommand extends Command
             ->addOption('strict', null, InputOption::VALUE_NONE, 'Exit 2 if any request failed, was refused, invalid or truncated, or any payload went unsent (ignored with --dry-run)')
             ->addOption('format', null, InputOption::VALUE_REQUIRED, 'console, json or sarif', 'console')
             ->addOption('output', null, InputOption::VALUE_REQUIRED, 'Write the report to this file (never through a symlink); the summary and warnings go to stderr')
-            ->addOption('baseline', null, InputOption::VALUE_REQUIRED, 'Baseline file (available in a later release)')
-            ->addOption('generate-baseline', null, InputOption::VALUE_NONE, 'Write a baseline (available in a later release)')
+            ->addOption('baseline', null, InputOption::VALUE_REQUIRED, 'Baseline file: findings whose fingerprint is in it are baselined, not reported (default: semantic-sec-baseline.json in the project root, if present)')
+            ->addOption('generate-baseline', null, InputOption::VALUE_NONE, 'Write every current finding\'s fingerprint to the baseline file and exit 0')
             ->addOption('since', null, InputOption::VALUE_REQUIRED, 'Only files changed since a git ref (available in a later release)')
             ->setHelp(<<<'HELP'
                 Maps the project, selects candidate routes, builds their payloads and sends each one to the LLM.
@@ -103,6 +104,10 @@ final class AnalyzeCommand extends Command
                 so a budget below one reservation (~35k tokens at the default max_tokens) sends nothing and exits 3.
 
                 --dry-run writes the system prompt and every payload to .semantic-sec/dry-run and needs no API key.
+
+                --baseline reads fingerprints to accept (default semantic-sec-baseline.json in the project root, if present).
+                --generate-baseline writes every reported, non-failing and below-level finding's fingerprint there instead
+                and exits 0 unless every request failed (or --strict trips); `semantic-sec baseline` is the same.
                 HELP);
     }
 
@@ -115,6 +120,10 @@ final class AnalyzeCommand extends Command
             if ($value !== null && $value !== false) {
                 return $this->fail($output, "--{$name} is available in a later release");
             }
+        }
+        $generate = $this->generatesBaseline($input);
+        if ($dryRun && $generate) {
+            return $this->fail($output, '--generate-baseline cannot be used with --dry-run');
         }
         if ($dryRun && $input->getOption('output') !== null) {
             return $this->fail($output, '--output cannot be used with --dry-run');
@@ -149,6 +158,19 @@ final class AnalyzeCommand extends Command
             return $this->fail($output, 'Project root does not exist: '.(string) $input->getOption('project-root'));
         }
         $paths = $this->paths($root, $input->getArgument('paths'));
+        $baselinePath = $this->stringOption($input, 'baseline') ?? $root.'/'.BaselineFile::DEFAULT;
+        $baseline = Baseline::empty();
+        if (! $dryRun) {
+            try {
+                if ($generate) {
+                    SafeWriter::check($baselinePath);
+                } else {
+                    $baseline = BaselineFile::load($baselinePath, $this->stringOption($input, 'baseline') !== null);
+                }
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, (new Redactor())->redact($e->getMessage()));
+            }
+        }
 
         // Flags, config and key are checked before the project is parsed, so a mistake fails fast.
         try {
@@ -156,7 +178,7 @@ final class AnalyzeCommand extends Command
             if (! $dryRun) {
                 $client = $this->providerClient === null ? ClientFactory::validated($config) : new ValidatingClient(($this->providerClient)($config));
 
-                return $this->analyze($input, $output, $root, $paths, $overrides, $config, $client);
+                return $this->analyze($input, $output, $root, $paths, $overrides, $config, $client, $baseline, $generate ? $baselinePath : null);
             }
         } catch (ConfigException $e) {
             return $this->fail($output, $e->getMessage());
@@ -217,8 +239,9 @@ final class AnalyzeCommand extends Command
      *
      * @param  list<string>|null  $paths
      * @param  array<string, mixed>  $overrides
+     * @param  string|null  $generate  the baseline file to write, or null to only read $baseline
      */
-    private function analyze(InputInterface $input, OutputInterface $output, string $root, ?array $paths, array $overrides, Config $config, ClientInterface $client): int
+    private function analyze(InputInterface $input, OutputInterface $output, string $root, ?array $paths, array $overrides, Config $config, ClientInterface $client, Baseline $baseline, ?string $generate): int
     {
         $redactor = new Redactor();
         try {
@@ -249,7 +272,7 @@ final class AnalyzeCommand extends Command
         }
 
         $project = $run->project;
-        $engine = new Engine($client, $cache, new Fingerprinter($project->parsed, $project->symbols), new GroundingChecker($project->symbols), $project->parsed, $config, Baseline::empty());
+        $engine = new Engine($client, $cache, new Fingerprinter($project->parsed, $project->symbols), new GroundingChecker($project->symbols), $project->parsed, $config, $baseline);
         try {
             $result = $this->runEngine === null ? $engine->run($run->payloads(), count($run->results)) : ($this->runEngine)($engine, $run->payloads(), count($run->results));
         } catch (\Throwable $e) {
@@ -259,13 +282,24 @@ final class AnalyzeCommand extends Command
         $strict = $input->getOption('strict') === true;
         $warnings = array_map($redactor->redact(...), [...$run->warnings, ...$result->warnings]);
         $report = new AnalysisResult($result->findings, $result->suppressed, $result->baselined, $warnings, $result->stats, $result->filtered);
-        $exit = ExitCode::for($result, $strict);
+        // A generating run exits 0 whatever the findings; only all-failed or --strict still exit 2, and then nothing is written.
+        $decides = $generate === null ? $result : new AnalysisResult([], [], [], [], $result->stats);
+        $exit = ExitCode::for($decides, $strict);
+        $exit = $generate !== null && $exit === ExitCode::BUDGET ? ExitCode::OK : $exit;
+        $wrote = null;
+        if ($generate !== null && $exit === ExitCode::OK) {
+            try {
+                $wrote = sprintf('wrote %d fingerprints to %s', BaselineFile::write($generate, $result), Terminal::safe($generate));
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, $redactor->redact($e->getMessage()));
+            }
+        }
         $meta = [
             'tool' => Application::NAME,
             'version' => Application::VERSION,
             'provider' => $config->provider,
             'model' => $config->model ?? Defaults::model($config->provider) ?? 'default',
-            'strictReason' => ExitCode::strictReason($result, $strict),
+            'strictReason' => ExitCode::strictReason($decides, $strict),
             'level' => $config->level->value,
             'budget' => $config->budgetTokens,
             'exitCode' => $exit,
@@ -273,12 +307,13 @@ final class AnalyzeCommand extends Command
 
         $file = $this->stringOption($input, 'output');
         $format = $input->getOption('format');
+        $err = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
         if ($file === null && $format === 'console') {
             $output->write((new ConsoleFormatter($output->isDecorated()))->format($report, $meta), false, OutputInterface::OUTPUT_RAW);
+            $this->baselineLine($err, $generate, $wrote);
 
             return $exit;
         }
-        $err = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
         $formatter = match ($format) {
             'json' => new JsonFormatter(),
             'sarif' => new SarifFormatter(),
@@ -298,8 +333,22 @@ final class AnalyzeCommand extends Command
         if ($file !== null) {
             $err->writeln('Report written to '.Terminal::safe($file));
         }
+        $this->baselineLine($err, $generate, $wrote);
 
         return $exit;
+    }
+
+    // `semantic-sec baseline` overrides this; analyze generates only with --generate-baseline.
+    protected function generatesBaseline(InputInterface $input): bool
+    {
+        return $input->getOption('generate-baseline') === true;
+    }
+
+    private function baselineLine(OutputInterface $err, ?string $generate, ?string $wrote): void
+    {
+        if ($generate !== null) {
+            $err->writeln($wrote ?? 'Baseline not written: no request succeeded, or --strict failed the run');
+        }
     }
 
     /** @return array<string, string> Config::with() key => the CLI flag its errors name */
