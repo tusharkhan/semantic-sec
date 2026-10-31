@@ -6,7 +6,10 @@ namespace TusharKhan\SemanticSec\Llm\Provider;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\PromiseInterface;
+use GuzzleHttp\Psr7\Request;
+use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use TusharKhan\SemanticSec\Llm\ClientInterface;
 use TusharKhan\SemanticSec\Llm\LlmException;
@@ -35,18 +38,15 @@ final class AnthropicClient implements ClientInterface
 
     public function analyze(LlmRequest $request): PromiseInterface
     {
-        $official = rtrim($this->baseUrl, '/') === self::DEFAULT_BASE_URL;
-        $headers = ['x-api-key' => $this->apiKey, 'anthropic-version' => self::VERSION, 'content-type' => 'application/json'];
-        if ($official) {
-            $headers['anthropic-beta'] = self::FALLBACK_BETA;
+        try {
+            $http = $this->build($request);
+        } catch (\Throwable) {
+            // URI and JSON errors echo the base URL (userinfo included) or payload, so none of it is kept.
+            return Create::rejectionFor(new LlmException(self::PROVIDER.' request could not be built', null, false));
         }
 
         return $this->http
-            ->requestAsync('POST', rtrim($this->baseUrl, '/').'/v1/messages', [
-                'headers' => $headers,
-                'body' => json_encode(self::body($request, $official), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR),
-                'http_errors' => false,
-            ])
+            ->sendAsync($http, ['http_errors' => false])
             ->then(
                 fn (ResponseInterface $response): LlmResponse => $this->toResponse($request, $response),
                 static function (mixed $reason): never {
@@ -59,6 +59,19 @@ final class AnthropicClient implements ClientInterface
                     throw new LlmException(self::PROVIDER." request failed: {$kind}", null, true);
                 },
             );
+    }
+
+    private function build(LlmRequest $request): RequestInterface
+    {
+        $base = rtrim($this->baseUrl, '/');
+        $official = strcasecmp($base, self::DEFAULT_BASE_URL) === 0;
+        $headers = ['x-api-key' => $this->apiKey, 'anthropic-version' => self::VERSION, 'content-type' => 'application/json'];
+        if ($official) {
+            $headers['anthropic-beta'] = self::FALLBACK_BETA;
+        }
+        $body = json_encode(self::body($request, $official), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR);
+
+        return new Request('POST', $base.'/v1/messages', $headers, $body);
     }
 
     /** @return array<string, mixed> */
@@ -135,6 +148,9 @@ final class AnthropicClient implements ClientInterface
     /** @param array<mixed> $json */
     private function error(int $status, array $json): LlmException
     {
+        if ($status >= 300 && $status < 400) {
+            return new LlmException(self::PROVIDER." answered with a redirect (HTTP {$status}); redirects are not followed", $status, false);
+        }
         if ($status === 401 || $status === 403) {
             return new LlmException(self::PROVIDER." rejected the API key (HTTP {$status})", $status, false);
         }

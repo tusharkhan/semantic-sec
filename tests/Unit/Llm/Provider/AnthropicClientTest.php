@@ -220,6 +220,61 @@ final class AnthropicClientTest extends TestCase
         self::assertNull($e->getPrevious());
     }
 
+    /** @return iterable<string, array{int, string}> */
+    public static function redirects(): iterable
+    {
+        yield '302' => [302, 'https://evil.example.test/steal'];
+        yield '307' => [307, 'http://evil.example.test/steal'];
+    }
+
+    #[DataProvider('redirects')]
+    public function testRedirectIsNotFollowed(int $status, string $location): void
+    {
+        $client = new AnthropicClient($this->mocking([new Response($status, ['Location' => $location]), new Response(200, [], '{}')]), self::KEY);
+
+        $e = $this->rejection($client);
+
+        self::assertSame($status, $e->status);
+        self::assertFalse($e->retryable);
+        self::assertStringNotContainsString('evil', $e->getMessage());
+        self::assertStringNotContainsString('://', $e->getMessage());
+        self::assertCount(1, $this->history);
+    }
+
+    public function testMalformedBaseUrlRejectsWithoutEchoingIt(): void
+    {
+        $base = 'https://u:SECRET@proxy:99999/';
+        $e = $this->rejection(new AnthropicClient($this->mocking([]), self::KEY, $base));
+
+        self::assertSame('anthropic request could not be built', $e->getMessage());
+        self::assertFalse($e->retryable);
+        self::assertNull($e->getPrevious());
+        self::assertStringNotContainsString($base, $e->getMessage());
+        self::assertStringNotContainsString('SECRET', $e->getMessage());
+        self::assertCount(0, $this->history);
+    }
+
+    public function testUnencodableSchemaRejects(): void
+    {
+        $request = new LlmRequest('payload-1', 'SYSTEM', 'USER', ['x' => INF], 'claude-opus-5-5');
+        $e = $this->rejection(new AnthropicClient($this->mocking([]), self::KEY), $request);
+
+        self::assertSame('anthropic request could not be built', $e->getMessage());
+        self::assertFalse($e->retryable);
+        self::assertNull($e->getPrevious());
+    }
+
+    public function testOfficialHostMatchIsCaseInsensitive(): void
+    {
+        $ok = (string) file_get_contents(self::CASSETTES.'/ok.json');
+        $body = json_decode($ok, true)['interactions'][0]['response']['body'];
+        $this->send(new AnthropicClient($this->mocking([new Response(200, [], $body)]), self::KEY, 'HTTPS://API.ANTHROPIC.COM'));
+
+        $request = $this->onlyRequest();
+        self::assertSame('server-side-fallback-2026-07-01', $request->getHeaderLine('anthropic-beta'));
+        self::assertSame('default', self::body($request)['fallbacks']);
+    }
+
     public function testLiveCassetteReplays(): void
     {
         $path = self::CASSETTES.'/live-idor-find-by-id.json';
@@ -266,11 +321,17 @@ final class AnthropicClientTest extends TestCase
         return $response;
     }
 
-    private function rejection(AnthropicClient $client): LlmException
+    private function rejection(AnthropicClient $client, ?LlmRequest $request = null): LlmException
     {
         try {
-            $client->analyze(self::request())->wait();
-        } catch (LlmException $e) {
+            $promise = $client->analyze($request ?? self::request());
+        } catch (\Throwable $e) {
+            self::fail('analyze() threw synchronously: '.$e::class);
+        }
+        try {
+            $promise->wait();
+        } catch (\Throwable $e) {
+            self::assertInstanceOf(LlmException::class, $e);
             self::assertStringNotContainsString(self::KEY, $e->getMessage());
 
             return $e;

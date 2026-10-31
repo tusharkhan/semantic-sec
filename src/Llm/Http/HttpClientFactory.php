@@ -17,6 +17,7 @@ final class HttpClientFactory
             $stack->push($fn, is_string($name) ? $name : '');
         }
 
-        return new Client(['handler' => $stack]);
+        // Redirects would resend key headers to whatever host the Location names.
+        return new Client(['handler' => $stack, 'allow_redirects' => false]);
     }
 }

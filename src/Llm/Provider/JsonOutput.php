@@ -6,8 +6,8 @@ namespace TusharKhan\SemanticSec\Llm\Provider;
 
 final class JsonOutput
 {
-    // Exactly one ```json fence around the whole answer; anything else stays as-is and must parse alone.
-    private const FENCE = '/\A```json[ \t]*\R(.*?)\R?```\z/s';
+    // Exactly one fence, unlabelled or labelled json in any case, around the whole answer.
+    private const FENCE = '/\A```(?i:json)?[ \t]*\R(.*?)\R?```\z/s';
 
     /** @return array<string, mixed>|null the decoded object, or null when the text is not exactly one JSON object */
     public static function decode(string $text): ?array
