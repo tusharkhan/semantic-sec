@@ -59,7 +59,14 @@ final class OllamaClientTest extends TestCase
         self::assertFalse($body['stream']);
         self::assertSame(FindingSchema::schema(), $body['format']);
         self::assertSame([['role' => 'system', 'content' => 'SYSTEM'], ['role' => 'user', 'content' => 'USER PAYLOAD']], $body['messages']);
-        self::assertSame(['temperature' => 0.0], $body['options']);
+        self::assertArrayNotHasKey('options', $body, 'temperature is sent only when set');
+    }
+
+    public function testTemperatureSentWhenSet(): void
+    {
+        $this->send(new OllamaClient($this->mocking([new Response(200, [], self::cassetteBody('ok'))]), temperature: 0.0));
+
+        self::assertSame(['temperature' => 0.0], self::body($this->onlyRequest())['options']);
     }
 
     public function testNullTemperatureOmitsOptionsAndBaseUrlIsTrimmed(): void
@@ -165,7 +172,7 @@ final class OllamaClientTest extends TestCase
         $e = $this->rejection($client);
 
         self::assertTrue($e->retryable);
-        self::assertSame('ollama is not reachable', $e->getMessage());
+        self::assertSame('ollama request failed: connection error', $e->getMessage());
         self::assertNull($e->getPrevious());
     }
 

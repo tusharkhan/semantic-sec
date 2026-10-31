@@ -209,6 +209,18 @@ final class CassetteHandlerTest extends TestCase
         $handler->assertExhausted();
     }
 
+    public function testDebugOutputOmitsSecrets(): void
+    {
+        $path = $this->writeCassette([$this->interaction('GET', 'https://api.example.test/x', 200, '{}')]);
+        $handler = new CassetteHandler(Cassette::load($path), 'replay', secrets: [self::KEY]);
+
+        $dump = print_r($handler, true);
+
+        self::assertStringNotContainsString(self::KEY, $dump);
+        self::assertStringNotContainsString(urlencode(self::KEY), $dump);
+        self::assertStringNotContainsString(base64_encode(self::KEY), $dump);
+    }
+
     public function testReplayMismatchNeverEchoesTheKey(): void
     {
         $path = $this->writeCassette([$this->interaction('GET', 'https://api.example.test/v1/<scrubbed>/x', 200, '{}')]);

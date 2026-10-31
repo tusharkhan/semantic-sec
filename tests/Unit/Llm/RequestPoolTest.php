@@ -122,6 +122,18 @@ final class RequestPoolTest extends TestCase
         ], $failures);
     }
 
+    public function testFailureSpentTokensAreCounted(): void
+    {
+        $client = new FakeClient([
+            'p1' => new LlmException('anthropic request failed (HTTP 500)', 500, true, spentTokens: 1100),
+            'p2' => new LlmResponse('p2', LlmOutcome::Ok, ['findings' => []], 7, 3, 'm'),
+        ]);
+
+        $result = (new RequestPool($client, 2, null))->run(self::requests(2));
+
+        self::assertSame(1110, $result->usedTokens);
+    }
+
     public function testNoRetryInThePool(): void
     {
         $client = new FakeClient(['p1' => new LlmException('anthropic is unavailable (HTTP 503)', 503, true)]);

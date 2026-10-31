@@ -28,11 +28,17 @@ final class ClientFactory
 
         return match ($c->provider) {
             'anthropic' => new AnthropicClient($http(), self::key($c), $c->baseUrl ?? AnthropicClient::DEFAULT_BASE_URL),
-            // Config has no temperature or seed yet, so neither is sent.
+            // Config has no temperature or seed yet, so OpenAI and Ollama send neither (plan decision 2).
             'openai' => new OpenAiClient($http(), self::key($c), $c->baseUrl ?? OpenAiClient::DEFAULT_BASE_URL, null, null),
-            'ollama' => new OllamaClient($http(), $c->baseUrl ?? OllamaClient::DEFAULT_BASE_URL),
+            'ollama' => new OllamaClient($http(), $c->baseUrl ?? OllamaClient::DEFAULT_BASE_URL, null),
             default => throw new ConfigException("unknown provider {$c->provider}"),
         };
+    }
+
+    // The provider client with SPEC §10's one schema retry on top.
+    public static function validated(Config $c, ?callable $handler = null): ClientInterface
+    {
+        return new ValidatingClient(self::create($c, $handler));
     }
 
     /** @param array<string, mixed> $schema */

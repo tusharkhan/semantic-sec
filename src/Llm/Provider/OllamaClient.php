@@ -27,7 +27,7 @@ final class OllamaClient implements ClientInterface
     public function __construct(
         private readonly Client $http,
         private readonly string $baseUrl = self::DEFAULT_BASE_URL,
-        private readonly ?float $temperature = 0.0,
+        private readonly ?float $temperature = null,
     ) {
     }
 
@@ -50,7 +50,7 @@ final class OllamaClient implements ClientInterface
                     }
                     // Guzzle messages carry the URI, so neither the message nor the exception is kept.
                     if ($reason instanceof ConnectException) {
-                        throw new LlmException(self::PROVIDER.' is not reachable', null, true);
+                        throw new LlmException(self::PROVIDER.' request failed: connection error', null, true);
                     }
 
                     throw new LlmException(self::PROVIDER.' request failed: transport error', null, true);

@@ -23,6 +23,7 @@ use TusharKhan\SemanticSec\Llm\LlmOutcome;
 use TusharKhan\SemanticSec\Llm\LlmRequest;
 use TusharKhan\SemanticSec\Llm\LlmResponse;
 use TusharKhan\SemanticSec\Llm\Provider\AnthropicClient;
+use TusharKhan\SemanticSec\Llm\ValidatingClient;
 use TusharKhan\SemanticSec\Tests\Support\NetworkTrap;
 
 final class AnthropicClientTest extends TestCase
@@ -121,6 +122,26 @@ final class AnthropicClientTest extends TestCase
         self::assertNull($response->data);
         self::assertSame('cyber', $response->detail);
         self::assertSame(2200, $response->inputTokens);
+    }
+
+    public function testRefusalCategoryLosesTerminalEscapes(): void
+    {
+        $body = (string) json_encode(['model' => 'm', 'content' => [], 'stop_reason' => 'refusal', 'stop_details' => ['category' => "cy\x1b[2Jber"], 'usage' => ['input_tokens' => 1, 'output_tokens' => 1]]);
+
+        $response = $this->send(new AnthropicClient($this->mocking([new Response(200, [], $body)]), self::KEY));
+
+        self::assertSame('cy [2Jber', $response->detail);
+    }
+
+    public function testDebugOutputOmitsTheKey(): void
+    {
+        $client = new AnthropicClient($this->mocking([]), self::KEY);
+
+        self::assertStringNotContainsString(self::KEY, print_r($client, true));
+        self::assertStringNotContainsString(self::KEY, print_r(new ValidatingClient($client), true));
+        ob_start();
+        var_dump($client);
+        self::assertStringNotContainsString(self::KEY, (string) ob_get_clean());
     }
 
     public function testMaxTokensIsTruncated(): void
@@ -279,7 +300,7 @@ final class AnthropicClientTest extends TestCase
     {
         $path = self::CASSETTES.'/live-idor-find-by-id.json';
         if (!is_file($path)) {
-            self::markTestSkipped('live-idor-find-by-id.json is not recorded yet; see tests/Live/AnthropicLiveTest.php');
+            self::fail('live-idor-find-by-id.json is missing; re-record it with tests/Live/AnthropicLiveTest.php');
         }
 
         $response = $this->send($this->replaying('live-idor-find-by-id'));

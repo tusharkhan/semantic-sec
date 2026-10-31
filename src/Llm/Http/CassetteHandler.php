@@ -41,7 +41,7 @@ final class CassetteHandler
      * @param (callable(RequestInterface, array<string, mixed>): PromiseInterface)|null $inner real handler for record mode; defaults to cURL
      * @param list<string> $secrets key values scrubbed from recordings (raw, URL, JSON and base64 forms) and from replayed URIs
      */
-    public function __construct(private readonly Cassette $cassette, private readonly string $mode, ?callable $inner = null, array $secrets = [])
+    public function __construct(private readonly Cassette $cassette, private readonly string $mode, ?callable $inner = null, #[\SensitiveParameter] array $secrets = [])
     {
         if ($mode !== 'replay' && $mode !== 'record') {
             throw new \InvalidArgumentException("cassette mode must be replay or record, got {$mode}");
@@ -54,6 +54,13 @@ final class CassetteHandler
             $cassette->clear();
         }
         $this->needles = self::needles($secrets);
+    }
+
+    // print_r and var_dump show neither the secrets nor their encoded forms.
+    /** @return array<string, mixed> */
+    public function __debugInfo(): array
+    {
+        return ['cassette' => $this->cassette->path, 'mode' => $this->mode, 'position' => $this->position, 'secrets' => '<hidden>'];
     }
 
     /** @param array<string, mixed> $options */

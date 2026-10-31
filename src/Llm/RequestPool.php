@@ -80,6 +80,7 @@ final class RequestPool
                     $this->usedTokens += $response->inputTokens + $response->outputTokens;
                 },
                 function (mixed $reason) use ($request): void {
+                    $this->usedTokens += $reason instanceof LlmException ? $reason->spentTokens : 0;
                     $this->fail($request->payloadId, $reason);
                 },
             );

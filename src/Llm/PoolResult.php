@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Llm;
 
-/** Responses arrive in completion order; the budget may overshoot by up to `concurrency` requests' actual tokens. */
+/** Responses arrive in completion order; usedTokens includes failed schema retries, and the budget may overshoot by up to `concurrency` slots, each spending up to two calls (the schema retry reuses its slot). */
 final readonly class PoolResult
 {
     /**

@@ -20,6 +20,7 @@ use TusharKhan\SemanticSec\Llm\LlmResponse;
 use TusharKhan\SemanticSec\Llm\Provider\AnthropicClient;
 use TusharKhan\SemanticSec\Llm\Provider\OllamaClient;
 use TusharKhan\SemanticSec\Llm\Provider\OpenAiClient;
+use TusharKhan\SemanticSec\Llm\ValidatingClient;
 use TusharKhan\SemanticSec\Tests\Support\NetworkTrap;
 
 final class ClientFactoryTest extends TestCase
@@ -197,6 +198,22 @@ final class ClientFactoryTest extends TestCase
         $client = ClientFactory::create(self::config('ollama', model: 'qwen3'));
 
         self::assertInstanceOf(OllamaClient::class, $client);
+    }
+
+    public function testOllamaSendsNoTemperature(): void
+    {
+        $client = ClientFactory::create(self::config('ollama', model: 'qwen3'), $this->handler());
+
+        $client->analyze(ClientFactory::request(self::config('ollama', model: 'qwen3'), 'p1', 'S', 'U', ['type' => 'object']))->wait(false);
+
+        $body = json_decode((string) $this->sent[0]['request']->getBody(), true);
+        self::assertIsArray($body);
+        self::assertArrayNotHasKey('options', $body);
+    }
+
+    public function testValidatedWrapsTheProviderClient(): void
+    {
+        self::assertInstanceOf(ValidatingClient::class, ClientFactory::validated(self::config('ollama', model: 'qwen3')));
     }
 
     public function testOllamaWithoutModelFails(): void

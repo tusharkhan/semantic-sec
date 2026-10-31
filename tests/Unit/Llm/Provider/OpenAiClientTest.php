@@ -23,6 +23,7 @@ use TusharKhan\SemanticSec\Llm\LlmOutcome;
 use TusharKhan\SemanticSec\Llm\LlmRequest;
 use TusharKhan\SemanticSec\Llm\LlmResponse;
 use TusharKhan\SemanticSec\Llm\Provider\OpenAiClient;
+use TusharKhan\SemanticSec\Llm\ValidatingClient;
 use TusharKhan\SemanticSec\Tests\Support\NetworkTrap;
 
 final class OpenAiClientTest extends TestCase
@@ -136,6 +137,24 @@ final class OpenAiClientTest extends TestCase
         self::assertNotNull($response->detail);
         self::assertStringNotContainsString(self::KEY, $response->detail);
         self::assertStringNotContainsString('https://', $response->detail);
+    }
+
+    public function testRefusalLosesTerminalEscapes(): void
+    {
+        $body = (string) json_encode(['model' => 'm', 'choices' => [['message' => ['content' => null, 'refusal' => "no \x1b[31mRED\x1b[0m"], 'finish_reason' => 'stop']]]);
+
+        $response = $this->send(new OpenAiClient($this->mocking([new Response(200, [], $body)]), self::KEY));
+
+        self::assertSame(LlmOutcome::Refused, $response->outcome);
+        self::assertSame('no  [31mRED [0m', $response->detail);
+    }
+
+    public function testDebugOutputOmitsTheKey(): void
+    {
+        $client = new OpenAiClient($this->mocking([]), self::KEY);
+
+        self::assertStringNotContainsString(self::KEY, print_r($client, true));
+        self::assertStringNotContainsString(self::KEY, print_r(new ValidatingClient($client), true));
     }
 
     public function testContentFilterIsRefused(): void
@@ -307,7 +326,7 @@ final class OpenAiClientTest extends TestCase
     {
         $path = self::CASSETTES.'/live-groq-idor-find-by-id.json';
         if (!is_file($path)) {
-            self::markTestSkipped('live-groq-idor-find-by-id.json is not recorded yet; see tests/Live/OpenAiLiveTest.php');
+            self::fail('live-groq-idor-find-by-id.json is missing; re-record it with tests/Live/OpenAiLiveTest.php');
         }
 
         $response = $this->send($this->replaying('live-groq-idor-find-by-id', self::GROQ), self::request('openai/gpt-oss-120b'));

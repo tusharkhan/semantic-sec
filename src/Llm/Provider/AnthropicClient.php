@@ -35,6 +35,13 @@ final class AnthropicClient implements ClientInterface
     ) {
     }
 
+    // print_r and var_dump show no key.
+    /** @return array<string, string> */
+    public function __debugInfo(): array
+    {
+        return ['provider' => self::PROVIDER, 'apiKey' => '<hidden>'];
+    }
+
     public function analyze(LlmRequest $request): PromiseInterface
     {
         try {
