@@ -31,6 +31,12 @@ final readonly class RouteEntry
     ) {
     }
 
+    // Every verb and the URI as one key, e.g. "GET|HEAD /posts/{id}".
+    public function key(): string
+    {
+        return implode('|', $this->methods).' '.$this->uri;
+    }
+
     /** @return list<string> */
     public function keys(): array
     {
