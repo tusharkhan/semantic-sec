@@ -75,6 +75,12 @@ final class ResultCache
         );
     }
 
+    // The first 12 hex chars name an entry in warnings; a full 64-hex key reads as a secret to the Redactor.
+    public static function short(string $key): string
+    {
+        return substr($key, 0, 12).'…';
+    }
+
     // Lowercases scheme and host and trims trailing slashes; the path keeps its case.
     public static function normaliseUrl(string $url): string
     {
@@ -106,7 +112,7 @@ final class ResultCache
         }
         $entry = $this->read($file);
         if ($entry === null) {
-            $this->warnings[$key] = 'cache entry '.$key.' ignored';
+            $this->warnings[$key] = 'cache entry '.self::short($key).' ignored';
 
             return null;
         }
@@ -135,7 +141,7 @@ final class ResultCache
             }
         } catch (\JsonException|\RuntimeException) {
             @unlink($temp);
-            $this->warnings[$key] = 'cache entry '.$key.' not written';
+            $this->warnings[$key] = 'cache entry '.self::short($key).' not written';
         }
     }
 

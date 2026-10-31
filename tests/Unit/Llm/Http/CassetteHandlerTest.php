@@ -175,6 +175,35 @@ final class CassetteHandlerTest extends TestCase
         self::assertSame('req-1', $saved['response']['headers']['X-Request-Id']);
     }
 
+    public function testRecordScrubsOrganizationHeaders(): void
+    {
+        $path = $this->dir . '/org.json';
+        $inner = new MockHandler([new Response(200, ['anthropic-organization-id' => 'org-123', 'OpenAI-Organization' => 'org-x', 'X-Request-Id' => 'req-1'], '{}')]);
+        HttpClientFactory::create(new CassetteHandler(Cassette::load($path), 'record', $inner))->get('https://api.example.test/v1/x', ['headers' => ['OpenAI-Organization' => 'org-y']]);
+
+        $saved = $this->saved($path)['interactions'][0];
+        self::assertSame('<scrubbed>', $saved['request']['headers']['OpenAI-Organization']);
+        self::assertSame('<scrubbed>', $saved['response']['headers']['anthropic-organization-id']);
+        self::assertSame('<scrubbed>', $saved['response']['headers']['OpenAI-Organization']);
+        self::assertSame('req-1', $saved['response']['headers']['X-Request-Id']);
+    }
+
+    public function testCommittedCassettesCarryNoOrganizationIds(): void
+    {
+        foreach (glob(__DIR__ . '/../../../Fixtures/cassettes/*/*.json') ?: [] as $file) {
+            $json = json_decode((string) file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
+            foreach ($json['interactions'] as $i) {
+                foreach (['request', 'response'] as $side) {
+                    foreach ($i[$side]['headers'] as $name => $value) {
+                        if (stripos((string) $name, 'organization') !== false) {
+                            self::assertSame('<scrubbed>', $value, basename($file) . ' ' . $name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     public function testRecordReplacesConfiguredSecretsEverywhere(): void
     {
         $path = $this->dir . '/secrets.json';

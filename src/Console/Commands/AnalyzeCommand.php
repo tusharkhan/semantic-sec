@@ -6,7 +6,6 @@ namespace TusharKhan\SemanticSec\Console\Commands;
 
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
-use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
@@ -20,6 +19,7 @@ use TusharKhan\SemanticSec\Config\ConfigLoader;
 use TusharKhan\SemanticSec\Console\AnalysisPipeline;
 use TusharKhan\SemanticSec\Console\ExitCode;
 use TusharKhan\SemanticSec\Console\OutputDir;
+use TusharKhan\SemanticSec\Console\Terminal;
 use TusharKhan\SemanticSec\Engine\AnalysisResult;
 use TusharKhan\SemanticSec\Engine\Baseline;
 use TusharKhan\SemanticSec\Engine\Engine;
@@ -29,7 +29,6 @@ use TusharKhan\SemanticSec\Framework\FrameworkNotDetected;
 use TusharKhan\SemanticSec\Llm\ClientFactory;
 use TusharKhan\SemanticSec\Llm\ClientInterface;
 use TusharKhan\SemanticSec\Llm\GroundingChecker;
-use TusharKhan\SemanticSec\Llm\LlmResponse;
 use TusharKhan\SemanticSec\Llm\ValidatingClient;
 use TusharKhan\SemanticSec\Payload\Payload;
 use TusharKhan\SemanticSec\Payload\Redactor;
@@ -52,10 +51,12 @@ final class AnalyzeCommand extends Command
 
     /**
      * @param  (\Closure(Config): ClientInterface)|null  $providerClient  test seam: replaces the provider client under ValidatingClient
+     * @param  (\Closure(Engine, list<Payload>, int): AnalysisResult)|null  $runEngine  test seam: replaces Engine::run
      */
     public function __construct(
         private readonly ?\Closure $providerClient = null,
         private readonly ?AnalysisPipeline $pipeline = null,
+        private readonly ?\Closure $runEngine = null,
     ) {
         parent::__construct();
     }
@@ -228,7 +229,11 @@ final class AnalyzeCommand extends Command
 
         $project = $run->project;
         $engine = new Engine($client, $cache, new Fingerprinter($project->parsed, $project->symbols), new GroundingChecker($project->symbols), $project->parsed, $config, Baseline::empty());
-        $result = $engine->run($run->payloads(), count($run->results));
+        try {
+            $result = $this->runEngine === null ? $engine->run($run->payloads(), count($run->results)) : ($this->runEngine)($engine, $run->payloads(), count($run->results));
+        } catch (\Throwable $e) {
+            return $this->fail($output, 'analysis failed: '.Terminal::clean($redactor->redact($e->getMessage())));
+        }
 
         $this->renderResult($output, $result, array_map($redactor->redact(...), [...$run->warnings, ...$result->warnings]), $config);
 
@@ -242,7 +247,7 @@ final class AnalyzeCommand extends Command
      */
     private function renderResult(OutputInterface $output, AnalysisResult $r, array $warnings, Config $config): void
     {
-        $line = static fn (string $text) => $output->writeln(OutputFormatter::escape($text));
+        $line = static fn (string $text) => $output->writeln(Terminal::safe($text));
         $failing = 0;
         foreach ($r->findings as $f) {
             $v = $f['vulnerability'];
@@ -251,10 +256,10 @@ final class AnalyzeCommand extends Command
                 '[%s] %s %s:%d %s — %s (%s%s)',
                 strtoupper($v->severity->value),
                 $v->category->value,
-                self::clean($v->file),
+                $v->file,
                 $v->line,
-                self::clean($v->symbol),
-                self::clean($v->title),
+                $v->symbol,
+                $v->title,
                 $v->confidence->value,
                 $f['failing'] ? '' : ', not failing',
             ));
@@ -294,14 +299,9 @@ final class AnalyzeCommand extends Command
             $line('');
             $line('Warnings');
             foreach ($warnings as $warning) {
-                $line('  '.self::clean($warning));
+                $line('  '.$warning);
             }
         }
-    }
-
-    private static function clean(string $text): string
-    {
-        return (string) LlmResponse::clean($text);
     }
 
     /** @return array<string, string> Config::with() key => the CLI flag its errors name */
@@ -429,19 +429,19 @@ final class AnalyzeCommand extends Command
         $table->setHeaders(['#', 'Route', 'Categories', 'Parts', 'Tokens']);
         $payloads = $tokens = 0;
         foreach ($rows as $row) {
-            $table->addRow([sprintf('%03d', $row['number']), $row['route'], implode(', ', $row['categories']), count($row['payloads']), $row['tokens']]);
+            $table->addRow([sprintf('%03d', $row['number']), Terminal::safe($row['route']), implode(', ', $row['categories']), count($row['payloads']), $row['tokens']]);
             $payloads += count($row['payloads']);
             $tokens += $row['tokens'];
         }
         $table->render();
 
-        $output->writeln(sprintf('%d candidates, %d payloads, ~%d tokens; written to %s', count($rows), $payloads, $tokens, $dir));
+        $output->writeln(sprintf('%d candidates, %d payloads, ~%d tokens; written to %s', count($rows), $payloads, $tokens, Terminal::safe($dir)));
 
         if ($warnings !== []) {
             $output->writeln('');
             $output->writeln('Warnings');
             foreach ($warnings as $warning) {
-                $output->writeln('  '.$warning);
+                $output->writeln('  '.Terminal::safe($warning));
             }
         }
     }

@@ -103,7 +103,9 @@ final class OpenAiClient implements ClientInterface
         $json = is_array($json) ? $json : [];
         $usage = is_array($json['usage'] ?? null) ? $json['usage'] : [];
         $model = is_string($json['model'] ?? null) ? $json['model'] : $request->model;
-        $make = static fn (LlmOutcome $outcome, ?array $data = null, ?string $detail = null): LlmResponse => new LlmResponse($request->payloadId, $outcome, $data, self::int($usage, 'prompt_tokens'), self::int($usage, 'completion_tokens'), $model, $detail);
+        $key = $this->apiKey;
+        // Answer text never carries the key, even from a gateway that echoes it.
+        $make = static fn (LlmOutcome $outcome, ?array $data = null, ?string $detail = null): LlmResponse => new LlmResponse($request->payloadId, $outcome, HttpError::scrubData($data, $key), self::int($usage, 'prompt_tokens'), self::int($usage, 'completion_tokens'), HttpError::scrubData($model, $key), HttpError::scrubData($detail, $key));
 
         $error = is_array($json['error'] ?? null) ? $json['error'] : [];
         if ($status === 400 && (($error['code'] ?? null) === 'json_validate_failed' || str_contains($raw, self::GROQ_SCHEMA_MISMATCH))) {

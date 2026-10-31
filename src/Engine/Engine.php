@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace TusharKhan\SemanticSec\Engine;
 
 use TusharKhan\SemanticSec\Analysis\Category;
+use TusharKhan\SemanticSec\Analysis\Confidence;
 use TusharKhan\SemanticSec\Config\Config;
 use TusharKhan\SemanticSec\Llm\ClientFactory;
 use TusharKhan\SemanticSec\Llm\ClientInterface;
@@ -186,6 +187,10 @@ final class Engine
                     $drops[$kind] = ($drops[$kind] ?? 0) + 1;
 
                     continue;
+                }
+                // SPEC §9: a finding from a truncated payload is never more than medium confidence.
+                if ($p->truncated && ($grounded['confidence'] ?? null) === Confidence::High->value) {
+                    $grounded['confidence'] = Confidence::Medium->value;
                 }
                 $file = is_string($grounded['file'] ?? null) ? $grounded['file'] : '';
                 $symbol = is_string($grounded['symbol'] ?? null) ? $grounded['symbol'] : '';

@@ -13,6 +13,7 @@ use Symfony\Component\Console\Output\OutputInterface;
 use TusharKhan\SemanticSec\Config\ConfigException;
 use TusharKhan\SemanticSec\Console\ExitCode;
 use TusharKhan\SemanticSec\Console\MapBuilder;
+use TusharKhan\SemanticSec\Console\Terminal;
 use TusharKhan\SemanticSec\Framework\DetectedFramework;
 use TusharKhan\SemanticSec\Framework\FrameworkNotDetected;
 use TusharKhan\SemanticSec\Framework\Laravel\AuthorizationMap;
@@ -73,10 +74,10 @@ final class MapCommand extends Command
 
         foreach ($map->routes as $route) {
             $table->addRow([
-                implode('|', $route->methods),
-                $route->uri,
-                $route->action->isClosure() ? 'Closure' : ($route->action->symbol() ?? '?'),
-                implode("\n", $this->collapsedChecks($route)),
+                Terminal::safe(implode('|', $route->methods)),
+                Terminal::safe($route->uri),
+                Terminal::safe($route->action->isClosure() ? 'Closure' : ($route->action->symbol() ?? '?')),
+                Terminal::safeLines(implode("\n", $this->collapsedChecks($route))),
             ]);
             $best = $this->best($route);
             match ($best) {
@@ -99,7 +100,7 @@ final class MapCommand extends Command
             $output->writeln('');
             $output->writeln('Warnings');
             foreach ($warnings as $warning) {
-                $output->writeln('  '.$warning);
+                $output->writeln('  '.Terminal::safe($warning));
             }
         }
     }

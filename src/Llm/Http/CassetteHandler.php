@@ -24,7 +24,7 @@ final class CassetteHandler
 {
     private const MARK = '<scrubbed>';
 
-    private const SECRET_HEADER = '/key|token|auth|secret|cookie|session/i';
+    private const SECRET_HEADER = '/key|token|auth|secret|cookie|session|organization/i';
 
     private const SECRET_QUERY = '/key|token|auth|secret|sig|password/i';
 

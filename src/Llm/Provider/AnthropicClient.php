@@ -118,7 +118,9 @@ final class AnthropicClient implements ClientInterface
         $input = self::int($usage, 'input_tokens') + self::int($usage, 'cache_creation_input_tokens') + self::int($usage, 'cache_read_input_tokens');
         $output = self::int($usage, 'output_tokens');
         $model = is_string($json['model'] ?? null) ? $json['model'] : $request->model;
-        $make = static fn (LlmOutcome $outcome, ?array $data = null, ?string $detail = null): LlmResponse => new LlmResponse($request->payloadId, $outcome, $data, $input, $output, $model, $detail);
+        $key = $this->apiKey;
+        // Answer text never carries the key, even from a gateway that echoes it.
+        $make = static fn (LlmOutcome $outcome, ?array $data = null, ?string $detail = null): LlmResponse => new LlmResponse($request->payloadId, $outcome, HttpError::scrubData($data, $key), $input, $output, HttpError::scrubData($model, $key), HttpError::scrubData($detail, $key));
 
         $stop = $json['stop_reason'] ?? null;
         if ($stop === 'refusal') {

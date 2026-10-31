@@ -13,6 +13,7 @@ use TusharKhan\SemanticSec\Console\AnalysisPipeline;
 use TusharKhan\SemanticSec\Console\Commands\AnalyzeCommand;
 use TusharKhan\SemanticSec\Console\MapBuilder;
 use TusharKhan\SemanticSec\Llm\ClientInterface;
+use TusharKhan\SemanticSec\Llm\FakeClient;
 use TusharKhan\SemanticSec\Llm\LlmException;
 use TusharKhan\SemanticSec\Llm\LlmOutcome;
 use TusharKhan\SemanticSec\Llm\LlmRequest;
@@ -261,6 +262,32 @@ final class AnalyzeCommandTest extends TestCase
         self::assertSame(1, $code);
         self::assertSame([], $this->requests);
         self::assertMatchesRegularExpression('~cache hits\s+14\b~', $out);
+    }
+
+    public function testCorruptCacheEntryWarningNamesItsShortKey(): void
+    {
+        $this->analyze([], $this->answers(self::finding()));
+        $entries = glob($this->root.'/.semantic-sec/cache/*.json') ?: [];
+        self::assertCount(14, $entries);
+        file_put_contents($entries[0], '{not json');
+        $short = substr(basename($entries[0], '.json'), 0, 12);
+
+        [, $out] = $this->analyze([], $this->answers(self::finding()));
+
+        self::assertStringContainsString("cache entry {$short}… ignored", $out);
+        self::assertStringNotContainsString('<redacted>', $out);
+    }
+
+    public function testEngineThrowableIsExitTwoWithASafeLine(): void
+    {
+        $boom = static fn (): never => throw new \LogicException("duplicate payload id \e[31m<error>x</error>\nsecond line");
+        $t = new CommandTester(new AnalyzeCommand(fn (Config $c): ClientInterface => new FakeClient([]), null, $boom));
+
+        $code = $t->execute(['--project-root' => $this->root], ['capture_stderr_separately' => true]);
+
+        self::assertSame(2, $code);
+        self::assertSame("Error: analysis failed: duplicate payload id  [31m<error>x</error> second line\n", $t->getErrorOutput());
+        self::assertStringNotContainsString("\e", $t->getErrorOutput());
     }
 
     public function testModelTextIsStrippedOfControlCharacters(): void

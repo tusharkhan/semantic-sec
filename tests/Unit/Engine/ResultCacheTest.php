@@ -123,7 +123,7 @@ final class ResultCacheTest extends TestCase
         file_put_contents($this->dir.'/'.$key.'.json', $json.str_repeat(' ', 600 - strlen($json) + 1));
         $cache = new ResultCache($this->dir, 'openai', 'gpt-x', [], true, '1.0.0', '2', maxEntryBytes: 600);
         self::assertNull($cache->get($payload));
-        self::assertSame(['cache entry '.$key.' ignored'], $cache->warnings());
+        self::assertSame(['cache entry '.substr($key, 0, 12).'… ignored'], $cache->warnings());
     }
 
     public function testDefaultCapIsFourMegabytes(): void
@@ -263,7 +263,7 @@ final class ResultCacheTest extends TestCase
 
             self::assertNull($cache->get($payload), $what);
             self::assertNull($cache->get($payload), $what.' (again)');
-            self::assertSame(['cache entry '.$key.' ignored'], $cache->warnings(), $what);
+            self::assertSame(['cache entry '.substr($key, 0, 12).'… ignored'], $cache->warnings(), $what);
             self::assertSame(0, $cache->hits(), $what);
         }
     }
@@ -276,7 +276,7 @@ final class ResultCacheTest extends TestCase
 
         $cache = self::cache($this->dir);
         self::assertNull($cache->get($payload));
-        self::assertSame(['cache entry '.$key.' ignored'], $cache->warnings());
+        self::assertSame(['cache entry '.substr($key, 0, 12).'… ignored'], $cache->warnings());
     }
 
     public function testSymlinkedEntryIsMissWithWarning(): void
@@ -289,7 +289,7 @@ final class ResultCacheTest extends TestCase
 
         $cache = self::cache($this->dir);
         self::assertNull($cache->get($payload));
-        self::assertSame(['cache entry '.$key.' ignored'], $cache->warnings());
+        self::assertSame(['cache entry '.substr($key, 0, 12).'… ignored'], $cache->warnings());
     }
 
     public function testMissingFileIsQuietMiss(): void
@@ -317,7 +317,7 @@ final class ResultCacheTest extends TestCase
             $cache = self::cache($this->dir);
 
             self::assertNull($cache->get($payload), $what);
-            self::assertSame(['cache entry '.$key.' ignored'], $cache->warnings(), $what);
+            self::assertSame(['cache entry '.substr($key, 0, 12).'… ignored'], $cache->warnings(), $what);
         }
     }
 
@@ -353,7 +353,7 @@ final class ResultCacheTest extends TestCase
 
         chmod($this->dir, 0777);
         self::assertSame([], self::files($this->dir));
-        self::assertSame(['cache entry '.$cache->key($payload).' not written'], $cache->warnings());
+        self::assertSame(['cache entry '.substr($cache->key($payload), 0, 12).'… not written'], $cache->warnings());
     }
 
     public function testInProjectPreparesGuardedDir(): void

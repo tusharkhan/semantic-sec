@@ -115,6 +115,28 @@ final class EngineTest extends TestCase
         self::assertSame(0, $result->stats['sent']);
     }
 
+    public function testTruncatedPayloadCapsConfidenceAtMedium(): void
+    {
+        $cut = $this->payload('p1', self::POST, self::SHOW, 7, 10, truncated: true);
+        $whole = $this->payload('p2', self::POST, self::SHOW, 7, 10);
+        $high = ResponseValidatorTest::finding(self::finding(self::SHOW, 9));
+        $low = ResponseValidatorTest::finding([...self::finding(self::SHOW, 8), 'confidence' => 'low', 'category' => 'mass_assignment']);
+        $client = new FakeClient(['p1' => self::ok('p1', [$high, $low]), 'p2' => self::ok('p2', [$high])]);
+
+        $cutResult = $this->engine($client)->run([$cut], 1);
+        $byCategory = [];
+        foreach ($cutResult->findings as $f) {
+            $byCategory[$f['vulnerability']->category->value] = $f['vulnerability']->confidence;
+        }
+        ksort($byCategory);
+        self::assertSame(['idor' => Confidence::Medium, 'mass_assignment' => Confidence::Low], $byCategory, 'high is capped, low stays low');
+
+        // Same text, so the cached answer comes back; uncapped this time because the payload is whole.
+        $wholeResult = $this->engine($client)->run([$whole], 1);
+        $idor = array_values(array_filter($wholeResult->findings, static fn (array $f): bool => $f['vulnerability']->category === Category::Idor));
+        self::assertSame(Confidence::High, $idor[0]['vulnerability']->confidence);
+    }
+
     public function testOkPutInCache(): void
     {
         $payload = $this->payload('p1', self::POST, self::SHOW, 7, 10);
@@ -442,14 +464,14 @@ final class EngineTest extends TestCase
     }
 
     // A payload showing lines from..to of one method, plus the same method of a second file when given.
-    private function payload(string $id, string $file, string $symbol, int $from, int $to, ?string $file2 = null, ?string $symbol2 = null, int $part = 1): Payload
+    private function payload(string $id, string $file, string $symbol, int $from, int $to, ?string $file2 = null, ?string $symbol2 = null, int $part = 1, bool $truncated = false): Payload
     {
         $code = "<untrusted_code>\n".self::block($file, $symbol, $from, $to);
         if ($file2 !== null && $symbol2 !== null) {
             $code .= self::block($file2, $symbol2, $from, $to);
         }
 
-        return new Payload($id, self::candidate(), "Route:\n  GET /posts/{id}", $code.'</untrusted_code>', $part, $part === 1 ? 1 : 2, false);
+        return new Payload($id, self::candidate(), "Route:\n  GET /posts/{id}", $code.'</untrusted_code>', $part, $part === 1 ? 1 : 2, $truncated);
     }
 
     private static function block(string $file, string $symbol, int $from, int $to): string
