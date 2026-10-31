@@ -27,4 +27,14 @@ final class HttpClientFactoryTest extends TestCase
         self::assertCount(1, $history);
         self::assertFalse($client->getConfig('allow_redirects'));
     }
+
+    public function testTimeoutsAreSet(): void
+    {
+        $client = HttpClientFactory::create(new MockHandler([]));
+
+        self::assertSame(10, HttpClientFactory::CONNECT_TIMEOUT);
+        self::assertSame(600, HttpClientFactory::TIMEOUT);
+        self::assertSame(HttpClientFactory::CONNECT_TIMEOUT, $client->getConfig('connect_timeout'));
+        self::assertSame(HttpClientFactory::TIMEOUT, $client->getConfig('timeout'));
+    }
 }

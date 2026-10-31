@@ -67,6 +67,17 @@ final class RequestPoolTest extends TestCase
         self::assertFalse($single->budgetExceeded);
     }
 
+    public function testOvershootWithoutSkipStillMarksBudgetExceeded(): void
+    {
+        $client = new DeferredClient(tokens: 15);
+
+        $result = (new RequestPool($client, 2, 20))->run(self::requests(2));
+
+        self::assertCount(2, $result->responses);
+        self::assertSame(30, $result->usedTokens);
+        self::assertTrue($result->budgetExceeded);
+    }
+
     public function testBudgetCountsSystemAndUser(): void
     {
         $request = new LlmRequest('p1', str_repeat('s', 35), str_repeat('u', 35), [], 'm');
@@ -127,6 +138,21 @@ final class RequestPoolTest extends TestCase
         $result = (new RequestPool($client, 1, null))->run(self::requests(1));
 
         self::assertSame([['payloadId' => 'p1', 'error' => 'unexpected LogicException', 'retryable' => false]], $result->failures);
+    }
+
+    public function testAnonymousClassIsNamedWithoutPath(): void
+    {
+        $client = new class () implements ClientInterface {
+            public function analyze(LlmRequest $request): PromiseInterface
+            {
+                throw new class ('boom') extends \RuntimeException {
+                };
+            }
+        };
+
+        $result = (new RequestPool($client, 1, null))->run(self::requests(1));
+
+        self::assertSame('unexpected anonymous class', $result->failures[0]['error']);
     }
 
     public function testConcurrencyMustBePositive(): void

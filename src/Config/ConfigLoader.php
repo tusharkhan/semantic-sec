@@ -114,7 +114,7 @@ final class ConfigLoader
         if ($value === null) {
             return null;
         }
-        if (! is_string($value) || $value === '') {
+        if (! is_string($value) || trim($value) === '') {
             throw new ConfigException(sprintf('Config key "%s" must be null or a non-empty string.', $key));
         }
 

@@ -21,7 +21,7 @@ final class ClientFactory
     /** @param callable|null $handler Guzzle handler under the retry middleware; null is real cURL */
     public static function create(Config $c, ?callable $handler = null): ClientInterface
     {
-        if ($c->baseUrl === '') {
+        if ($c->baseUrl !== null && trim($c->baseUrl) === '') {
             throw new ConfigException('base_url must not be empty');
         }
         $http = static fn () => HttpClientFactory::create($handler, [RetryMiddleware::create()]);
@@ -56,7 +56,8 @@ final class ClientFactory
     {
         $env = $c->apiKeyEnv ?? self::KEY_ENVS[$c->provider];
         $value = getenv($env);
-        if (!is_string($value) || $value === '') {
+        $value = is_string($value) ? trim($value) : '';
+        if ($value === '') {
             throw new ConfigException("{$env} is not set");
         }
 

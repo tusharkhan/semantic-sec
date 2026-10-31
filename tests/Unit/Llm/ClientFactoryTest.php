@@ -29,7 +29,7 @@ final class ClientFactoryTest extends TestCase
     /** @var array<string, string|false> */
     private array $saved = [];
 
-    /** @var list<array{request: RequestInterface, delay: mixed}> */
+    /** @var list<array{request: RequestInterface, delay: mixed, options: array<string, mixed>}> */
     private array $sent = [];
 
     /** @var list<Response> */
@@ -86,6 +86,47 @@ final class ClientFactoryTest extends TestCase
         $this->expectExceptionObject(new ConfigException('ANTHROPIC_API_KEY is not set'));
 
         ClientFactory::create(self::config('anthropic'));
+    }
+
+    public function testRealClientSendsTimeouts(): void
+    {
+        putenv('OPENAI_API_KEY=sk-secret-3');
+        $config = self::config('openai');
+        $this->queue = [self::openAiOk()];
+
+        ClientFactory::create($config, $this->handler())->analyze(ClientFactory::request($config, 'p1', 'S', 'U', ['type' => 'object']))->wait();
+
+        self::assertSame(10, $this->sent[0]['options']['connect_timeout'] ?? null);
+        self::assertSame(600, $this->sent[0]['options']['timeout'] ?? null);
+    }
+
+    public function testWhitespaceOnlyKeyCountsAsMissing(): void
+    {
+        putenv("ANTHROPIC_API_KEY= \t ");
+
+        $this->expectExceptionObject(new ConfigException('ANTHROPIC_API_KEY is not set'));
+
+        ClientFactory::create(self::config('anthropic'));
+    }
+
+    public function testKeyIsTrimmed(): void
+    {
+        putenv("ANTHROPIC_API_KEY=  sk-ant-secret-1\n");
+        $config = self::config('anthropic');
+        $this->queue = [self::anthropicOk()];
+
+        ClientFactory::create($config, $this->handler())->analyze(ClientFactory::request($config, 'p1', 'S', 'U', ['type' => 'object']))->wait();
+
+        self::assertSame('sk-ant-secret-1', $this->sent[0]['request']->getHeaderLine('x-api-key'));
+    }
+
+    public function testWhitespaceOnlyBaseUrlIsRejected(): void
+    {
+        putenv('ANTHROPIC_API_KEY=sk-ant-secret-1');
+
+        $this->expectExceptionObject(new ConfigException('base_url must not be empty'));
+
+        ClientFactory::create(self::config('anthropic', baseUrl: "  \n"));
     }
 
     public function testEmptyBaseUrlIsRejectedWithoutTheKey(): void
@@ -184,7 +225,7 @@ final class ClientFactoryTest extends TestCase
     private function handler(): callable
     {
         return function (RequestInterface $request, array $options): PromiseInterface {
-            $this->sent[] = ['request' => $request, 'delay' => $options['delay'] ?? null];
+            $this->sent[] = ['request' => $request, 'delay' => $options['delay'] ?? null, 'options' => $options];
 
             return Create::promiseFor(array_shift($this->queue) ?? throw new \LogicException('no queued response'));
         };

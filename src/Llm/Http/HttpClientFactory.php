@@ -9,6 +9,11 @@ use GuzzleHttp\HandlerStack;
 
 final class HttpClientFactory
 {
+    public const CONNECT_TIMEOUT = 10;
+
+    // Large non-streaming answers can take minutes; matches the SDK default.
+    public const TIMEOUT = 600;
+
     /** @param array<int|string, callable> $middleware pushed in order; string keys become middleware names */
     public static function create(?callable $handler = null, array $middleware = []): Client
     {
@@ -18,6 +23,6 @@ final class HttpClientFactory
         }
 
         // Redirects would resend key headers to whatever host the Location names.
-        return new Client(['handler' => $stack, 'allow_redirects' => false]);
+        return new Client(['handler' => $stack, 'allow_redirects' => false, 'connect_timeout' => self::CONNECT_TIMEOUT, 'timeout' => self::TIMEOUT]);
     }
 }

@@ -41,6 +41,10 @@ final class RequestPool
 
         Each::ofLimit($this->dispatch($requests), $this->concurrency)->wait();
 
+        if ($this->budgetTokens !== null && $this->usedTokens > $this->budgetTokens) {
+            $this->budgetExceeded = true;
+        }
+
         return new PoolResult($this->responses, $this->failures, $this->usedTokens, $this->budgetExceeded);
     }
 
@@ -87,7 +91,7 @@ final class RequestPool
     {
         $this->failures[] = match (true) {
             $reason instanceof LlmException => ['payloadId' => $payloadId, 'error' => $reason->getMessage(), 'retryable' => $reason->retryable],
-            $reason instanceof \Throwable => ['payloadId' => $payloadId, 'error' => 'unexpected '.$reason::class, 'retryable' => false],
+            $reason instanceof \Throwable => ['payloadId' => $payloadId, 'error' => 'unexpected '.(str_contains($reason::class, '@anonymous') ? 'anonymous class' : $reason::class), 'retryable' => false],
             default => ['payloadId' => $payloadId, 'error' => 'unknown failure', 'retryable' => false],
         };
     }

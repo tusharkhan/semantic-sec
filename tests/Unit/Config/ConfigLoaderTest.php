@@ -149,6 +149,11 @@ YAML);
         $this->assertLoadFails("provider: gemini\n", 'provider', 'openai, anthropic, ollama');
     }
 
+    public function testWhitespaceOnlyBaseUrlFails(): void
+    {
+        $this->assertLoadFails("base_url: '   '\n", 'base_url');
+    }
+
     public function testOllamaWithoutModelFails(): void
     {
         $this->assertLoadFails("provider: ollama\n", 'ollama needs a model in semantic-sec.yaml');

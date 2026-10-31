@@ -258,7 +258,7 @@ A route action becomes a candidate for a category when:
 ## 12. Cache, budget, diff mode
 
 - **ResultCache:** `.semantic-sec/cache/<key>.json`. `key = sha256(toolVersion | provider | model | SecurityPrompt::VERSION | rulesetHash | payload text)`. The payload text already contains the full authorization context, so changing a route, middleware or policy changes the key. `--no-cache` skips reads; writes always happen.
-- **Budget:** `budget_tokens` (default unset, meaning unlimited) counts provider-reported input and output tokens. Before dispatching, if `used + estimate(next)` would go over the budget, dispatching stops, in-flight requests finish, and `budgetExceeded = true`.
+- **Budget:** `budget_tokens` (default unset, meaning unlimited) counts provider-reported input and output tokens. Before dispatching, if `used + estimate(next)` would go over the budget, dispatching stops, in-flight requests finish, and `budgetExceeded = true`. In-flight requests are not reserved, so the budget may overshoot by up to `concurrency` requests' actual tokens; `budgetExceeded` is also true whenever the final `used` is above the budget.
 - **`--since=<ref>`:**
   1. Run `git diff --name-only <ref>...HEAD` (through `symfony/process`), then parse the whole project as usual.
   2. Mark affected candidates: those whose execution path touches a changed file, those whose route is in a changed route file, those using changed middleware, policy, FormRequest or model files, plus every candidate if `Kernel.php`, `bootstrap/app.php`, `AuthServiceProvider` or `RouteServiceProvider` changed.

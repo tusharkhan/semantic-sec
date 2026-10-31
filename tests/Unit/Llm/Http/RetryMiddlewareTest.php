@@ -132,6 +132,33 @@ final class RetryMiddlewareTest extends TestCase
         self::assertSame([1000], $this->sleeps);
     }
 
+    public function testTimeoutIsRetriedThenSurfacesAsCleanConnectionError(): void
+    {
+        $timeout = new ConnectException('cURL error 28: Operation timed out after 600000 milliseconds for https://api.anthropic.com/v1/messages', new Request('POST', 'https://api.anthropic.com/v1/messages'));
+        $mock = new MockHandler(array_fill(0, 4, $timeout));
+        $client = new AnthropicClient($this->http($mock), 'sk-ant-test-0000');
+
+        try {
+            $client->analyze(self::request())->wait();
+            self::fail('expected an LlmException');
+        } catch (LlmException $e) {
+            self::assertSame('anthropic request failed: connection error', $e->getMessage());
+            self::assertTrue($e->retryable);
+        }
+        self::assertSame([1000, 2000, 4000], $this->sleeps);
+        self::assertCount(4, $this->history);
+    }
+
+    public function testTimeoutThenSuccess(): void
+    {
+        $timeout = new ConnectException('cURL error 28: Operation timed out', new Request('POST', 'https://api.example.test/v1/messages'));
+
+        $response = $this->send([$timeout, new Response(200)]);
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame([1000], $this->sleeps);
+    }
+
     public function testConnectExceptionStormRejectsAfterFourAttempts(): void
     {
         $request = new Request('POST', 'https://api.example.test/v1/messages');

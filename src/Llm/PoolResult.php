@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Llm;
 
-/** Responses arrive in completion order, not request order. */
+/** Responses arrive in completion order; the budget may overshoot by up to `concurrency` requests' actual tokens. */
 final readonly class PoolResult
 {
     /**
@@ -15,6 +15,7 @@ final readonly class PoolResult
         public array $responses,
         public array $failures,
         public int $usedTokens,
+        // True when a dispatch was skipped or usedTokens ended above the budget.
         public bool $budgetExceeded,
     ) {
     }
