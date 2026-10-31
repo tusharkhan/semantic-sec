@@ -22,8 +22,8 @@ vendor/bin/semantic-sec analyze --level=medium --min-confidence=high --budget=20
 | Code | Meaning |
 |---|---|
 | 0 | Clean: no findings, or only suppressed, baselined or non-failing (below `--min-confidence`) ones |
-| 1 | At least one failing finding. This wins over 3 |
-| 2 | Tool error: bad config or flag, no framework detected, missing API key, unsafe `.semantic-sec/` directory, or every request failed |
+| 1 | At least one failing finding. This wins over 2 and 3 |
+| 2 | Tool error: bad config or flag, no framework detected, missing API key, unsafe `.semantic-sec/` directory, or every request failed. With `--strict`, also any failed, refused, invalid or truncated request or unsent payload; the summary names it (`strict: 3 failed, 2 unsent`), and strict 2 beats 3 |
 | 3 | Token budget exceeded with no failing finding (partial results are still printed) |
 
 **`--budget N`** is a hard cap on provider tokens. Before each request the run reserves twice the prompt plus `max_tokens`, so one request needs about 35k tokens of headroom at the default `max_tokens` of 16000. A budget below that sends nothing and exits 3.

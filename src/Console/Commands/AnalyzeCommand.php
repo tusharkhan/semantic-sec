@@ -77,6 +77,7 @@ final class AnalyzeCommand extends Command
             ->addOption('concurrency', null, InputOption::VALUE_REQUIRED, 'Parallel requests (config: concurrency, default 5)')
             ->addOption('budget', null, InputOption::VALUE_REQUIRED, 'Hard cap on provider tokens; below one request\'s reservation (~35k at the default max_tokens) nothing is sent (config: budget_tokens)')
             ->addOption('no-cache', null, InputOption::VALUE_NONE, 'Ignore cached answers (new answers are still cached)')
+            ->addOption('strict', null, InputOption::VALUE_NONE, 'Exit 2 if any request failed, was refused, invalid or truncated, or any payload went unsent (ignored with --dry-run)')
             ->addOption('format', null, InputOption::VALUE_REQUIRED, 'console; with --dry-run also json', 'console')
             ->addOption('output', null, InputOption::VALUE_REQUIRED, 'Write the report to a file (available in a later release)')
             ->addOption('baseline', null, InputOption::VALUE_REQUIRED, 'Baseline file (available in a later release)')
@@ -88,6 +89,8 @@ final class AnalyzeCommand extends Command
 
                 Exit codes: 0 clean, 1 a failing finding, 2 tool error (config, no framework, missing API key,
                 every request failed), 3 token budget exceeded with no failing finding. 1 beats 3.
+                --strict also exits 2 when any request failed, was refused, invalid or truncated, or any payload
+                went unsent. Precedence: 1 > strict 2 > 3 > all-failed 2 > 0.
 
                 --budget is a hard cap: before each request the pool reserves twice the prompt plus max_tokens,
                 so a budget below one reservation (~35k tokens at the default max_tokens) sends nothing and exits 3.
@@ -235,9 +238,10 @@ final class AnalyzeCommand extends Command
             return $this->fail($output, 'analysis failed: '.Terminal::clean($redactor->redact($e->getMessage())));
         }
 
-        $this->renderResult($output, $result, array_map($redactor->redact(...), [...$run->warnings, ...$result->warnings]), $config);
+        $strict = $input->getOption('strict') === true;
+        $this->renderResult($output, $result, array_map($redactor->redact(...), [...$run->warnings, ...$result->warnings]), $config, ExitCode::strictReason($result, $strict));
 
-        return ExitCode::for($result);
+        return ExitCode::for($result, $strict);
     }
 
     /**
@@ -245,7 +249,7 @@ final class AnalyzeCommand extends Command
      *
      * @param  list<string>  $warnings
      */
-    private function renderResult(OutputInterface $output, AnalysisResult $r, array $warnings, Config $config): void
+    private function renderResult(OutputInterface $output, AnalysisResult $r, array $warnings, Config $config, ?string $strictReason): void
     {
         $line = static fn (string $text) => $output->writeln(Terminal::safe($text));
         $failing = 0;
@@ -293,6 +297,10 @@ final class AnalyzeCommand extends Command
         $line('Summary');
         foreach ($rows as $label => $value) {
             $line(sprintf('  %-11s %s', $label, $value));
+        }
+        if ($strictReason !== null) {
+            $line('');
+            $line($strictReason);
         }
 
         if ($warnings !== []) {

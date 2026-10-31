@@ -93,17 +93,19 @@ final class Engine
 
         $findings = [];
         $baselined = [];
+        $filtered = [];
         foreach ((new Deduplicator())->merge($active) as $v) {
             if ($this->baseline->contains($v->fingerprint)) {
                 $baselined[] = $v;
             } elseif ($v->severity->atLeast($this->config->level)) {
                 $findings[] = ['vulnerability' => $v, 'failing' => $v->confidence->atLeast($this->config->minConfidence)];
             } else {
+                $filtered[] = $v;
                 $stats['filtered']++;
             }
         }
 
-        return new AnalysisResult($findings, $suppressed, $baselined, $warnings, $stats);
+        return new AnalysisResult($findings, $suppressed, $baselined, $warnings, $stats, $filtered);
     }
 
     /**

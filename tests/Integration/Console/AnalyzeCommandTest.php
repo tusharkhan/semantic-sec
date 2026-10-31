@@ -107,6 +107,47 @@ final class AnalyzeCommandTest extends TestCase
         self::assertStringContainsString('InvoiceController::show — IDOR: any authenticated user can read any invoice by id (low, not failing)', $out);
     }
 
+    public function testStrictReasonInSummary(): void
+    {
+        $answer = fn (LlmRequest $r): LlmResponse => str_ends_with($r->payloadId, self::VULN)
+            ? new LlmResponse($r->payloadId, LlmOutcome::Refused, null, 10, 0, 'm', 'declined')
+            : ($this->answers(self::finding()))($r);
+
+        [$code, $out, $err] = $this->analyze([], $answer);
+        self::assertSame(0, $code, $err);
+        self::assertStringNotContainsString('strict:', $out);
+
+        [$code, $out, $err] = $this->analyze(['--strict' => true], $answer);
+        self::assertSame(2, $code, $err);
+        self::assertStringContainsString('strict: 1 refused', $out);
+        self::assertSame(1, substr_count($out, 'strict:'));
+    }
+
+    public function testStrictDoesNotHideAFailingFinding(): void
+    {
+        [$code, $out, $err] = $this->analyze(['--strict' => true, '--concurrency' => '1', '--budget' => '1000000'], $this->answers(self::finding(), 990_000));
+
+        self::assertSame(1, $code, $err);
+        self::assertStringNotContainsString('strict:', $out);
+    }
+
+    public function testStrictAcceptedWithDryRun(): void
+    {
+        $t = new CommandTester(new AnalyzeCommand());
+        $code = $t->execute(['--project-root' => $this->root, '--dry-run' => true, '--strict' => true], ['capture_stderr_separately' => true]);
+
+        self::assertSame(0, $code, $t->getErrorOutput());
+    }
+
+    public function testFilteredFindingsOnlyCounted(): void
+    {
+        [$code, $out, $err] = $this->analyze(['--level' => 'critical'], $this->answers(self::finding()));
+
+        self::assertSame(0, $code, $err);
+        self::assertMatchesRegularExpression('~filtered\s+1 \(below level critical\)~', $out);
+        self::assertStringNotContainsString('InvoiceController::show', $out);
+    }
+
     public function testMissingKeyExitTwoNamesEnvOnly(): void
     {
         $saved = getenv('ANTHROPIC_API_KEY');
