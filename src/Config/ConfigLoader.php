@@ -48,6 +48,11 @@ final class ConfigLoader
             throw new ConfigException('Config key "provider" must be one of: '.implode(', ', self::PROVIDERS).'.');
         }
 
+        $model = $this->nullableString($data['model'] ?? null, 'model');
+        if ($model === null && $provider === 'ollama' && Defaults::model($provider) === null) {
+            throw new ConfigException('ollama needs a model in semantic-sec.yaml');
+        }
+
         $sensitive = array_values(array_unique([
             ...Config::DEFAULT_SENSITIVE_FIELDS,
             ...$this->stringList($laravel['sensitive_fields'] ?? [], 'laravel.sensitive_fields'),
@@ -56,7 +61,7 @@ final class ConfigLoader
         return new Config(
             projectRoot: $projectRoot,
             provider: $provider,
-            model: $this->nullableString($data['model'] ?? null, 'model'),
+            model: $model,
             apiKeyEnv: $this->nullableString($data['api_key_env'] ?? null, 'api_key_env'),
             baseUrl: $this->nullableString($data['base_url'] ?? null, 'base_url'),
             concurrency: $this->positiveInt($data['concurrency'] ?? 5, 'concurrency'),

@@ -1,0 +1,21 @@
+{
+    "interactions": [
+        {
+            "request": {
+                "method": "POST",
+                "uri": "http://localhost:11434/api/chat",
+                "headers": {
+                    "content-type": "application/json"
+                },
+                "body": "{\"model\":\"llama4\",\"messages\":[{\"role\":\"system\",\"content\":\"You are a security reviewer.\"},{\"role\":\"user\",\"content\":\"payload\"}],\"stream\":false,\"format\":{\"type\":\"object\"},\"options\":{\"temperature\":0.0}}"
+            },
+            "response": {
+                "status": 500,
+                "headers": {
+                    "content-type": "application/json; charset=utf-8"
+                },
+                "body": "{\"error\":\"internal server error\"}"
+            }
+        }
+    ]
+}

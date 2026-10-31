@@ -149,6 +149,13 @@ YAML);
         $this->assertLoadFails("provider: gemini\n", 'provider', 'openai, anthropic, ollama');
     }
 
+    public function testOllamaWithoutModelFails(): void
+    {
+        $this->assertLoadFails("provider: ollama\n", 'ollama needs a model in semantic-sec.yaml');
+        $this->write("provider: ollama\nmodel: llama4\n");
+        self::assertSame('llama4', (new ConfigLoader())->load($this->dir)->model);
+    }
+
     public function testListKeysMustBeListsOfStrings(): void
     {
         $this->assertLoadFails("paths: app\n", 'paths');
