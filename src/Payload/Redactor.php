@@ -24,7 +24,8 @@ namespace TusharKhan\SemanticSec\Payload;
  *  - three or more of lower, upper, digit, symbol: 3.3
  *  - anything else: 4.0
  * Exclusions (checked first):
- *  - class-name shape (`A\B\C`, `A\B@m`, `A::m`) or UPPER_SNAKE constant;
+ *  - class-name shape (`A\B\C`, `A\B@m`, `A::m`; a part may hold one short vowel-less word like `Ghl`) or UPPER_SNAKE constant;
+ *  - dotted or wildcard key whose segments are `*`, digits or word-like (`numbersInfo.*.friendly_name`);
  *  - strict camelCase or PascalCase words (every hump has a lowercase letter);
  *  - `scheme://` URLs (their query pieces are still checked as tokens);
  *  - path or route shape: contains `/` or `{`, no `+`, no trailing `=`, and every segment
@@ -380,7 +381,7 @@ final class Redactor
 
     private function isExcluded(string $c): bool
     {
-        if ($this->isClassName($c) || $this->isUpperSnake($c) || $this->isCamelIdentifier($c)) {
+        if ($this->isClassName($c) || $this->isUpperSnake($c) || $this->isCamelIdentifier($c) || $this->isDottedKey($c)) {
             return true;
         }
         if ($this->isUrl($c)) {
@@ -418,7 +419,22 @@ final class Redactor
             return false;
         }
         foreach (preg_split('~[\\\\:@]+~', $c) ?: [] as $part) {
-            if ($part !== '' && ! $this->isCamel($part) && preg_match('~^(?:[a-z0-9_]+|[A-Z0-9_]+)$~', $part) !== 1) {
+            if ($part !== '' && ! $this->isCamel($part, 1) && preg_match('~^(?:[a-z0-9_]+|[A-Z0-9_]+)$~', $part) !== 1) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // A validation or config key: `.`-separated segments that are each `*`, digits, or word-like.
+    private function isDottedKey(string $c): bool
+    {
+        if (preg_match('~^[A-Za-z_][\w-]*(?:\.(?:\*|\d+|[A-Za-z_][\w-]*))+$~', $c) !== 1) {
+            return false;
+        }
+        foreach (explode('.', $c) as $segment) {
+            if ($segment !== '*' && ! ctype_digit($segment) && ! $this->isWordish($segment)) {
                 return false;
             }
         }
@@ -463,7 +479,8 @@ final class Redactor
         return preg_match('~\d~', (string) preg_replace('~[A-Z]\d+~', '', $c)) !== 1 && $this->isCamel($c) && $this->entropy($c) <= 4.5;
     }
 
-    private function isCamel(string $c): bool
+    // $vowelless: how many short (<= 4 letters) vowel-less words may pass, e.g. `Ghl` or `Cfg` in a class name.
+    private function isCamel(string $c, int $vowelless = 0): bool
     {
         if (preg_match('~[a-z]~', $c) !== 1) {
             return false;
@@ -478,7 +495,10 @@ final class Redactor
         foreach ($words[0] as $w) {
             $w = strtolower($w);
             if (preg_match('~[aeiouy]~', $w) !== 1 && ! in_array($w, ['pdf', 'url', 'sql', 'csv', 'xml', 'dto', 'php', 'api', 'db', 'ip', 'ui', 'qr', 'js', 'css', 'html', 'http', 'ssl', 'tls', 'jwt', 'sms', 'cdn', 'crm', 'hr', 'ssn', 'tz'], true)) {
-                return false;
+                if ($vowelless < 1 || strlen($w) > 4) {
+                    return false;
+                }
+                $vowelless--;
             }
         }
 

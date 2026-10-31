@@ -73,6 +73,7 @@ final class CallGraphBuilder
         $this->records = [];
         $entry = $this->entry($route);
         $nodes = [$entry];
+        $edges = [];
         $visited = [$entry->id => true];
         for ($i = 0; $i < count($nodes); $i++) {
             $node = $nodes[$i];
@@ -81,13 +82,14 @@ final class CallGraphBuilder
 
                 continue;
             }
-            foreach ($this->callees($node) as [$method, $bound, $site, $assumed, $text]) {
+            foreach ($this->callees($node) as [$method, $bound, $site, $assumed, $text, $call]) {
                 if ($method instanceof FunctionSymbol) {
                     $id = $method->id();
                 } else {
                     $bound = $bound !== null && $bound !== $method->class ? $bound : null;
                     $id = $bound === null ? $method->id() : $bound.'::'.$method->name;
                 }
+                $edges[] = ['caller' => $node->id, 'start' => $call->getStartFilePos(), 'end' => $call->getEndFilePos(), 'callee' => $id];
                 if (isset($visited[$id])) {
                     $this->records[] = ['file' => $site->file, 'line' => $site->line, 'kind' => 'already-visited', 'text' => $text, 'suffix' => ' → '.$id];
 
@@ -102,7 +104,7 @@ final class CallGraphBuilder
         $unresolved = array_map(static fn (array $r): string => sprintf('%s:%d: [%s] %s%s', $r['file'], $r['line'], $r['kind'], $r['text'], $r['suffix']), $this->records);
         $this->records = [];
 
-        return new ExecutionPath($nodes, array_values(array_unique($unresolved)));
+        return new ExecutionPath($nodes, array_values(array_unique($unresolved)), $edges);
     }
 
     private function entry(RouteEntry $route): PathNode
@@ -136,7 +138,7 @@ final class CallGraphBuilder
         }
     }
 
-    /** @return list<array{MethodSymbol|FunctionSymbol, ?string, CallSite, bool, string}> callees in source order: method or app function, bound class, site, assumed, call text */
+    /** @return list<array{MethodSymbol|FunctionSymbol, ?string, CallSite, bool, string, Expr\CallLike}> callees in source order: method or app function, bound class, site, assumed, call text, call */
     private function callees(PathNode $node): array
     {
         $fn = $node->closure ?? $node->method?->node;
@@ -151,7 +153,7 @@ final class CallGraphBuilder
         foreach (self::calls($stmts) as $call) {
             $target = $this->resolve($call, $node, $positions);
             if ($target !== null) {
-                $out[] = [$target[0], $target[1], new CallSite($node->file, $call->getStartLine(), $this->isConditional($call, $positions)), $target[2], $this->print($call)];
+                $out[] = [$target[0], $target[1], new CallSite($node->file, $call->getStartLine(), $this->isConditional($call, $positions)), $target[2], $this->print($call), $call];
             }
         }
 

@@ -15,7 +15,6 @@ Models:
   App\Models\Invoice: $fillable = ["number", "amount", "status"]; $guarded not declared
 
 Unresolved calls:
-  - app/Http/Controllers/Vuln/InvoiceController.php:19: [eloquent] \App\Models\Invoice::findOrFail($id)
   - app/Http/Controllers/Vuln/InvoiceController.php:21: [unknown-type] response()->json($invoice)
 
 Framework notes:

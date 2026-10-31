@@ -15,6 +15,7 @@ use TusharKhan\SemanticSec\Framework\Laravel\LaravelContext;
 use TusharKhan\SemanticSec\Framework\Laravel\RouteAction;
 use TusharKhan\SemanticSec\Framework\Laravel\RouteEntry;
 use TusharKhan\SemanticSec\Parsing\AstGenerator;
+use TusharKhan\SemanticSec\Parsing\CallGraph\CallSite;
 use TusharKhan\SemanticSec\Parsing\CallGraph\ExecutionPath;
 use TusharKhan\SemanticSec\Parsing\CallGraph\PathNode;
 use TusharKhan\SemanticSec\Parsing\ParseResult;
@@ -346,18 +347,22 @@ final class PayloadBuilderTest extends TestCase
     {
         $candidate = self::project(8000)[2]['PUT /posts/{post}'];
         $payloads = self::payloads('PUT /posts/{post}', 1350);
-        $expected = array_values(array_filter($candidate->path->unresolved, static fn (string $u): bool => ! str_contains($u, '[facade]')));
+        $expected = array_values(array_filter($candidate->path->unresolved, static fn (string $u): bool => ! str_contains($u, '[facade]') && ! str_contains($u, '[eloquent]')));
+        $key = static fn (string $u): string => (string) preg_replace('~^(\S+?):\d+: ~', '$1 ', $u);
         $seen = [];
         foreach ($payloads as $payload) {
             preg_match_all('~^  - (\S+?):(\d+): \[.*$~m', $payload->context, $m, PREG_SET_ORDER);
             foreach ($m as [$line, $file, $n]) {
-                $seen[] = substr($line, 4);
+                $entry = (string) preg_replace('~ ×\d+$~u', '', substr($line, 4));
+                self::assertContains($entry, $expected);
+                $seen[$key($entry)] = true;
                 self::assertMatchesRegularExpression('~^// FILE: '.preg_quote($file, '~').' ~m', $payload->code, $line);
             }
         }
-        sort($expected);
-        sort($seen);
-        self::assertSame($expected, $seen);
+        // Every entry is listed, collapsed into an earlier one of the same text, or an already-visited call shown in its part.
+        foreach ($expected as $entry) {
+            self::assertTrue(isset($seen[$key($entry)]) || str_contains($entry, '[already-visited]'), $entry);
+        }
         self::assertStringNotContainsString('  - app/Services/PostRepository.php:15: [', $payloads[0]->context);
     }
 
@@ -397,6 +402,29 @@ final class PayloadBuilderTest extends TestCase
         self::assertMatchesRegularExpression('~^routes/web\.php:\d+: payload 001-put-posts-post-1 is \d+ tokens, over max_payload_tokens 20~', $warnings[0]);
     }
 
+    public function testTinyLimitStillKeepsEveryPartsSignatureLine(): void
+    {
+        $candidate = self::project(8000)[2]['PUT /posts/{post}'];
+        [$payloads, $warnings] = self::builder(20)->build($candidate, 1);
+
+        self::assertNotSame([], $payloads);
+        foreach ($payloads as $payload) {
+            self::assertMatchesRegularExpression('~^L\d+\| .*function \w+\(~m', $payload->code, $payload->id);
+        }
+        self::assertStringContainsString('public function update(', $payloads[0]->code);
+        self::assertNotSame([], array_filter($warnings, static fn (string $w): bool => str_contains($w, 'over max_payload_tokens')));
+    }
+
+    public function testOnePartPayloadCarriesNoUpstreamSummary(): void
+    {
+        $candidate = self::project(8000)[2]['GET /posts/{id}/raw'];
+        [$payloads] = self::builder(20)->build($candidate, 1);
+
+        self::assertCount(1, $payloads);
+        self::assertStringNotContainsString('Upstream summary:', $payloads[0]->context);
+        self::assertMatchesRegularExpression('~^L\d+\| ~m', $payloads[0]->code);
+    }
+
     public function testRedactionApplied(): void
     {
         [$payload] = self::payloads('GET /posts/{id}/raw');
@@ -415,6 +443,31 @@ final class PayloadBuilderTest extends TestCase
         self::assertCount(1, $payloads);
         self::assertSame([], $warnings);
         self::assertStringContainsString("// FILE: app/Gone.php :: App\\Gone::show (L5-L9)\n// App\\Gone::show: source not available", $payloads[0]->code);
+    }
+
+    public function testUnresolvedSectionDropsNoiseAndCountsRepeats(): void
+    {
+        $route = new RouteEntry(['GET'], 'gone', null, new RouteAction('App\Gone', 'show'), [], [], [], null, 'routes/web.php', 3);
+        $entry = new PathNode('App\Gone::show', null, null, 'app/Gone.php', 5, 30, 0, null, null);
+        $helper = new PathNode('helper()', null, null, 'app/helpers.php', 1, 3, 1, new CallSite('app/Gone.php', 6, false), 'App\Gone::show');
+        $unresolved = [
+            'app/Gone.php:6: [eloquent] Post::query()',
+            'app/Gone.php:7: [facade] DB::table(\'x\')',
+            'app/Gone.php:8: [already-visited] helper() → helper()',
+            "app/Gone.php:9: [unknown-type] auth()->guard('api')->user()",
+            "app/Gone.php:12: [unknown-type] auth()->guard('api')->user()",
+            "app/Gone.php:15: [unknown-type] auth()->guard('api')->user()",
+            'app/Gone.php:20: [function] mystery()',
+        ];
+        $candidate = new Candidate($route, new ExecutionPath([$entry, $helper], $unresolved), [Category::Idor], ['idor' => 'r']);
+        [[$payload]] = self::builder(8000)->build($candidate, 1);
+
+        self::assertStringNotContainsString('[eloquent]', $payload->context);
+        self::assertStringNotContainsString('[facade]', $payload->context);
+        self::assertStringNotContainsString('[already-visited]', $payload->context);
+        self::assertStringContainsString("  - app/Gone.php:9: [unknown-type] auth()->guard('api')->user() ×3\n", $payload->context);
+        self::assertSame(1, substr_count($payload->context, "auth()->guard('api')->user()"));
+        self::assertStringContainsString('  - app/Gone.php:20: [function] mystery()', $payload->context);
     }
 
     public function testGeneratedHeadersSurviveRedaction(): void

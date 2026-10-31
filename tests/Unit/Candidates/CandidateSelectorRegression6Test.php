@@ -116,6 +116,19 @@ final class CandidateSelectorRegression6Test extends TestCase
         self::assertTrue($candidate === null || ! in_array(Category::Idor, $candidate->categories, true), $key.' selected: '.implode('; ', $candidate->reasons ?? []));
     }
 
+    public function testReasonSkipsAFollowedHelperCalledTwice(): void
+    {
+        $reason = self::probes()[0]['POST /m1']->reasons['missing_authorization'] ?? '';
+        self::assertStringNotContainsString('send_error', $reason);
+    }
+
+    public function testReasonNamesTheRealUnresolvedCall(): void
+    {
+        $reason = self::probes()[0]['POST /m2']->reasons['missing_authorization'] ?? '';
+        self::assertStringContainsString('unresolved call $request->user()->mystery()', $reason);
+        self::assertStringNotContainsString('note(', $reason);
+    }
+
     public function testNonDestroyStyleActionStaysUnselected(): void
     {
         self::assertArrayNotHasKey('GET /d/show', self::probes()[0]);

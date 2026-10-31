@@ -6,7 +6,7 @@ declare(strict_types=1);
 $m = fn ($n, $body = '') => "<?php namespace App\\Models; class $n extends \\Illuminate\\Database\\Eloquent\\Model { $body }";
 $gets = ['p1', 'p2', 'p3', 'p4', 'p7', 'p9', 'p14', 'p15', 'p16', 'p17', 'p18', 'p19', 'p20', 'p21', 'p22', 'r1', 'r2', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'r10', 'r11'];
 $ids = ['p5', 'p5b', 'p5c', 'k4', 'k5'];
-$posts = ['q1', 'q2', 'q6', 'q7', 'q8', 'q9', 'k1', 'k2', 'k3'];
+$posts = ['q1', 'q2', 'q6', 'q7', 'q8', 'q9', 'k1', 'k2', 'k3', 'm1', 'm2'];
 $r = "<?php\nuse App\\Http\\Controllers\\F;\nuse App\\Http\\Controllers\\D;\nuse Illuminate\\Support\\Facades\\Route;\nRoute::middleware('auth')->group(function () {\n";
 foreach ($gets as $a) {
     $r .= "Route::get('$a', [F::class, '$a']);\n";
@@ -43,6 +43,7 @@ PHP,
 use App\Models\Post;
 use Illuminate\Support\Facades\DB;
 function wipe_posts() { Post::query()->delete(); }
+function send_error($m) { return response()->json(['message' => $m]); }
 function cron_outer() { return cron_inner(); }
 function cron_inner() { DB::table('attendances')->insert(['a' => 1]); }
 if (! function_exists('guarded_helper')) {
@@ -121,6 +122,18 @@ class F extends Controller
     public function q7(Request $request) { $request->user()->tags()->toggle($request->input('tags')); return 1; }
     public function q8(Request $request) { $request->user()->roles()->updateExistingPivot($request->role, ['active' => true]); return 1; }
     public function q9(Request $request) { $ids = $request->input('roles'); auth()->user()->roles()->sync($ids); return 1; }
+    // M2: the reason names the call that really is unresolved
+    public function m1(Request $request) {
+        if (! $request->title) { return send_error('a'); }
+        Post::query()->delete();
+        return send_error('b');
+    }
+    public function m2(Request $request) {
+        $this->note(1); $this->note(2);
+        Post::query()->delete();
+        return $request->user()->mystery();
+    }
+    private function note($n) { return $n; }
     // Controls: these stay self-scoped or covered
     public function k1(Request $request) { $request->user()->roles()->detach(); return 1; }
     public function k2(Request $request) { $request->user()->tags()->sync([1, 2]); return 1; }

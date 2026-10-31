@@ -253,6 +253,43 @@ final class RedactorTest extends TestCase
         self::assertSame("\$u = 'https://api.telegram.org/bot5512345678:<redacted>/sendMessage';", $r->redact("\$u = 'https://api.telegram.org/bot5512345678:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/sendMessage';"));
     }
 
+    /** @return array<string, array{string}> */
+    public static function keptIdentifierProvider(): array
+    {
+        return [
+            'FQN action in a quoted value' => ["'action' => 'App\\Http\\Controllers\\Ghl\\GhlSetupController::connected'"],
+            'FQN action context line' => ['  action: App\\Http\\Controllers\\CfgController::h2'],
+            'FQN in an unresolved-call line' => ['  - routes/api.php:7: [already-visited] $this->connected() → App\\Http\\Controllers\\Ghl\\GhlSetupController::connected'],
+            'Class::method string' => ["'uses' => 'GhlSetupController::connected'"],
+            'FQN under a token key' => ["'auth_token' => 'App\\Services\\Sms\\SmsGatewayTokenFactory::make'"],
+            'wildcard rule key' => ["'numbersInfo.*.friendly_name' => 'required|string',"],
+            'wildcard rule key as an array index' => ["\$rules['numbersInfo.*.friendly_name'] = 'required';"],
+            'nested wildcard rule key' => ["'contacts.*.phoneNumbers.*.countryCode' => 'nullable',"],
+        ];
+    }
+
+    #[DataProvider('keptIdentifierProvider')]
+    public function testIdentifierShapesAreKept(string $line): void
+    {
+        self::assertSame($line, (new Redactor())->redact($line));
+    }
+
+    /** @return array<string, array{string, string}> */
+    public static function nearMissProvider(): array
+    {
+        return [
+            'secret pretending to be Class::method' => ["\$k = 'Zq8xK2mR9vL4tW7yB3nC5::abc';", 'Zq8xK2mR9vL4tW7yB3nC5'],
+            'secret in a namespaced shape' => ["\$k = 'Ab\\Zq8xK2mR9vL4tW7yB3nC5';", 'Zq8xK2mR9vL4tW7yB3nC5'],
+            'secret as a dotted segment' => ["\$k = 'items.*.Zq8xK2mR9vL4tW7yB3nC5';", 'Zq8xK2mR9vL4tW7yB3nC5'],
+        ];
+    }
+
+    #[DataProvider('nearMissProvider')]
+    public function testSecretsInIdentifierShapesAreStillRedacted(string $line, string $secret): void
+    {
+        self::assertStringNotContainsString($secret, (new Redactor())->redact($line));
+    }
+
     public function testEmptyAndPlainTextUnchanged(): void
     {
         self::assertSame('', (new Redactor())->redact(''));

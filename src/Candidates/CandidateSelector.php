@@ -270,35 +270,45 @@ final class CandidateSelector
             $cacheKey = $fn === null ? null : spl_object_id($fn).':'.($node->method->class ?? '');
             $this->bodies[$node->id] = $cacheKey === null ? new FunctionBody($this->symbols, $node) : ($this->bodyCache[$cacheKey] ??= new FunctionBody($this->symbols, $node));
         }
-        // The call expression behind each edge: the only call at the site's line with the callee's name.
-        foreach ($path->nodes as $node) {
-            $parent = $node->calledBy === null ? null : ($this->bodies[$node->calledBy] ?? null);
-            $name = self::calleeName($node);
-            if ($parent === null || $node->calledFrom === null || $name === null) {
-                continue;
-            }
-            $found = [];
-            foreach ($parent->calls as $call) {
-                if ($call->getStartLine() === $node->calledFrom->line && ($call instanceof Expr\FuncCall) === ($node->method === null) && self::shortName(self::callName($call)) === $name) {
-                    $found[] = $call;
+        // The call expression behind every edge, already-visited call sites included: matched by its file positions and name.
+        $byCaller = [];
+        $sitesOf = [];
+        foreach ($path->edges as $edge) {
+            $byCaller[$edge['caller']][$edge['start'].':'.$edge['end']][] = $edge['callee'];
+        }
+        foreach ($byCaller as $caller => $sites) {
+            foreach (isset($this->bodies[$caller]) ? $this->bodies[$caller]->calls : [] as $call) {
+                foreach ($sites[$call->getStartFilePos().':'.$call->getEndFilePos()] ?? [] as $calleeId) {
+                    $callee = $this->nodes[$calleeId] ?? null;
+                    if ($callee !== null && ($call instanceof Expr\FuncCall) === ($callee->method === null) && self::shortName(self::callName($call)) === self::calleeName($callee)) {
+                        $this->callees[spl_object_id($call)] = $callee;
+                        $sitesOf[$callee->id][] = [$call, $this->nodes[$caller]];
+                    }
                 }
-            }
-            if (count($found) === 1) {
-                $this->callees[spl_object_id($found[0])] = $node;
             }
         }
         $entry = $path->entry();
         $this->routeVars[$entry->id] = $this->entryVariables($route, $this->bodies[$entry->id]);
         foreach ($path->nodes as $node) {
-            foreach ($this->argumentPairs($node) as [$arg, $param, $parent]) {
-                $body = $this->bodies[$parent->id];
-                if ($arg instanceof Expr\Variable && is_string($arg->name) && isset($this->routeVars[$parent->id][$arg->name])) {
-                    [$routeParam, $model] = $this->routeVars[$parent->id][$arg->name];
-                    // A bound model counts only while the variable still holds it.
-                    $this->routeVars[$node->id][$param] = [$routeParam, $model !== null && $body->auth->isUntouchedParam($arg->name, $arg->getStartFilePos()) ? $model : null];
+            $held = [];
+            $sites = $this->argumentPairs($node, $sitesOf[$node->id] ?? []);
+            foreach ($sites as $pairs) {
+                foreach ($pairs as [$arg, $param, $parent]) {
+                    $body = $this->bodies[$parent->id];
+                    if ($arg instanceof Expr\Variable && is_string($arg->name) && isset($this->routeVars[$parent->id][$arg->name])) {
+                        [$routeParam, $model] = $this->routeVars[$parent->id][$arg->name];
+                        // A bound model counts only while the variable still holds it.
+                        $held[$param][] = [$routeParam, $model !== null && $body->auth->isUntouchedParam($arg->name, $arg->getStartFilePos()) ? $model : null];
+                    }
+                    if ($this->isMassInput($arg, $body, $this->massVars[$parent->id] ?? [])) {
+                        $this->massVars[$node->id][$param] = true;
+                    }
                 }
-                if ($this->isMassInput($arg, $body, $this->massVars[$parent->id] ?? [])) {
-                    $this->massVars[$node->id][$param] = true;
+            }
+            // A parameter holds a route variable only when every call site passes that same one.
+            foreach ($held as $param => $values) {
+                if (count($values) === count($sites) && count(array_unique(array_map('serialize', $values))) === 1) {
+                    $this->routeVars[$node->id][$param] = $values[0];
                 }
             }
         }
@@ -342,32 +352,27 @@ final class CandidateSelector
         return $node->method?->node->params ?? ($node->closure instanceof Stmt\Function_ ? $node->closure->params : []);
     }
 
-    /** @return list<array{0: Expr, 1: string, 2: PathNode}> argument in the caller, callee parameter, caller */
-    private function argumentPairs(PathNode $node): array
+    /**
+     * @param  list<array{Expr\CallLike, PathNode}>  $sites  every call reaching the node, and its caller
+     * @return list<list<array{0: Expr, 1: string, 2: PathNode}>> per call site: argument in the caller, callee parameter, caller
+     */
+    private function argumentPairs(PathNode $node, array $sites): array
     {
-        if (self::calleeName($node) === null || $node->calledBy === null || ! isset($this->nodes[$node->calledBy])) {
-            return [];
-        }
-        $call = null;
-        foreach ($this->bodies[$node->calledBy]->calls as $candidate) {
-            if (($this->callees[spl_object_id($candidate)] ?? null) === $node) {
-                $call = $candidate;
-            }
-        }
-        if ($call === null) {
-            return [];
-        }
-        $pairs = [];
+        $out = [];
         $params = self::params($node);
-        foreach (AuthExpressions::args($call) as $i => $arg) {
-            $param = $params[$i] ?? null;
-            if ($param === null || $param->variadic || ! $param->var instanceof Expr\Variable || ! is_string($param->var->name)) {
-                break;
+        foreach ($sites as [$call, $caller]) {
+            $pairs = [];
+            foreach (AuthExpressions::args($call) as $i => $arg) {
+                $param = $params[$i] ?? null;
+                if ($param === null || $param->variadic || ! $param->var instanceof Expr\Variable || ! is_string($param->var->name)) {
+                    break;
+                }
+                $pairs[] = [$arg, $param->var->name, $caller];
             }
-            $pairs[] = [$arg, $param->var->name, $this->nodes[$node->calledBy]];
+            $out[] = $pairs;
         }
 
-        return $pairs;
+        return $out;
     }
 
     // A callee's checks count only when every call site back to the entry is unconditional and nothing on the way is assumed.
@@ -488,7 +493,7 @@ final class CandidateSelector
             }
         }
         if ($uncovered !== []) {
-            $reasons[Category::Idor->value] = ($deep ? '--deep: ' : '').'identifier '.implode(', ', $uncovered).' not covered by an authorization check';
+            $reasons[Category::Idor->value] = ($deep ? '--deep: ' : '').'identifier '.implode(', ', array_unique($uncovered)).' not covered by an authorization check';
 
             return;
         }

@@ -121,8 +121,10 @@ final class PayloadBuilder
         }
         [$policyBlocks, $policyNotes] = $this->policies($checks, $warnings);
         [$head, $notes] = $this->context($candidate, $formRequests);
-        $unresolved = array_values(array_filter($path->unresolved, static fn (string $u): bool => ! str_contains($u, ': [facade] ')));
-        $context = self::assemble($head, self::policySection($policyBlocks, $policyNotes, true), $unresolved, $notes);
+        // Facade and Eloquent calls are framework code the LLM already knows; they only add noise.
+        $unresolved = array_values(array_filter($path->unresolved, static fn (string $u): bool => ! str_contains($u, ': [facade] ') && ! str_contains($u, ': [eloquent] ')));
+        $allIds = array_fill_keys(array_map(static fn (PathNode $n): string => $n->id, $path->nodes), true);
+        $context = self::assemble($head, self::policySection($policyBlocks, $policyNotes, true), self::listed($unresolved, $allIds), $notes);
 
         if ($this->fits($context, [...$blocks, ...$policyBlocks])) {
             return [new Payload($this->id($number, $route, 1), $candidate, $this->finish($context), $this->code([...$blocks, ...$policyBlocks]), 1, 1, false)];
@@ -152,7 +154,7 @@ final class PayloadBuilder
                 }
             }
 
-            return $this->withSummary(self::assemble($head, self::policySection($policyBlocks, $policyNotes, $first), $own, $notes), $summary, array_values($earlier), $nodeChecks, $elsewhere);
+            return $this->withSummary(self::assemble($head, self::policySection($policyBlocks, $policyNotes, $first), self::listed($own, $ids), $notes), $summary, array_values($earlier), $nodeChecks, $elsewhere);
         };
         foreach ($this->groups($blocks) as $group) {
             $current = [];
@@ -180,6 +182,10 @@ final class PayloadBuilder
             }
         }
 
+        // One part has nothing upstream to summarise.
+        if (count($parts) === 1) {
+            $parts[0][0] = $context;
+        }
         $out = [];
         foreach ($parts as $i => [$ctx, $partBlocks, $truncated]) {
             $out[] = new Payload($this->id($number, $route, $i + 1), $candidate, $this->finish($ctx), $this->code($partBlocks), $i + 1, count($parts), $truncated);
@@ -271,7 +277,8 @@ final class PayloadBuilder
     }
 
     /**
-     * The longest prefix of the node's lines that fits beside the extra blocks; at least the header.
+     * The longest prefix of the node's lines that fits beside the extra blocks; at least through the signature line, even
+     * over the limit (build() then warns), since an empty part tells the reviewer nothing.
      *
      * @param  Block  $block
      * @param  list<Block>  $extra
@@ -279,7 +286,12 @@ final class PayloadBuilder
      */
     private function truncate(string $context, array $block, array $extra): array
     {
-        $low = 0;
+        $low = self::signatureLines($block);
+        // A docblock gives way first when it alone would push the signature over the limit.
+        if (! $this->fits($context, [['node' => $block['node'], 'lines' => array_slice($block['lines'], 0, $low), 'cut' => true], ...$extra])) {
+            $block['lines'] = array_values(array_filter($block['lines'], static fn (array $l): bool => $l['line'] >= $block['node']->startLine));
+            $low = self::signatureLines($block);
+        }
         $high = count($block['lines']);
         while ($low < $high) {
             $mid = intdiv($low + $high + 1, 2);
@@ -291,6 +303,28 @@ final class PayloadBuilder
         }
 
         return ['node' => $block['node'], 'lines' => array_slice($block['lines'], 0, $low), 'cut' => true];
+    }
+
+    /**
+     * How many leading lines run through the function's signature line (docblock lines come first).
+     *
+     * @param  Block  $block
+     */
+    private static function signatureLines(array $block): int
+    {
+        $start = $block['node']->startLine;
+        $fallback = null;
+        foreach ($block['lines'] as $i => $line) {
+            if ($line['line'] < $start) {
+                continue;
+            }
+            $fallback ??= $i + 1;
+            if (preg_match('/\b(function|fn)\b/', $line['text']) === 1) {
+                return $i + 1;
+            }
+        }
+
+        return $fallback ?? min(1, count($block['lines']));
     }
 
     /**
@@ -399,6 +433,34 @@ final class PayloadBuilder
                 }
             }
             $out[] = $owner;
+        }
+
+        return $out;
+    }
+
+    /**
+     * The unresolved calls a part shows: an already-visited call whose target's code is in the part is dropped, and
+     * repeats of the same call text in one file collapse into the first, with a count.
+     *
+     * @param  list<string>  $unresolved  "file:line: [kind] text"
+     * @param  array<string, true>  $ids  node ids whose code is in the part
+     * @return list<string>
+     */
+    private static function listed(array $unresolved, array $ids): array
+    {
+        $first = [];
+        $count = [];
+        foreach ($unresolved as $u) {
+            if (preg_match('~^(.*?):\d+: (\[already-visited\] .*) → (.+)$~', $u, $m) === 1 && isset($ids[$m[3]])) {
+                continue;
+            }
+            $key = preg_match('~^(.*?):\d+: (\[.*)$~s', $u, $m) === 1 ? $m[1]."\0".$m[2] : $u;
+            $first[$key] ??= $u;
+            $count[$key] = ($count[$key] ?? 0) + 1;
+        }
+        $out = [];
+        foreach ($first as $key => $u) {
+            $out[] = $count[$key] > 1 ? $u.' ×'.$count[$key] : $u;
         }
 
         return $out;
