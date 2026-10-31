@@ -13,10 +13,11 @@ use TusharKhan\SemanticSec\Parsing\AstGenerator;
 use TusharKhan\SemanticSec\Parsing\FileFinder;
 use TusharKhan\SemanticSec\Parsing\ProjectParser;
 use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTableBuilder;
+use TusharKhan\SemanticSec\Payload\PayloadBuilder;
 
 final class BenchmarkMaps
 {
-    /** @var array<string, array{AuthorizationMap, CandidateSelector}> */
+    /** @var array<string, array{AuthorizationMap, CandidateSelector, PayloadBuilder}> */
     private static array $cache = [];
 
     public static function build(string $app): AuthorizationMap
@@ -29,7 +30,12 @@ final class BenchmarkMaps
         return self::project($app)[1];
     }
 
-    /** @return array{AuthorizationMap, CandidateSelector} */
+    public static function payloadBuilder(string $app): PayloadBuilder
+    {
+        return self::project($app)[2];
+    }
+
+    /** @return array{AuthorizationMap, CandidateSelector, PayloadBuilder} */
     private static function project(string $app): array
     {
         if (isset(self::$cache[$app])) {
@@ -45,6 +51,7 @@ final class BenchmarkMaps
         return self::$cache[$app] = [
             $context->buildAuthorizationMap($parsed, $symbols, $config, $framework),
             $context->candidateSelector($parsed, $symbols, $config, $framework),
+            $context->payloadBuilder($parsed, $symbols, $config, $framework),
         ];
     }
 }

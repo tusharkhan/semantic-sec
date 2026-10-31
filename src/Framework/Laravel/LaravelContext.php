@@ -14,6 +14,7 @@ use TusharKhan\SemanticSec\Parsing\ParseResult;
 use TusharKhan\SemanticSec\Parsing\Symbols\AuthUserModel;
 use TusharKhan\SemanticSec\Parsing\Symbols\RelationResolver;
 use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTable;
+use TusharKhan\SemanticSec\Payload\PayloadBuilder;
 
 final class LaravelContext implements FrameworkContext
 {
@@ -106,6 +107,17 @@ final class LaravelContext implements FrameworkContext
         $graphs = new CallGraphBuilder($symbols, $types, $this->facadeMap(), $config->maxDepth);
 
         return new CandidateSelector($symbols, $graphs, $extractor, $types, $relations, $config);
+    }
+
+    /** The SPEC §9 payload builder for this project; its warnings were already reported by buildAuthorizationMap(). */
+    public function payloadBuilder(ParseResult $parsed, SymbolTable $symbols, Config $config, DetectedFramework $framework): PayloadBuilder
+    {
+        $eval = new ConstantEvaluator();
+        [$registry] = MiddlewareRegistry::fromProject($parsed, $symbols, $framework, $eval, $config->authMiddleware);
+        [$extractor] = $this->extractor($parsed, $symbols, $config, $registry, $eval);
+        [$policies] = PolicyRegistry::fromProject($symbols, $eval);
+
+        return new PayloadBuilder($parsed, $symbols, $extractor, $policies, $this->promptContext(), $config);
     }
 
     /** @return array{AuthCheckExtractor, list<string>} */
