@@ -7,7 +7,7 @@ namespace TusharKhan\SemanticSec\Tests\Integration\Engine;
 use PHPUnit\Framework\TestCase;
 use TusharKhan\SemanticSec\Analysis\Category;
 use TusharKhan\SemanticSec\Console\AnalysisPipeline;
-use TusharKhan\SemanticSec\Console\MapBuilder;
+use TusharKhan\SemanticSec\Console\PipelineResult;
 use TusharKhan\SemanticSec\Engine\AnalysisResult;
 use TusharKhan\SemanticSec\Engine\Baseline;
 use TusharKhan\SemanticSec\Engine\Engine;
@@ -50,7 +50,8 @@ final class BenchmarkEngineTest extends TestCase
 
     public function testScriptedRunReportsTheLiveFindingAndHonoursTheBenchmarkSuppression(): void
     {
-        [$payloads, $candidates, $system] = $this->pipeline();
+        $run = (new AnalysisPipeline())->run($this->root, null, null, false, null);
+        [$payloads, $candidates] = [$run->payloads(), count($run->results)];
         $live = self::liveFinding();
         $answers = [];
         foreach ($payloads as $payload) {
@@ -65,9 +66,9 @@ final class BenchmarkEngineTest extends TestCase
         NetworkTrap::install();
         try {
             $client = new FakeClient($answers);
-            $first = $this->engine($client, $system)->run($payloads, $candidates);
+            $first = $this->engine($client, $run)->run($payloads, $candidates);
             $again = new FakeClient([]);
-            $second = $this->engine($again, $system)->run($payloads, $candidates);
+            $second = $this->engine($again, $run)->run($payloads, $candidates);
         } finally {
             self::assertSame([], NetworkTrap::uninstall(), 'no network');
         }
@@ -99,25 +100,14 @@ final class BenchmarkEngineTest extends TestCase
         self::markTestIncomplete('pin the recorded result here once the cassette exists');
     }
 
-    /** @return array{list<Payload>, int, string} */
-    private function pipeline(): array
+    // The engine reuses the pipeline's parse, as AnalyzeCommand does.
+    private function engine(FakeClient $client, PipelineResult $run): Engine
     {
-        [$results, , $system] = (new AnalysisPipeline())->run($this->root, null, null, false, null);
-        $payloads = [];
-        foreach ($results as $r) {
-            array_push($payloads, ...$r['payloads']);
-        }
-
-        return [$payloads, count($results), $system];
-    }
-
-    private function engine(FakeClient $client, string $system): Engine
-    {
-        $project = (new MapBuilder())->project($this->root, null, null);
+        $project = $run->project;
 
         return new Engine(
             $client,
-            ResultCache::inProject($this->root, $project->config, $system, true),
+            ResultCache::inProject($this->root, $project->config, $run->system, true),
             new Fingerprinter($project->parsed, $project->symbols),
             new GroundingChecker($project->symbols),
             $project->parsed,

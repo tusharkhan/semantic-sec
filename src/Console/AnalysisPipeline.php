@@ -4,23 +4,31 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Console;
 
-use TusharKhan\SemanticSec\Candidates\Candidate;
-use TusharKhan\SemanticSec\Config\Config;
 use TusharKhan\SemanticSec\Framework\Laravel\LaravelContext;
 use TusharKhan\SemanticSec\Llm\SecurityPrompt;
-use TusharKhan\SemanticSec\Payload\Payload;
 
 /** Map, then candidates (SPEC §7), then payloads (SPEC §9) and the system prompt they go with; no LLM. */
 final class AnalysisPipeline
 {
+    private readonly MapBuilder $mapper;
+
+    public function __construct(?MapBuilder $mapper = null)
+    {
+        $this->mapper = $mapper ?? new MapBuilder();
+    }
+
     /**
      * @param  list<string>|null  $paths  project-relative report scope; null keeps the config's `paths`
-     * @return array{0: list<array{candidate: Candidate, payloads: list<Payload>}>, 1: list<string>, 2: string} results, warnings, system prompt
+     * @param  array{level?: mixed, min_confidence?: mixed, provider?: mixed, model?: mixed, concurrency?: mixed, budget_tokens?: mixed}  $overrides  CLI options, see Config::with()
+     *
+     * @throws \TusharKhan\SemanticSec\Config\ConfigException
+     * @throws \TusharKhan\SemanticSec\Framework\FrameworkNotDetected
      */
-    public function run(string $root, ?string $configPath, ?string $framework, bool $deep, ?array $paths): array
+    public function run(string $root, ?string $configPath, ?string $framework, bool $deep, ?array $paths, array $overrides = []): PipelineResult
     {
-        $project = (new MapBuilder())->project($root, $configPath, $framework);
-        $config = $paths === null ? $project->config : self::withPaths($project->config, $paths);
+        $mapped = $this->mapper->project($root, $configPath, $framework);
+        $config = $mapped->config->with($paths === null ? $overrides : [...$overrides, 'paths' => $paths]);
+        $project = new MappedProject($config, $mapped->framework, $mapped->parsed, $mapped->symbols, $mapped->map, $mapped->warnings);
         $context = new LaravelContext();
         $warnings = $project->warnings;
 
@@ -35,33 +43,6 @@ final class AnalysisPipeline
             $results[] = ['candidate' => $candidate, 'payloads' => $payloads];
         }
 
-        return [$results, $warnings, SecurityPrompt::system($context->promptContext(), $config->rulesets)];
-    }
-
-    /** @param list<string> $paths */
-    private static function withPaths(Config $c, array $paths): Config
-    {
-        return new Config(
-            $c->projectRoot,
-            $c->provider,
-            $c->model,
-            $c->apiKeyEnv,
-            $c->baseUrl,
-            $c->concurrency,
-            $c->budgetTokens,
-            $c->maxPayloadTokens,
-            $c->maxDepth,
-            $c->level,
-            $c->minConfidence,
-            $paths,
-            $c->exclude,
-            $c->laravelRouteFiles,
-            $c->sensitiveFields,
-            $c->authHelpers,
-            $c->rulesets,
-            $c->authMiddleware,
-            $c->effort,
-            $c->authorizationMiddleware,
-        );
+        return new PipelineResult($project, $results, $warnings, SecurityPrompt::system($context->promptContext(), $config->rulesets));
     }
 }

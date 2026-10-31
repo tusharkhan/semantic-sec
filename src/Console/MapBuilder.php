@@ -16,6 +16,14 @@ use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTableBuilder;
 
 final class MapBuilder
 {
+    private int $parses = 0;
+
+    // How many times this builder parsed a project; lets tests prove analyze parses once.
+    public function parses(): int
+    {
+        return $this->parses;
+    }
+
     /** @return array{0: AuthorizationMap, 1: DetectedFramework, 2: list<string>} */
     public function build(string $root, ?string $configPath, ?string $framework): array
     {
@@ -28,6 +36,7 @@ final class MapBuilder
     {
         $config = (new ConfigLoader())->load($root, $configPath);
         $detected = (new FrameworkDetector())->detect($root, $framework);
+        $this->parses++;
         $parsed = (new ProjectParser(new FileFinder(), new AstGenerator()))->parse($root, $config->exclude);
         $symbols = (new SymbolTableBuilder())->build($parsed);
         $map = (new LaravelContext())->buildAuthorizationMap($parsed, $symbols, $config, $detected);

@@ -100,13 +100,19 @@ final class AnalyzeDryRunTest extends TestCase
         return preg_match('~^Route:\n  (.+)$~m', $text, $m) === 1 ? $m[1] : '';
     }
 
-    public function testWithoutDryRunExitsTwo(): void
+    public function testWithoutDryRunNeedsAKey(): void
     {
-        $t = self::tester();
-        $code = $t->execute(['--project-root' => self::copy('laravel11-app')], ['capture_stderr_separately' => true]);
+        $saved = getenv('ANTHROPIC_API_KEY');
+        putenv('ANTHROPIC_API_KEY');
+        try {
+            $t = self::tester();
+            $code = $t->execute(['--project-root' => self::copy('laravel11-app')], ['capture_stderr_separately' => true]);
+        } finally {
+            $saved === false ? putenv('ANTHROPIC_API_KEY') : putenv('ANTHROPIC_API_KEY='.$saved);
+        }
 
         self::assertSame(2, $code);
-        self::assertStringContainsString('analysis needs the engine (M6); use --dry-run', $t->getErrorOutput());
+        self::assertStringContainsString('ANTHROPIC_API_KEY is not set', $t->getErrorOutput());
     }
 
     public function testBadFormatExitsTwo(): void

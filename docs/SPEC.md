@@ -288,23 +288,29 @@ semantic-sec baseline             # alias for analyze --generate-baseline
 | `--config` | `semantic-sec.yaml` in the project root, if present | |
 | `--project-root` | cwd | |
 | `--framework` | auto | `laravel` |
-| `--level` | **`high`** [new] | Minimum severity to report and to fail on |
-| `--min-confidence` | **`medium`** [new] | Below this: reported, but never fails the build |
-| `--format` | `console` | `console`, `json`, `sarif` |
-| `--output` | stdout | Writes the formatter output to a file; the console summary still goes to stderr |
+| `--level` | **`high`** [new] | Minimum severity to report and to fail on: `low`, `medium`, `high`, `critical` |
+| `--min-confidence` | **`medium`** [new] | Below this: reported (marked `not failing`), but never fails the build |
+| `--format` | `console` | `console`, `json`, `sarif`. Until M7 only `console`, plus `json` with `--dry-run` |
+| `--output` | stdout | Writes the formatter output to a file; the console summary still goes to stderr. M7 |
 | `--provider` / `--model` | from config | |
-| `--concurrency` | 5 | |
-| `--budget` | unlimited | Hard token cap (§12). Below one request's reservation (~35k+ at the default 16000 `max_tokens`), nothing is sent and the run reports budget exceeded |
-| `--since` | — | git ref |
-| `--baseline` | `semantic-sec-baseline.json` if present | |
-| `--generate-baseline` | — | Writes all current fingerprints, exits 0 |
+| `--concurrency` | 5 | A positive integer |
+| `--budget` | unlimited | Hard token cap (§12), an integer ≥ 0. Below one request's reservation (~35k+ at the default 16000 `max_tokens`), nothing is sent and the run exits 3 |
+| `--since` | — | git ref. M7 |
+| `--baseline` | `semantic-sec-baseline.json` if present | M7 |
+| `--generate-baseline` | — | Writes all current fingerprints, exits 0. M7 |
 | `--deep` | off | Section 7 |
 | `--dry-run` | off | Writes the system prompt, exactly as sent, to `.semantic-sec/dry-run/000-system.txt` and every payload to `NNN-<verb-uri-slug>-<part>.txt` (e.g. `001-post-api-posts-id-1.txt`); makes no network calls; needs no API key |
-| `--no-cache` | off | |
+| `--no-cache` | off | Skips cache reads; validated answers are still written (§12) |
+
+**Overrides:** `--level`, `--min-confidence`, `--provider`, `--model`, `--concurrency` and `--budget` override the config file and are validated the same way; an invalid value is exit 2. `--output`, `--baseline`, `--generate-baseline`, `--since` and `--format json|sarif` without `--dry-run` exit 2 with `<option> is available in a later release` until M7.
+
+**Console output (M6, minimal; M7 replaces it):** on stdout, one line per reported finding, `[<SEVERITY>] <category> <file>:<line> <symbol> — <title> (<confidence>[, not failing])`; then a `Summary` block (candidates, payloads, skipped, unsent, cache hits, sent, ok, refused, truncated, invalid, failed, dropped, findings, filtered, suppressed, baselined, tokens, budget); then `Warnings`. Model-controlled text has control characters replaced and console tags escaped. Errors go to stderr as `Error: <message>`; a missing key names the env var, never its value.
 
 **Memory:** `bin/semantic-sec` raises PHP's `memory_limit` to `1G` when it is lower (and not `-1`), since real projects exceed the 128M default; `SEMANTIC_SEC_MEMORY_LIMIT` overrides it with any php.ini value (`-1`, `2G`, …).
 
-**Exit codes:** `0` clean (or only suppressed, baselined or non-failing findings) · `1` at least one failing finding · `2` tool error (bad config, no framework detected, missing API key when not in dry-run, every request failed) · `3` budget exceeded with no failing findings. **[new] `1` beats `3`:** if the budget runs out after failing findings are found, the exit code is 1, and the partial results are always written.
+**Exit codes:** `0` clean (or only suppressed, baselined or non-failing findings) · `1` at least one failing finding · `2` tool error (bad config or option, no framework detected, missing API key when not in dry-run, unsafe `.semantic-sec/` directory, every request failed) · `3` budget exceeded with no failing findings. **[new] `1` beats `3`:** if the budget runs out after failing findings are found, the exit code is 1, and the partial results are always written.
+
+Precedence, from `AnalysisResult`: `1` if any finding is failing; else `3` if the budget was exceeded; else `2` if at least one request was sent, none came back `ok` and nothing came from the cache (refused, truncated, invalid and failed all count as failed); else `0`. Errors before the engine runs (config, framework, key, cache directory) are always `2`.
 
 ## 14. Output
 

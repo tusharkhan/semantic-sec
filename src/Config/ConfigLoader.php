@@ -11,8 +11,6 @@ use TusharKhan\SemanticSec\Analysis\Severity;
 
 final class ConfigLoader
 {
-    private const PROVIDERS = ['openai', 'anthropic', 'ollama'];
-
     private const KEYS = [
         'provider', 'model', 'api_key_env', 'base_url', 'concurrency', 'budget_tokens',
         'max_payload_tokens', 'max_depth', 'level', 'min_confidence', 'paths', 'exclude',
@@ -44,8 +42,8 @@ final class ConfigLoader
         }
 
         $provider = $data['provider'] ?? 'anthropic';
-        if (! is_string($provider) || ! in_array($provider, self::PROVIDERS, true)) {
-            throw new ConfigException('Config key "provider" must be one of: '.implode(', ', self::PROVIDERS).'.');
+        if (! is_string($provider) || ! in_array($provider, Config::PROVIDERS, true)) {
+            throw new ConfigException('Config key "provider" must be one of: '.implode(', ', Config::PROVIDERS).'.');
         }
 
         $model = $this->nullableString($data['model'] ?? null, 'model');
