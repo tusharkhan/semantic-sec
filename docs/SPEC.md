@@ -257,7 +257,13 @@ A route action becomes a candidate for a category when:
 
 ## 12. Cache, budget, diff mode
 
-- **ResultCache:** `.semantic-sec/cache/<key>.json`. `key = sha256(toolVersion | provider | model | SecurityPrompt::VERSION | rulesetHash | payload text)`. The payload text already contains the full authorization context, so changing a route, middleware or policy changes the key. `--no-cache` skips reads; writes always happen.
+- **ResultCache:** `.semantic-sec/cache/<key>.json`, holding only `{"v":1,"model":…,"data":…}`.
+  - `key = sha256(toolVersion | provider | model | SecurityPrompt::VERSION | rulesetHash | effort | baseUrl | sha256(system prompt) | payload text)`, with the parts JSON-encoded so none can bleed into the next.
+  - `model` is the requested model. `effort` is `ClientFactory::effort()`, which is null except for Anthropic. `baseUrl` is the effective URL with defaults applied, scheme and host lowercased and trailing `/` trimmed, so Groq and OpenAI (both `openai`) never share entries. The system prompt is hashed exactly as sent, so a prompt edit without a VERSION bump still misses.
+  - The payload text already contains the full authorization context, so changing a route, middleware or policy changes the key.
+  - Only validated `Ok` answers are written, atomically (temp file, then rename). An entry that is over 4 MB, unreadable, malformed or fails `ResponseValidator` is a miss with the warning `cache entry <key> ignored`. Temp files older than an hour are removed when the cache opens.
+  - `--no-cache` skips reads; writes always happen.
+  - Cache entries are trusted local files: anyone who can write the cache dir can plant or hide findings, so use `--no-cache` in CI when the workspace is not trusted.
 - **Budget:** `budget_tokens` (default unset, meaning unlimited) counts provider-reported input and output tokens. Before dispatching, if `used + estimate(next)` would go over the budget, dispatching stops, in-flight requests finish, and `budgetExceeded = true`. In-flight requests are not reserved, and a schema retry spends a second call in the same slot, so the budget may overshoot by up to `concurrency` slots of two calls each; `budgetExceeded` is also true whenever the final `used` is above the budget. A failed schema retry still counts the first attempt's tokens; tokens spent on HTTP attempts that the retry middleware discards are not reported by the provider and are not counted.
 - **`--since=<ref>`:**
   1. Run `git diff --name-only <ref>...HEAD` (through `symfony/process`), then parse the whole project as usual.

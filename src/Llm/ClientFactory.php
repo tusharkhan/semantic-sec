@@ -27,10 +27,10 @@ final class ClientFactory
         $http = static fn () => HttpClientFactory::create($handler, [RetryMiddleware::create()]);
 
         return match ($c->provider) {
-            'anthropic' => new AnthropicClient($http(), self::key($c), $c->baseUrl ?? AnthropicClient::DEFAULT_BASE_URL),
+            'anthropic' => new AnthropicClient($http(), self::key($c), self::baseUrl($c)),
             // Config has no temperature or seed yet, so OpenAI and Ollama send neither (plan decision 2).
-            'openai' => new OpenAiClient($http(), self::key($c), $c->baseUrl ?? OpenAiClient::DEFAULT_BASE_URL, null, null),
-            'ollama' => new OllamaClient($http(), $c->baseUrl ?? OllamaClient::DEFAULT_BASE_URL, null),
+            'openai' => new OpenAiClient($http(), self::key($c), self::baseUrl($c), null, null),
+            'ollama' => new OllamaClient($http(), self::baseUrl($c), null),
             default => throw new ConfigException("unknown provider {$c->provider}"),
         };
     }
@@ -50,6 +50,17 @@ final class ClientFactory
     public static function model(Config $c): string
     {
         return $c->model ?? Defaults::model($c->provider) ?? throw new ConfigException("{$c->provider} needs a model in semantic-sec.yaml");
+    }
+
+    // The configured base URL, or the provider's default.
+    public static function baseUrl(Config $c): string
+    {
+        return $c->baseUrl ?? match ($c->provider) {
+            'anthropic' => AnthropicClient::DEFAULT_BASE_URL,
+            'openai' => OpenAiClient::DEFAULT_BASE_URL,
+            'ollama' => OllamaClient::DEFAULT_BASE_URL,
+            default => throw new ConfigException("unknown provider {$c->provider}"),
+        };
     }
 
     // Only Anthropic takes an effort level.

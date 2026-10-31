@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Engine;
 
+use TusharKhan\SemanticSec\Config\Config;
 use TusharKhan\SemanticSec\Config\CustomRuleset;
 use TusharKhan\SemanticSec\Console\Application;
 use TusharKhan\SemanticSec\Console\OutputDir;
+use TusharKhan\SemanticSec\Llm\ClientFactory;
 use TusharKhan\SemanticSec\Llm\LlmOutcome;
 use TusharKhan\SemanticSec\Llm\LlmResponse;
 use TusharKhan\SemanticSec\Llm\ResponseValidator;
@@ -18,12 +20,20 @@ final class ResultCache
 {
     public const DIR = '.semantic-sec/cache';
 
+    // An entry above this size is a miss, so a planted huge file cannot exhaust memory.
+    public const MAX_ENTRY_BYTES = 4 * 1024 * 1024;
+
     private const FORMAT = 1;
+
+    // Temp files older than this are leftovers of a crashed write.
+    private const STALE_TEMP_SECONDS = 3600;
 
     // Far deeper than any valid answer; deeper input is a miss, not a crash.
     private const MAX_DEPTH = 64;
 
     private readonly string $rulesetHash;
+
+    private readonly string $baseUrl;
 
     private int $hits = 0;
 
@@ -39,25 +49,47 @@ final class ResultCache
         private readonly bool $readEnabled,
         private readonly string $toolVersion = Application::VERSION,
         private readonly string $promptVersion = SecurityPrompt::VERSION,
+        private readonly ?string $effort = null,
+        string $baseUrl = '',
+        private readonly string $systemPrompt = '',
+        private readonly int $maxEntryBytes = self::MAX_ENTRY_BYTES,
     ) {
         $pairs = array_map(static fn (CustomRuleset $r): array => [$r->name, $r->prompt], $rulesets);
         $this->rulesetHash = hash('sha256', json_encode($pairs, JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE));
+        $this->baseUrl = self::normaliseUrl($baseUrl);
+        $this->removeStaleTemps();
     }
 
-    /**
-     * Creates <root>/.semantic-sec/cache behind the OutputDir guard; throws \RuntimeException on a symlink or escape.
-     *
-     * @param  list<CustomRuleset>  $rulesets
-     */
-    public static function inProject(string $root, string $provider, string $model, array $rulesets, bool $readEnabled): self
+    /** Creates <root>/.semantic-sec/cache behind the OutputDir guard; throws \RuntimeException on a symlink or escape. */
+    public static function inProject(string $root, Config $c, string $systemPrompt, bool $readEnabled): self
     {
-        return new self(OutputDir::prepare($root, self::DIR), $provider, $model, $rulesets, $readEnabled);
+        return new self(
+            OutputDir::prepare($root, self::DIR),
+            $c->provider,
+            ClientFactory::model($c),
+            $c->rulesets,
+            $readEnabled,
+            effort: ClientFactory::effort($c),
+            baseUrl: ClientFactory::baseUrl($c),
+            systemPrompt: $systemPrompt,
+        );
+    }
+
+    // Lowercases scheme and host and trims trailing slashes; the path keeps its case.
+    public static function normaliseUrl(string $url): string
+    {
+        $url = rtrim(trim($url), '/');
+
+        return (string) preg_replace_callback('~^([a-z][a-z0-9+.-]*://)([^/?#]*)~i', static fn (array $m): string => strtolower($m[1].$m[2]), $url);
     }
 
     // Components are JSON-encoded so no separator inside one can shift text into the next.
     public function key(Payload $p): string
     {
-        $parts = [$this->toolVersion, $this->provider, $this->model, $this->promptVersion, $this->rulesetHash, $p->text()];
+        $parts = [
+            $this->toolVersion, $this->provider, $this->model, $this->promptVersion, $this->rulesetHash,
+            $this->effort, $this->baseUrl, hash('sha256', $this->systemPrompt), $p->text(),
+        ];
 
         return hash('sha256', json_encode($parts, JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE));
     }
@@ -118,6 +150,20 @@ final class ResultCache
         return array_values($this->warnings);
     }
 
+    // Best effort: only regular files named like our temps; symlinks are never followed or touched.
+    private function removeStaleTemps(): void
+    {
+        foreach (@glob($this->dir.'/.*.tmp', GLOB_NOSORT) ?: [] as $temp) {
+            if (preg_match('~/\.[0-9a-f]{64}\.[0-9a-f]{12}\.tmp$~', $temp) !== 1) {
+                continue;
+            }
+            $stat = @lstat($temp);
+            if ($stat !== false && ($stat['mode'] & 0170000) === 0100000 && $stat['mtime'] < time() - self::STALE_TEMP_SECONDS) {
+                @unlink($temp);
+            }
+        }
+    }
+
     private function file(string $key): string
     {
         return $this->dir.'/'.$key.'.json';
@@ -127,11 +173,15 @@ final class ResultCache
     /** @return array{model: string, data: array<string, mixed>}|null */
     private function read(string $file): ?array
     {
-        if (is_link($file) || ! is_file($file)) {
+        if (is_link($file) || ! is_file($file) || ! is_readable($file)) {
             return null;
         }
-        $raw = @file_get_contents($file);
-        if ($raw === false || $raw === '') {
+        $size = @filesize($file);
+        if ($size === false || $size > $this->maxEntryBytes) {
+            return null;
+        }
+        $raw = @file_get_contents($file, false, null, 0, $this->maxEntryBytes + 1);
+        if ($raw === false || $raw === '' || strlen($raw) > $this->maxEntryBytes) {
             return null;
         }
         try {

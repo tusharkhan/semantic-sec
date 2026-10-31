@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace TusharKhan\SemanticSec\Tests\Unit\Engine;
 
 use PHPUnit\Framework\TestCase;
+use TusharKhan\SemanticSec\Analysis\Confidence;
+use TusharKhan\SemanticSec\Analysis\Severity;
 use TusharKhan\SemanticSec\Candidates\Candidate;
+use TusharKhan\SemanticSec\Config\Config;
 use TusharKhan\SemanticSec\Config\CustomRuleset;
 use TusharKhan\SemanticSec\Engine\ResultCache;
 use TusharKhan\SemanticSec\Framework\Laravel\RouteAction;
@@ -46,6 +49,9 @@ final class ResultCacheTest extends TestCase
             true,
             $o['tool'] ?? '1.0.0',
             $o['prompt'] ?? '2',
+            array_key_exists('effort', $o) ? $o['effort'] : 'high',
+            $o['url'] ?? 'https://api.openai.com/v1',
+            $o['system'] ?? 'You are a reviewer.',
         );
         $payload = self::payload();
         $key = $make()->key($payload);
@@ -61,6 +67,10 @@ final class ResultCacheTest extends TestCase
             'ruleset name' => $make(['rulesets' => [new CustomRuleset('tenant2', 'Check tenant scoping')]])->key($payload),
             'ruleset added' => $make(['rulesets' => [...$rules, new CustomRuleset('x', 'y')]])->key($payload),
             'no rulesets' => $make(['rulesets' => []])->key($payload),
+            'effort' => $make(['effort' => 'max'])->key($payload),
+            'no effort' => $make(['effort' => null])->key($payload),
+            'base url' => $make(['url' => 'https://api.groq.com/openai/v1'])->key($payload),
+            'system prompt' => $make(['system' => 'You are a reviewer!'])->key($payload),
             'middleware' => $make()->key(self::payload(context: "Route:\n  GET /posts/{id}\nMiddleware: web")),
             'code' => $make()->key(self::payload(code: '```php\n1| return Post::find($id)->load("x");\n```')),
         ];
@@ -70,6 +80,80 @@ final class ResultCacheTest extends TestCase
         self::assertCount(count($variants), array_unique($variants));
         // Separator ambiguity: moving text between provider and model must not collide.
         self::assertNotSame($make(['provider' => 'a|b', 'model' => 'c'])->key($payload), $make(['provider' => 'a', 'model' => 'b|c'])->key($payload));
+    }
+
+    public function testBaseUrlIsNormalised(): void
+    {
+        $key = fn (string $url): string => (new ResultCache($this->dir, 'openai', 'm', [], true, '1', '2', null, $url, 's'))->key(self::payload());
+
+        self::assertSame($key('https://api.openai.com/v1'), $key('HTTPS://API.OpenAI.COM/v1/'));
+        self::assertSame($key('https://api.openai.com/v1'), $key(' https://api.openai.com/v1// '));
+        self::assertNotSame($key('https://api.openai.com/v1'), $key('https://api.openai.com/V1'), 'path case is kept');
+        self::assertNotSame($key('https://api.openai.com/v1'), $key('https://api.groq.com/openai/v1'));
+    }
+
+    public function testInProjectDerivesTheKeyFromConfig(): void
+    {
+        $root = $this->base.'/project';
+        mkdir($root);
+        $config = fn (string $provider, ?string $baseUrl = null, string $effort = 'high', ?string $model = 'm'): Config => new Config($root, $provider, $model, null, $baseUrl, 5, null, 8000, 3, Severity::High, Confidence::Medium, [], [], [], [], [], [new CustomRuleset('r', 'p')], [], $effort);
+        $key = fn (Config $c, string $system = 'sys'): string => ResultCache::inProject($root, $c, $system, true)->key(self::payload());
+
+        $openai = $key($config('openai'));
+        self::assertSame($openai, $key($config('openai', 'https://API.openai.com/v1/')), 'explicit default url');
+        self::assertSame($openai, $key($config('openai', null, 'max')), 'effort ignored for openai');
+        self::assertNotSame($openai, $key($config('openai', 'https://api.groq.com/openai/v1')));
+        self::assertNotSame($openai, $key($config('openai'), 'sys2'));
+        $anthropic = $key($config('anthropic'));
+        self::assertNotSame($anthropic, $key($config('anthropic', null, 'max')), 'effort counts for anthropic');
+        self::assertSame($anthropic, $key($config('anthropic', 'https://api.anthropic.com')));
+        self::assertNotSame($key($config('openai', null, 'high', null)), $key($config('openai', null, 'high', 'other')), 'default model applied');
+    }
+
+    public function testOversizedEntryIsMissWithWarning(): void
+    {
+        $payload = self::payload();
+        $cache = new ResultCache($this->dir, 'openai', 'gpt-x', [], true, '1.0.0', '2', maxEntryBytes: 600);
+        $key = $cache->key($payload);
+        $json = (string) json_encode(['v' => 1, 'model' => 'gpt-x', 'data' => self::data()], JSON_PRESERVE_ZERO_FRACTION);
+        self::assertLessThan(600, strlen($json));
+        file_put_contents($this->dir.'/'.$key.'.json', $json);
+        self::assertNotNull($cache->get($payload), 'under the cap');
+
+        file_put_contents($this->dir.'/'.$key.'.json', $json.str_repeat(' ', 600 - strlen($json) + 1));
+        $cache = new ResultCache($this->dir, 'openai', 'gpt-x', [], true, '1.0.0', '2', maxEntryBytes: 600);
+        self::assertNull($cache->get($payload));
+        self::assertSame(['cache entry '.$key.' ignored'], $cache->warnings());
+    }
+
+    public function testDefaultCapIsFourMegabytes(): void
+    {
+        self::assertSame(4 * 1024 * 1024, ResultCache::MAX_ENTRY_BYTES);
+    }
+
+    public function testStaleTempFilesAreRemovedOnConstruct(): void
+    {
+        $hex = str_repeat('a', 64);
+        $old = $this->dir.'/.'.$hex.'.000000000001.tmp';
+        $fresh = $this->dir.'/.'.$hex.'.000000000002.tmp';
+        $link = $this->dir.'/.'.$hex.'.000000000003.tmp';
+        $entry = $this->dir.'/'.$hex.'.json';
+        $outside = $this->base.'/outside.tmp';
+        foreach ([$old, $fresh, $entry, $outside] as $file) {
+            file_put_contents($file, 'x');
+        }
+        touch($old, time() - 7200);
+        touch($entry, time() - 7200);
+        touch($outside, time() - 7200);
+        symlink($outside, $link);
+
+        self::cache($this->dir);
+
+        self::assertFileDoesNotExist($old);
+        self::assertFileExists($fresh);
+        self::assertFileExists($entry);
+        self::assertTrue(is_link($link), 'symlinks are left alone');
+        self::assertSame('x', file_get_contents($outside));
     }
 
     public function testDefaultsUseTheToolAndPromptVersion(): void
@@ -276,7 +360,7 @@ final class ResultCacheTest extends TestCase
     {
         $root = $this->base.'/project';
         mkdir($root);
-        $cache = ResultCache::inProject($root, 'openai', 'gpt-x', [], true);
+        $cache = ResultCache::inProject($root, self::openai($root), 'sys', true);
         $cache->put(self::payload(), self::ok());
 
         self::assertCount(1, self::files($root.'/'.ResultCache::DIR));
@@ -286,7 +370,12 @@ final class ResultCacheTest extends TestCase
         symlink($this->base.'/elsewhere', $linked.'/.semantic-sec/cache');
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('is a symlink');
-        ResultCache::inProject($linked, 'openai', 'gpt-x', [], true);
+        ResultCache::inProject($linked, self::openai($linked), 'sys', true);
+    }
+
+    private static function openai(string $root): Config
+    {
+        return new Config($root, 'openai', 'gpt-x', null, null, 5, null, 8000, 3, Severity::High, Confidence::Medium, [], [], [], [], [], []);
     }
 
     private static function cache(string $dir): ResultCache
