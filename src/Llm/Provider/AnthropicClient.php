@@ -16,7 +16,6 @@ use TusharKhan\SemanticSec\Llm\LlmException;
 use TusharKhan\SemanticSec\Llm\LlmOutcome;
 use TusharKhan\SemanticSec\Llm\LlmRequest;
 use TusharKhan\SemanticSec\Llm\LlmResponse;
-use TusharKhan\SemanticSec\Payload\Redactor;
 
 /** Anthropic Messages API over raw HTTP, with structured outputs instead of a forced tool. */
 final class AnthropicClient implements ClientInterface
@@ -148,29 +147,10 @@ final class AnthropicClient implements ClientInterface
     /** @param array<mixed> $json */
     private function error(int $status, array $json): LlmException
     {
-        if ($status >= 300 && $status < 400) {
-            return new LlmException(self::PROVIDER." answered with a redirect (HTTP {$status}); redirects are not followed", $status, false);
-        }
-        if ($status === 401 || $status === 403) {
-            return new LlmException(self::PROVIDER." rejected the API key (HTTP {$status})", $status, false);
-        }
         $error = is_array($json['error'] ?? null) ? $json['error'] : [];
-        if ($status === 429 || $status >= 500 || ($error['type'] ?? null) === 'overloaded_error') {
-            return new LlmException(self::PROVIDER." is unavailable (HTTP {$status})", $status, true);
-        }
-        $detail = is_string($error['message'] ?? null) ? $this->scrub($error['message']) : '';
+        $message = is_string($error['message'] ?? null) ? $error['message'] : null;
 
-        return new LlmException(self::PROVIDER." request failed (HTTP {$status})".($detail === '' ? '' : ": {$detail}"), $status, false);
-    }
-
-    // Drops the key, URLs and secret-looking tokens, and keeps one short line.
-    private function scrub(string $message): string
-    {
-        $message = $this->apiKey === '' ? $message : str_replace($this->apiKey, '<scrubbed>', $message);
-        $message = (string) preg_replace('~\b[a-z][a-z0-9+.-]*://\S+~i', '<url>', $message);
-        $message = (string) preg_replace('/\s+/', ' ', (new Redactor())->redact($message));
-
-        return mb_strimwidth(trim($message), 0, 300, '…');
+        return HttpError::from(self::PROVIDER, $status, $message, $this->apiKey, ($error['type'] ?? null) === 'overloaded_error');
     }
 
     /** @param array<mixed> $usage */

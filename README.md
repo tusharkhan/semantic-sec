@@ -14,3 +14,16 @@ vendor/bin/semantic-sec analyze --dry-run --deep --format=json   # also review r
 ```
 
 Payloads land in `.semantic-sec/dry-run/NNN-<verb-uri-slug>-<part>.txt` inside the project, secrets redacted. `semantic-sec map` prints the authorization map on its own.
+
+## Groq
+
+Groq speaks the OpenAI Chat Completions API, so it is not a separate provider. Point the `openai` provider at Groq's base URL in `semantic-sec.yaml`:
+
+```yaml
+provider: openai
+base_url: https://api.groq.com/openai/v1
+api_key_env: GROQ_API_KEY
+model: openai/gpt-oss-120b
+```
+
+Put the key in your environment (`export GROQ_API_KEY=...`), never in the YAML. `api_key_env` names the variable; the key itself is never read from the config file.

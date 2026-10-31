@@ -1,0 +1,23 @@
+{
+    "interactions": [
+        {
+            "request": {
+                "method": "POST",
+                "uri": "https://api.openai.com/v1/chat/completions",
+                "headers": {
+                    "authorization": "<scrubbed>",
+                    "content-type": "application/json"
+                },
+                "body": "{\"model\":\"gpt-6-astra\",\"messages\":[{\"role\":\"system\",\"content\":\"You are a security reviewer.\"},{\"role\":\"user\",\"content\":\"payload\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"semantic_sec_findings\",\"strict\":true,\"schema\":{\"type\":\"object\"}}},\"max_completion_tokens\":16000}"
+            },
+            "response": {
+                "status": 401,
+                "headers": {
+                    "content-type": "application/json",
+                    "x-request-id": "req_TEST"
+                },
+                "body": "{\"error\":{\"message\":\"Incorrect API key provided: sk-test-****0000. You can find your API key at https://platform.openai.com/account/api-keys.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"invalid_api_key\"}}"
+            }
+        }
+    ]
+}
