@@ -1,0 +1,266 @@
+semantic-sec snapshot — anthropic claude-opus-5-5
+
+app/Http/Controllers/Vuln/AccountController.php
+
+  [!] High Severity: Mass assignment: $request->all() written to Account with empty $guarded
+      File:          app/Http/Controllers/Vuln/AccountController.php
+      Line:          14
+      Symbol:        App\Http\Controllers\Vuln\AccountController::update
+      Category:      Mass Assignment (CWE-915)
+      Confidence:    high
+      Context:       PUT /vuln/account is protected only by the web and auth middleware. UpdateAccountRequest::authorize returns true, and its rules validate only 'name' and 'email'. The action loads the logged-in user's own account (L13).
+      Flaw:          At L14 the action calls $account->update($request->all()). $request->all() returns every key the client sends, including keys outside the validated 'name' and 'email'. The Account model sets $guarded = [], so every column can be mass-assigned. A logged-in user can therefore overwrite sensitive columns on their account, such as an owner or user_id, a balance, a plan or a role or status flag. That allows reassigning the account to another owner or escalating their own privileges or entitlements.
+      Suggested Fix: Pass only validated data, using $request->validated() or $request->only(['name', 'email']). Also give Account an explicit $fillable list, limited to user-editable fields, in place of $guarded = [].
+      Patch:
+        --- <redacted> <redacted> -13,2 +13,2 @@
+                 $account = $request->user()->account;
+        -        $account->update($request->all());
+        +        $account->update($request->validated());
+
+app/Http/Controllers/Vuln/CartController.php
+
+  [!] Critical Severity: unserialize() on the client-supplied 'cart' cookie allows PHP object injection
+      File:          app/Http/Controllers/Vuln/CartController.php
+      Line:          13
+      Symbol:        App\Http\Controllers\Vuln\CartController::restore
+      Category:      Insecure Deserialization (CWE-502)
+      Confidence:    high
+      Context:       Any authenticated user can reach PUT /api/vuln/cart. The only protection is auth:sanctum (routes/api.php:9). The 'api' middleware group does not include EncryptCookies, so a token-authenticated caller can send any raw value in the 'cart' cookie.
+      Flaw:          L13 passes $request->cookie('cart') straight to unserialize() with no allowed_classes restriction. The caller controls that value, so they can craft a serialized object that instantiates arbitrary classes. Gadget chains in the framework or vendor code can then trigger __wakeup/__destruct side effects, up to remote code execution. L14 then saves the deserialized value into the user's cart.
+      Suggested Fix: Do not unserialize client data. Store the cart as JSON and decode it with json_decode(..., true), then validate the structure. If unserialize() cannot be avoided, pass ['allowed_classes' => false] and verify the result is an array.
+      Patch:
+        --- <redacted> <redacted> -13,2 +13,5 @@
+        -        $items = unserialize($request->cookie('cart'));
+        +        $items = json_decode((string) $request->cookie('cart'), true);
+        +        if (!is_array($items)) {
+        +            $items = [];
+        +        }
+                 $cart = $request->user()->cart()->updateOrCreate([], ['items' => $items]);
+
+app/Http/Controllers/Vuln/CommentController.php
+
+  [!] High Severity: Any authenticated user can delete any comment: CommentPolicy::delete always returns true
+      File:          app/Http/Controllers/Vuln/CommentController.php
+      Line:          18
+      Symbol:        App\Http\Controllers\Vuln\CommentController::destroy
+      Category:      Insecure Direct Object Reference (IDOR) (CWE-639)
+      Confidence:    high
+      Context:       DELETE /vuln/comments/{comment} sits behind the web and auth middleware only. {comment} is route-model-bound to App\Models\Comment. The action calls $this->authorize('delete', $comment), which runs CommentPolicy::delete.
+      Flaw:          CommentPolicy::delete returns true unconditionally (L12) and never compares $comment's owner with $user. The authorize call at L16 therefore lets every logged-in user through. Any user can supply another user's comment id and L18 deletes that comment.
+      Suggested Fix: Make CommentPolicy::delete check ownership, for example by returning $user->id === $comment->user_id, optionally also allowing moderators or admins.
+      Patch:
+        --- <redacted> <redacted> -10,4 +10,4 @@
+             public function delete(User $user, Comment $comment): bool
+             {
+        -        return true;
+        +        return $comment->user_id === $user->id;
+             }
+
+app/Http/Controllers/Vuln/DocumentController.php
+
+  [!] High Severity: IDOR: any authenticated user can read any Document via route model binding
+      File:          app/Http/Controllers/Vuln/DocumentController.php
+      Line:          22
+      Symbol:        App\Http\Controllers\Vuln\DocumentController::show
+      Category:      Insecure Direct Object Reference (IDOR) (CWE-639)
+      Confidence:    high
+      Context:       GET /vuln/documents/{document} is protected only by the web and auth middleware. {document} is resolved through route model binding on App\Models\Document. The context block lists no policy, gate or ownership check for this route.
+      Flaw:          Route model binding at L20 loads the Document by the client-supplied id and checks nothing about access. L22 returns the whole record as JSON without calling $this->authorize() and without comparing the document's owner to the current user. Any logged-in user can enumerate ids and read other users' documents, including their title and storage path.
+      Suggested Fix: Authorize access before returning the record. Call $this->authorize('view', $document) backed by a DocumentPolicy that checks ownership, or add can:view,document middleware to the route. An alternative is to scope the lookup to the user, e.g. $request->user()->documents()->findOrFail($id).
+      Patch:
+        --- <redacted> <redacted> -20,4 +20,5 @@
+             public function show(Document $document): JsonResponse
+             {
+        +        $this->authorize('view', $document);
+                 return response()->json($document);
+             }
+
+app/Http/Controllers/Vuln/InvoiceController.php
+
+  [!] High Severity: IDOR: any authenticated user can read any invoice by ID
+      File:          app/Http/Controllers/Vuln/InvoiceController.php
+      Line:          19
+      Symbol:        App\Http\Controllers\Vuln\InvoiceController::show
+      Category:      Insecure Direct Object Reference (IDOR) (CWE-639)
+      Confidence:    high
+      Context:       GET /vuln/invoices/{id} (routes/web.php:12) is behind the web and auth middleware only. Per the context block, authentication is the only check on the route; no policy, gate or ownership scope applies.
+      Flaw:          L19 loads the invoice with Invoice::findOrFail($id), using the route-supplied id with no ownership constraint and no policy call. L21 then returns the whole record as JSON. Any logged-in user can enumerate ids and read other users' invoices.
+      Suggested Fix: Scope the lookup to the current user, for example through the user's invoices relation or a where on the owner column. Alternatively, call $this->authorize('view', $invoice) backed by an InvoicePolicy that compares the owner to the authenticated user.
+      Patch:
+        --- <redacted> <redacted> -17,5 +17,6 @@
+             public function show(Request $request, int $id): JsonResponse
+             {
+                 $invoice = Invoice::findOrFail($id);
+        +        $this->authorize('view', $invoice);
+                 return response()->json($invoice);
+             }
+
+  [!] High Severity: Any authenticated user can update any invoice via route-bound {invoice} without ownership check
+      File:          app/Http/Controllers/Vuln/InvoiceController.php
+      Line:          26
+      Symbol:        App\Http\Controllers\Vuln\InvoiceController::update
+      Category:      Insecure Direct Object Reference (IDOR) (CWE-639)
+      Confidence:    high
+      Context:       PUT /vuln/invoices/{invoice} sits behind only the web and auth middleware. {invoice} is resolved by route model binding to App\Models\Invoice. UpdateInvoiceRequest::authorize returns true, and the controller calls no policy or gate.
+      Flaw:          Route model binding at L24 loads whichever Invoice matches the id in the URL. L26 then calls $invoice->update($request->validated()) with no check that the current user owns the invoice or may change it. Any logged-in user can therefore change the amount and status of another user's invoice by sending a PUT for its id.
+      Suggested Fix: Authorize the record before the write. Call $this->authorize('update', $invoice) backed by an InvoicePolicy that compares the invoice owner or tenant with the current user, or make UpdateInvoiceRequest::authorize return $this->user()->can('update', $this->route('invoice')). Alternatively, scope the lookup through the user's relation.
+      Patch:
+        --- <redacted> <redacted> -24,5 +24,6 @@
+             public function update(UpdateInvoiceRequest $request, Invoice $invoice): JsonResponse
+             {
+        +        $this->authorize('update', $invoice);
+                 $invoice->update($request->validated());
+                 return response()->json($invoice);
+             }
+
+  [!] Medium Severity: Invoice status can be set to any value without enforcing valid state transitions
+      File:          app/Http/Controllers/Vuln/InvoiceController.php
+      Line:          26
+      Symbol:        App\Http\Controllers\Vuln\InvoiceController::update
+      Category:      Workflow Bypass (CWE-841)
+      Confidence:    low
+      Context:       The same PUT route requires only authentication. UpdateInvoiceRequest validates the keys amount and status; the payload does not show which status values the rules allow.
+      Flaw:          L26 writes the client-supplied status straight onto the invoice. Nothing checks the invoice's current state, so a client could mark an unpaid invoice as paid, or change the amount of an invoice that is already paid or finalized.
+      Suggested Fix: Check the current status before updating. Allow only legitimate transitions, for example through a dedicated state-machine method, and refuse changes to amount once the invoice is finalized or paid.
+
+  [!] High Severity: IDOR: any authenticated user can download any invoice PDF via route-bound {invoice}
+      File:          app/Http/Controllers/Vuln/InvoiceController.php
+      Line:          33
+      Symbol:        App\Http\Controllers\Vuln\InvoiceController::pdf
+      Category:      Insecure Direct Object Reference (IDOR) (CWE-639)
+      Confidence:    high
+      Context:       GET /vuln/invoices/{invoice}/pdf (routes/web.php:14) is protected only by the web and auth middleware. {invoice} is resolved by route model binding to App\Models\Invoice. The context block lists no policy, gate or ownership check for this route.
+      Flaw:          Route model binding at L31 loads any Invoice by its key without checking ownership. L33 then streams the matching PDF file (storage_path("app/invoices/{$invoice->number}.pdf")) to the caller with no authorization check. Any logged-in user can enumerate invoice ids and download other users' invoices.
+      Suggested Fix: Authorize access before the download, for example with $this->authorize('view', $invoice) backed by an InvoicePolicy that compares the invoice owner to the current user. Alternatively, scope the lookup to the authenticated user's invoices, or add can:view,invoice middleware to the route.
+      Patch:
+        --- <redacted> <redacted> -31,4 +31,5 @@
+             public function pdf(Invoice $invoice): BinaryFileResponse
+             {
+        +        $this->authorize('view', $invoice);
+                 return response()->download(storage_path("app/invoices/{$invoice->number}.pdf"));
+             }
+
+app/Http/Controllers/Vuln/OrderController.php
+
+  [!] Medium Severity: Refund sets status to 'refunded' without checking the order is paid or not already refunded
+      File:          app/Http/Controllers/Vuln/OrderController.php
+      Line:          18
+      Symbol:        App\Http\Controllers\Vuln\OrderController::refund
+      Category:      Workflow Bypass (CWE-841)
+      Confidence:    high
+      Context:       POST /vuln/orders/{order}/refund sits behind the web and auth middleware, with {order} resolved by route model binding. At L16, $this->authorize('refund', $order) calls OrderPolicy::refund, which only checks that the order belongs to the current user (L12).
+      Flaw:          Neither the policy (L12) nor the controller checks the order's current status. Once the ownership check at L16 passes, L18 unconditionally runs $order->update(['status' => 'refunded']). An owner can therefore refund an order that was never paid, refund one that is already refunded, or refund one in any other state where a refund is not allowed (e.g. pending or cancelled). This breaks the order lifecycle and could trigger duplicate or unwarranted refunds downstream.
+      Suggested Fix: Enforce the state transition before updating. Only allow the refund when the order is in a refundable state (e.g. status === 'paid'), and reject anything else with a 409/422. Ideally put this check in the policy or in an Order state machine, and use a conditional update so concurrent requests cannot both succeed.
+      Patch:
+        --- <redacted> <redacted> -16,3 +16,7 @@
+                 $this->authorize('refund', $order);
+        +
+        +        if ($order->status !== 'paid') {
+        +            abort(409, 'Only paid orders can be refunded.');
+        +        }
+
+                 $order->update(['status' => 'refunded']);
+
+app/Http/Controllers/Vuln/ProjectController.php
+
+  [!] High Severity: IDOR: any authenticated user can update any Project via route-bound {project}
+      File:          app/Http/Controllers/Vuln/ProjectController.php
+      Line:          14
+      Symbol:        App\Http\Controllers\Vuln\ProjectController::update
+      Category:      Insecure Direct Object Reference (IDOR) (CWE-639)
+      Confidence:    high
+      Context:       PATCH /vuln/projects/{project} is protected only by the web and auth middleware. {project} is resolved by route model binding. UpdateProjectRequest::authorize returns true, and no policy or ownership check is applied.
+      Flaw:          Route model binding loads any Project by id (L12). L14 then calls $project->update($request->validated()) without checking that the current user owns the project or may modify it. Any logged-in user can change the name and description of another user's project.
+      Suggested Fix: Authorize the action against the bound model, for example with $this->authorize('update', $project) and a ProjectPolicy that compares owner ids. Alternatively, have UpdateProjectRequest::authorize return $this->user()->can('update', $this->route('project')).
+      Patch:
+        --- <redacted> <redacted> -12,5 +12,6 @@
+             public function update(UpdateProjectRequest $request, Project $project): JsonResponse
+             {
+        +        $this->authorize('update', $project);
+                 $project->update($request->validated());
+                 return response()->json($project);
+             }
+
+app/Http/Controllers/Vuln/ReceiptController.php
+
+  [!] High Severity: IDOR: any authenticated user can read any receipt via unscoped Receipt::findOrFail($id)
+      File:          app/Http/Controllers/Vuln/ReceiptController.php
+      Line:          18
+      Symbol:        App\Http\Controllers\Vuln\ReceiptController::show
+      Category:      Insecure Direct Object Reference (IDOR) (CWE-639)
+      Confidence:    high
+      Context:       GET /vuln/receipts/{id} (routes/web.php:22) is protected only by the web and auth middleware. The only check on the route is authentication; no policy, gate or ownership scoping applies.
+      Flaw:          At L18 the receipt is loaded with Receipt::findOrFail($id) using the route parameter {id}. Nothing scopes the lookup to the current user or checks ownership, and L20 returns the full record as JSON. Any logged-in user can enumerate ids and read other users' receipts. The docblock at L13 claims an API gateway enforces ownership, but that is unverified text, not a check in the code.
+      Suggested Fix: Scope the lookup to the authenticated user, for example $request->user()->receipts()->findOrFail($id) or Receipt::where('user_id', $request->user()->id)->findOrFail($id). Alternatively, call $this->authorize('view', $receipt) backed by a ReceiptPolicy that compares the owner.
+      Patch:
+        --- <redacted> <redacted> -15,7 +15,8 @@
+             public function show(Request $request, int $id): JsonResponse
+             {
+        -        $receipt = Receipt::findOrFail($id);
+        +        $receipt = Receipt::findOrFail($id);
+        +        $this->authorize('view', $receipt);
+
+                 return response()->json($receipt);
+             }
+
+app/Http/Controllers/Vuln/TeamController.php
+
+  [!] High Severity: Mass assignment of owner_id via Team::create($request->all()) in TeamController::store
+      File:          app/Http/Controllers/Vuln/TeamController.php
+      Line:          14
+      Symbol:        App\Http\Controllers\Vuln\TeamController::store
+      Category:      Mass Assignment (CWE-915)
+      Confidence:    high
+      Context:       POST /vuln/teams is protected only by the web and auth middleware. StoreTeamRequest::authorize() returns true and its rules() validate only "name". The Team model's $fillable is ["name", "owner_id"].
+      Flaw:          At L14 the controller passes $request->all() to Team::create(). all() returns every input field, not only the validated ones, so a client can send an arbitrary owner_id and it will be written because owner_id is fillable. Any authenticated user can therefore create teams attributed to another user, forging ownership records and planting teams in other users' accounts. The owner is never derived from the authenticated user.
+      Suggested Fix: Pass only validated data ($request->validated()) and set owner_id on the server from the authenticated user. Also consider removing owner_id from Team::$fillable.
+      Patch:
+        --- <redacted> <redacted> -14 +14,4 @@
+        -        $team = Team::create($request->all());
+        +        $team = Team::create([
+        +            'name' => $request->validated()['name'],
+        +            'owner_id' => $request->user()->id,
+        +        ]);
+
+app/Services/DownloadService.php
+
+  [!] High Severity: IDOR: any authenticated user can download any Download record's file by id
+      File:          app/Services/DownloadService.php
+      Line:          11
+      Symbol:        App\Services\DownloadService::find
+      Category:      Insecure Direct Object Reference (IDOR) (CWE-639)
+      Confidence:    high
+      Context:       GET /vuln/downloads/{id} is protected only by the web and auth middleware. The context block lists no policy, gate or ownership check for the route.
+      Flaw:          DownloadController::show passes the user-supplied {id} to DownloadService::find (L17). At L11 the service calls Download::findOrFail($id), which loads any row with no scoping to the current user. L19 then streams the stored file to the caller. Any logged-in user can enumerate ids and download files that belong to other users.
+      Suggested Fix: Authorize access to the record before serving the file. Either call $this->authorize('view', $download) through a DownloadPolicy, or scope the lookup to the current user (for example where('user_id', auth()->id())->findOrFail($id)). The second option needs an owner column on downloads.
+      Patch:
+        --- <redacted> <redacted> -15,5 +15,6 @@
+             public function show(int $id): BinaryFileResponse
+             {
+                 $download = $this->downloads->find($id);
+        +        $this->authorize('view', $download);
+                 return response()->download(storage_path("app/downloads/{$download->path}"), $download->name);
+             }
+
+Suppressed (1)
+  - IDOR: any authenticated user can read any invoice by id via Invoice::findOrFail — app/Http/Controllers/Vuln/SharedInvoiceController.php:15 — shared invoices are public by contract
+
+Summary
+  candidates  14
+  payloads    14
+  skipped     0 (no source code)
+  unsent      0 (token budget)
+  cache hits  0
+  sent        14
+  ok          14
+  refused     0
+  truncated   0
+  invalid     0
+  failed      0
+  dropped     0 (not grounded)
+  findings    13 (13 failing)
+  filtered    0 (below level low)
+  suppressed  1
+  baselined   0
+  tokens      55482
+  budget      unlimited

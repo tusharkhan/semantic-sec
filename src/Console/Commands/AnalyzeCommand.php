@@ -10,13 +10,16 @@ use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use TusharKhan\SemanticSec\Analysis\Category;
 use TusharKhan\SemanticSec\Candidates\Candidate;
 use TusharKhan\SemanticSec\Config\Config;
 use TusharKhan\SemanticSec\Config\ConfigException;
 use TusharKhan\SemanticSec\Config\ConfigLoader;
+use TusharKhan\SemanticSec\Config\Defaults;
 use TusharKhan\SemanticSec\Console\AnalysisPipeline;
+use TusharKhan\SemanticSec\Console\Application;
 use TusharKhan\SemanticSec\Console\ExitCode;
 use TusharKhan\SemanticSec\Console\OutputDir;
 use TusharKhan\SemanticSec\Console\Terminal;
@@ -30,6 +33,8 @@ use TusharKhan\SemanticSec\Llm\ClientFactory;
 use TusharKhan\SemanticSec\Llm\ClientInterface;
 use TusharKhan\SemanticSec\Llm\GroundingChecker;
 use TusharKhan\SemanticSec\Llm\ValidatingClient;
+use TusharKhan\SemanticSec\Output\ConsoleFormatter;
+use TusharKhan\SemanticSec\Output\SafeWriter;
 use TusharKhan\SemanticSec\Payload\Payload;
 use TusharKhan\SemanticSec\Payload\Redactor;
 
@@ -39,7 +44,7 @@ final class AnalyzeCommand extends Command
     use ProjectOptions;
 
     // Rejected until M7 (plan decision 7).
-    private const LATER = ['output', 'baseline', 'generate-baseline', 'since'];
+    private const LATER = ['baseline', 'generate-baseline', 'since'];
 
     // CLI option => Config::with() key.
     private const OVERRIDES = ['level' => 'level', 'min-confidence' => 'min_confidence', 'provider' => 'provider', 'model' => 'model', 'concurrency' => 'concurrency', 'budget' => 'budget_tokens'];
@@ -79,7 +84,7 @@ final class AnalyzeCommand extends Command
             ->addOption('no-cache', null, InputOption::VALUE_NONE, 'Ignore cached answers (new answers are still cached)')
             ->addOption('strict', null, InputOption::VALUE_NONE, 'Exit 2 if any request failed, was refused, invalid or truncated, or any payload went unsent (ignored with --dry-run)')
             ->addOption('format', null, InputOption::VALUE_REQUIRED, 'console; with --dry-run also json', 'console')
-            ->addOption('output', null, InputOption::VALUE_REQUIRED, 'Write the report to a file (available in a later release)')
+            ->addOption('output', null, InputOption::VALUE_REQUIRED, 'Write the report to this file (never through a symlink); the summary and warnings go to stderr')
             ->addOption('baseline', null, InputOption::VALUE_REQUIRED, 'Baseline file (available in a later release)')
             ->addOption('generate-baseline', null, InputOption::VALUE_NONE, 'Write a baseline (available in a later release)')
             ->addOption('since', null, InputOption::VALUE_REQUIRED, 'Only files changed since a git ref (available in a later release)')
@@ -108,6 +113,9 @@ final class AnalyzeCommand extends Command
             if ($value !== null && $value !== false) {
                 return $this->fail($output, "--{$name} is available in a later release");
             }
+        }
+        if ($dryRun && $input->getOption('output') !== null) {
+            return $this->fail($output, '--output cannot be used with --dry-run');
         }
         if ($format === 'sarif' || ($format === 'json' && ! $dryRun)) {
             return $this->fail($output, "--format {$format} is available in a later release");
@@ -239,77 +247,34 @@ final class AnalyzeCommand extends Command
         }
 
         $strict = $input->getOption('strict') === true;
-        $this->renderResult($output, $result, array_map($redactor->redact(...), [...$run->warnings, ...$result->warnings]), $config, ExitCode::strictReason($result, $strict));
+        $warnings = array_map($redactor->redact(...), [...$run->warnings, ...$result->warnings]);
+        $report = new AnalysisResult($result->findings, $result->suppressed, $result->baselined, $warnings, $result->stats, $result->filtered);
+        $meta = [
+            'tool' => Application::NAME,
+            'version' => Application::VERSION,
+            'provider' => $config->provider,
+            'model' => $config->model ?? Defaults::model($config->provider) ?? 'default',
+            'strictReason' => ExitCode::strictReason($result, $strict),
+            'level' => $config->level->value,
+            'budget' => $config->budgetTokens,
+        ];
+
+        $file = $this->stringOption($input, 'output');
+        if ($file === null) {
+            $output->write((new ConsoleFormatter($output->isDecorated()))->format($report, $meta), false, OutputInterface::OUTPUT_RAW);
+
+            return ExitCode::for($result, $strict);
+        }
+        $err = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
+        try {
+            SafeWriter::write($file, (new ConsoleFormatter())->format($report, $meta));
+        } catch (\RuntimeException $e) {
+            return $this->fail($output, $redactor->redact($e->getMessage()));
+        }
+        $err->write((new ConsoleFormatter($err->isDecorated()))->summary($report, $meta), false, OutputInterface::OUTPUT_RAW);
+        $err->writeln('Report written to '.Terminal::safe($file));
 
         return ExitCode::for($result, $strict);
-    }
-
-    /**
-     * Minimal M6 output: one line per reported finding, the summary, then warnings; M7 replaces it.
-     *
-     * @param  list<string>  $warnings
-     */
-    private function renderResult(OutputInterface $output, AnalysisResult $r, array $warnings, Config $config, ?string $strictReason): void
-    {
-        $line = static fn (string $text) => $output->writeln(Terminal::safe($text));
-        $failing = 0;
-        foreach ($r->findings as $f) {
-            $v = $f['vulnerability'];
-            $failing += (int) $f['failing'];
-            $line(sprintf(
-                '[%s] %s %s:%d %s — %s (%s%s)',
-                strtoupper($v->severity->value),
-                $v->category->value,
-                $v->file,
-                $v->line,
-                $v->symbol,
-                $v->title,
-                $v->confidence->value,
-                $f['failing'] ? '' : ', not failing',
-            ));
-        }
-        if ($r->findings !== []) {
-            $line('');
-        }
-
-        $s = $r->stats;
-        $budget = $config->budgetTokens === null ? 'unlimited' : (string) $config->budgetTokens;
-        $rows = [
-            'candidates' => $s['candidates'],
-            'payloads' => $s['payloads'],
-            'skipped' => $s['skipped'].' (no source code)',
-            'unsent' => $s['unsent'].' (token budget)',
-            'cache hits' => $s['cacheHits'],
-            'sent' => $s['sent'],
-            'ok' => $s['ok'],
-            'refused' => $s['refused'],
-            'truncated' => $s['truncated'],
-            'invalid' => $s['invalid'],
-            'failed' => $s['failed'],
-            'dropped' => $s['dropped'].' (not grounded)',
-            'findings' => count($r->findings).' ('.$failing.' failing)',
-            'filtered' => $s['filtered'].' (below level '.$config->level->value.')',
-            'suppressed' => count($r->suppressed),
-            'baselined' => count($r->baselined),
-            'tokens' => $s['tokens'],
-            'budget' => $budget.($s['budgetExceeded'] ? ' (exceeded)' : ''),
-        ];
-        $line('Summary');
-        foreach ($rows as $label => $value) {
-            $line(sprintf('  %-11s %s', $label, $value));
-        }
-        if ($strictReason !== null) {
-            $line('');
-            $line($strictReason);
-        }
-
-        if ($warnings !== []) {
-            $line('');
-            $line('Warnings');
-            foreach ($warnings as $warning) {
-                $line('  '.$warning);
-            }
-        }
     }
 
     /** @return array<string, string> Config::with() key => the CLI flag its errors name */

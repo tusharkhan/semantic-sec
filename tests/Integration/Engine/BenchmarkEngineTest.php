@@ -16,17 +16,12 @@ use TusharKhan\SemanticSec\Engine\ResultCache;
 use TusharKhan\SemanticSec\Llm\ClientInterface;
 use TusharKhan\SemanticSec\Llm\FakeClient;
 use TusharKhan\SemanticSec\Llm\GroundingChecker;
-use TusharKhan\SemanticSec\Llm\Http\Cassette;
-use TusharKhan\SemanticSec\Llm\Http\CassetteHandler;
-use TusharKhan\SemanticSec\Llm\Http\HttpClientFactory;
-use TusharKhan\SemanticSec\Llm\Http\RetryMiddleware;
 use TusharKhan\SemanticSec\Llm\LlmOutcome;
 use TusharKhan\SemanticSec\Llm\LlmResponse;
-use TusharKhan\SemanticSec\Llm\Provider\AnthropicClient;
 use TusharKhan\SemanticSec\Llm\Provider\JsonOutput;
-use TusharKhan\SemanticSec\Llm\ValidatingClient;
 use TusharKhan\SemanticSec\Payload\Payload;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkCorpus;
+use TusharKhan\SemanticSec\Tests\Support\BenchmarkReplay;
 use TusharKhan\SemanticSec\Tests\Support\LiveBenchmark;
 use TusharKhan\SemanticSec\Tests\Support\NetworkTrap;
 
@@ -106,18 +101,7 @@ final class BenchmarkEngineTest extends TestCase
         self::assertNotNull($cassette, 'the live benchmark cassette is committed');
         self::assertStringEndsWith('anthropic/live-benchmark-laravel11.json', $cassette);
 
-        // The live run used --level low --min-confidence low; neither changes a request body.
-        $run = (new AnalysisPipeline())->run($this->root, null, null, false, null, ['level' => 'low', 'min_confidence' => 'low']);
-        $handler = new CassetteHandler(Cassette::load($cassette), 'replay', match: 'body');
-        $client = new ValidatingClient(new AnthropicClient(HttpClientFactory::create($handler, [RetryMiddleware::create()]), 'replay-key'));
-
-        NetworkTrap::install();
-        try {
-            $result = $this->engine($client, $run)->run($run->payloads(), count($run->results));
-        } finally {
-            self::assertSame([], NetworkTrap::uninstall(), 'no network');
-        }
-        $handler->assertExhausted();
+        $result = BenchmarkReplay::run($this->root);
 
         self::assertSame(['sent' => 14, 'ok' => 14, 'dropped' => 0], array_intersect_key($result->stats, array_flip(['sent', 'ok', 'dropped'])));
         $vuln = 'app/Http/Controllers/Vuln/';

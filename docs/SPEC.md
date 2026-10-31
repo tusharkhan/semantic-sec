@@ -291,7 +291,7 @@ semantic-sec baseline             # alias for analyze --generate-baseline
 | `--level` | **`high`** [new] | Minimum severity to report and to fail on: `low`, `medium`, `high`, `critical` |
 | `--min-confidence` | **`medium`** [new] | Below this: reported (marked `not failing`), but never fails the build |
 | `--format` | `console` | `console`, `json`, `sarif`. Until M7 only `console`, plus `json` with `--dry-run` |
-| `--output` | stdout | Writes the formatter output to a file; the console summary still goes to stderr. M7 |
+| `--output` | stdout | Writes the formatter output to this file (relative to the cwd; may be outside the project) and the summary, strict line and warnings to stderr; stdout stays empty and exit codes are unchanged. Refused (exit 2) when the target is a symlink or a directory, or its parent is a symlink; a missing parent is created; the write is temp-then-rename. Not allowed with `--dry-run` |
 | `--provider` / `--model` | from config | |
 | `--concurrency` | 5 | A positive integer |
 | `--budget` | unlimited | Hard token cap (§12), an integer ≥ 0. Below one request's reservation (~35k+ at the default 16000 `max_tokens`), nothing is sent and the run exits 3 |
@@ -303,9 +303,9 @@ semantic-sec baseline             # alias for analyze --generate-baseline
 | `--no-cache` | off | Skips cache reads; validated answers are still written (§12) |
 | `--strict` | off | Exit 2 if any sent request ended `failed`, `refused`, `invalid` or `truncated`, or any payload was `unsent`. Accepted and ignored with `--dry-run`, since nothing is sent |
 
-**Overrides:** `--level`, `--min-confidence`, `--provider`, `--model`, `--concurrency` and `--budget` override the config file and are validated the same way; an invalid value is exit 2 with a message naming the flag (e.g. `--budget must be an integer ≥ 0.`). Flags, the config file and, outside `--dry-run`, the API key are checked before the project is parsed. `--output`, `--baseline`, `--generate-baseline`, `--since`, `--format sarif`, and `--format json` without `--dry-run` exit 2 with `<option> is available in a later release` until M7.
+**Overrides:** `--level`, `--min-confidence`, `--provider`, `--model`, `--concurrency` and `--budget` override the config file and are validated the same way; an invalid value is exit 2 with a message naming the flag (e.g. `--budget must be an integer ≥ 0.`). Flags, the config file and, outside `--dry-run`, the API key are checked before the project is parsed. `--baseline`, `--generate-baseline`, `--since`, `--format sarif`, and `--format json` without `--dry-run` exit 2 with `<option> is available in a later release` until M7.
 
-**Console output (M6, minimal; M7 replaces it):** on stdout, one line per reported finding, `[<SEVERITY>] <category> <file>:<line> <symbol> — <title> (<confidence>[, not failing])`; then a `Summary` block (candidates, payloads, skipped, unsent, cache hits, sent, ok, refused, truncated, invalid, failed, dropped, findings, filtered, suppressed, baselined, tokens, budget); with `--strict` deciding the exit, one line `strict: <n> failed, <n> refused, …` naming each non-zero count; then `Warnings`. Findings below `--level` are kept in `AnalysisResult::$filtered` (for baselines and the M7 formatters) but only their count is printed. Model-controlled text has control characters replaced and console tags escaped. Errors go to stderr as `Error: <message>`; a missing key names the env var, never its value.
+**Console output:** the §14 report on stdout (or in the `--output` file, undecorated). Findings below `--level` are kept in `AnalysisResult::$filtered` (for baselines and the JSON/SARIF formatters) but only their count is printed. Model-controlled and source-derived text has control characters replaced and console tags escaped. Errors go to stderr as `Error: <message>`; a missing key names the env var, never its value.
 
 **Memory:** `bin/semantic-sec` raises PHP's `memory_limit` to `1G` when it is lower (and not `-1`), since real projects exceed the 128M default; `SEMANTIC_SEC_MEMORY_LIMIT` overrides it with any php.ini value (`-1`, `2G`, …).
 
@@ -315,7 +315,25 @@ Precedence, from `AnalysisResult`, is `1 > strict-2 > 3 > all-failed-2 > 0`: `1`
 
 ## 14. Output
 
-- **Console:** the spec's original layout (`[!] High Severity: <title>` / File / Line / Context / Flaw / Suggested Fix with diff), grouped by file, then a summary: findings, suppressed, baselined, cache hits, tokens, warnings.
+- **Console:**
+  - a header `semantic-sec <version> — <provider> <model>`
+  - findings grouped by file (a bold file line per group), sorted by file then line, each as:
+    ```
+      [!] High Severity: <title>
+          File:          <root-relative path>
+          Line:          <line>
+          Symbol:        <symbol>
+          Category:      <label> (CWE-xxx)
+          Confidence:    <confidence>[ (not failing)]
+          Context:       <context>
+          Flaw:          <flaw>
+          Suggested Fix: <fix>
+          Patch:         (only when the finding has one; the diff, one line each, + green, - red, @@ cyan)
+    ```
+    or `No findings.`
+  - `Suppressed (n)` and `Baselined (n)` lists, each entry `- <title> — <file>:<line> — <reason>` (the suppression reason, `no reason given`, or `in baseline`); filtered findings appear only as a count
+  - the `Summary` block (candidates, payloads, skipped, unsent, cache hits, sent, ok, refused, truncated, invalid, failed, dropped, findings, filtered, suppressed, baselined, tokens, budget), the `strict: …` line when `--strict` decides the exit, then `Warnings`
+  - every model- or source-derived string goes through the `Terminal` helper (control characters replaced, console tags escaped); multi-line prose keeps its line breaks, and patch lines keep their indentation. Colour comes only from the formatter's own template and only when the output is decorated; the `--output` file is plain text
 - **JSON:** `{version, tool, summary, findings[], suppressed[], baselined[], warnings[]}`, each finding in the section 10 shape plus `fingerprint`.
 - **SARIF 2.1.0:**
   - one `rule` per category: `id = CWE-xxx`, name, `helpUri` = the cwe.mitre.org page

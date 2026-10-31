@@ -22,6 +22,12 @@ final class Terminal
         return OutputFormatter::escape(self::clean($text));
     }
 
+    // One line of code or diff: tabs become four spaces, other controls spaces, indentation kept, tags escaped.
+    public static function safeLine(string $line): string
+    {
+        return OutputFormatter::escape(rtrim((string) preg_replace('/(?:[\x00-\x1F\x7F]|\xC2[\x80-\x9F])+/', ' ', str_replace("\t", '    ', $line))));
+    }
+
     // safe() per line, keeping the line breaks (multi-line table cells).
     public static function safeLines(string $text): string
     {
