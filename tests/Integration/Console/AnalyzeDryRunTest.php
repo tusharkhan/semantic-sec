@@ -273,21 +273,12 @@ final class AnalyzeDryRunTest extends TestCase
         }
     }
 
+    // Wiring check only; the guard's cases live in OutputDirTest.
     public function testSymlinkedSemanticSecDirIsRefused(): void
     {
         $root = self::copy('laravel10-app', 'link-base');
         $outside = self::outside($root);
         symlink('../outside', $root.'/.semantic-sec');
-
-        self::assertRefused($root, $outside);
-    }
-
-    public function testSymlinkedDryRunDirIsRefused(): void
-    {
-        $root = self::copy('laravel10-app', 'link-dry');
-        $outside = self::outside($root);
-        mkdir($root.'/.semantic-sec');
-        symlink('../../outside/dry-run', $root.'/.semantic-sec/dry-run');
 
         self::assertRefused($root, $outside);
     }

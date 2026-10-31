@@ -16,6 +16,7 @@ use TusharKhan\SemanticSec\Candidates\Candidate;
 use TusharKhan\SemanticSec\Config\ConfigException;
 use TusharKhan\SemanticSec\Console\AnalysisPipeline;
 use TusharKhan\SemanticSec\Console\ExitCode;
+use TusharKhan\SemanticSec\Console\OutputDir;
 use TusharKhan\SemanticSec\Framework\FrameworkNotDetected;
 use TusharKhan\SemanticSec\Payload\Payload;
 use TusharKhan\SemanticSec\Payload\Redactor;
@@ -63,7 +64,7 @@ final class AnalyzeCommand extends Command
         $dir = $root.'/'.self::DRY_RUN_DIR;
         $redactor = new Redactor();
         try {
-            self::guard($root, false);
+            OutputDir::check($root, self::DRY_RUN_DIR);
         } catch (\RuntimeException $e) {
             return $this->fail($output, $redactor->redact($e->getMessage()));
         }
@@ -134,7 +135,7 @@ final class AnalyzeCommand extends Command
     /** @param list<array{candidate: Candidate, payloads: list<Payload>}> $results */
     private function write(string $root, array $results, string $system): void
     {
-        $dir = self::guard($root, true);
+        $dir = self::recreate($root);
         self::put($dir.'/'.self::SYSTEM_FILE, $system);
         foreach ($results as $result) {
             foreach ($result['payloads'] as $payload) {
@@ -153,35 +154,15 @@ final class AnalyzeCommand extends Command
         fclose($handle);
     }
 
-    // Refuses a symlinked or escaping .semantic-sec or dry-run dir; with $create, empties dry-run (creating dirs one level at a time).
-    private static function guard(string $root, bool $create): string
+    // Empties dry-run by removing and recreating it, both behind the OutputDir guard.
+    private static function recreate(string $root): string
     {
-        $realRoot = realpath($root);
-        if ($realRoot === false) {
-            throw new \RuntimeException('Project root does not exist: '.$root);
-        }
-        $path = $root;
-        foreach (explode('/', self::DRY_RUN_DIR) as $i => $part) {
-            $path .= '/'.$part;
-            $last = $i === substr_count(self::DRY_RUN_DIR, '/');
-            if (is_link($path)) {
-                throw new \RuntimeException(sprintf('Refusing to write dry-run output: %s is a symlink', $path));
-            }
-            if (file_exists($path)) {
-                $real = realpath($path);
-                if (! is_dir($path) || $real === false || ! str_starts_with($real.'/', $realRoot.'/')) {
-                    throw new \RuntimeException(sprintf('Refusing to write dry-run output: %s is not a directory inside %s', $path, $realRoot));
-                }
-                if ($create && $last) {
-                    self::remove($path);
-                }
-            }
-            if ($create && ! is_dir($path) && ! @mkdir($path, 0777) && ! is_dir($path)) {
-                throw new \RuntimeException('Cannot create '.$path);
-            }
+        OutputDir::check($root, self::DRY_RUN_DIR);
+        if (file_exists($root.'/'.self::DRY_RUN_DIR)) {
+            self::remove($root.'/'.self::DRY_RUN_DIR);
         }
 
-        return $path;
+        return OutputDir::prepare($root, self::DRY_RUN_DIR);
     }
 
     // Deletes the dry-run directory; a symlink is unlinked, never followed.
