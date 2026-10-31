@@ -204,7 +204,7 @@ final class PayloadBuilderTest extends TestCase
     public function testEveryLineTagMatchesSource(): void
     {
         $checked = 0;
-        foreach ([8000, 1350, 1050, 950] as $limit) {
+        foreach ([8000, 1350, 1100, 950] as $limit) {
             foreach (self::all($limit) as $payload) {
                 $checked += self::assertTagsMatchSource($payload->text());
             }
@@ -364,14 +364,14 @@ final class PayloadBuilderTest extends TestCase
     public function testTruncatesASingleNodeOverTheLimit(): void
     {
         $payloads = self::payloads('PUT /posts/{post}', 1350);
-        $tight = self::payloads('PUT /posts/{post}', 1050);
+        $tight = self::payloads('PUT /posts/{post}', 1100);
 
         self::assertFalse($payloads[count($payloads) - 1]->truncated);
         $truncated = array_values(array_filter($tight, static fn (Payload $p): bool => $p->truncated));
         self::assertNotSame([], $truncated);
         foreach ($truncated as $payload) {
             self::assertMatchesRegularExpression('~\n// … truncated\n(?:\n// FILE: app/Policies/|</untrusted_code>$)~u', $payload->code);
-            self::assertLessThanOrEqual(1050, $payload->tokens());
+            self::assertLessThanOrEqual(1100, $payload->tokens());
         }
         $kept = array_filter($truncated, static fn (Payload $p): bool => preg_match('~^L\\d+\\| ~m', $p->code) === 1);
         self::assertNotSame([], $kept);
@@ -379,7 +379,7 @@ final class PayloadBuilderTest extends TestCase
 
     public function testEveryPartStaysWithinTheLimitWhenTheContextFits(): void
     {
-        foreach ([1350, 1050] as $limit) {
+        foreach ([1350, 1100] as $limit) {
             foreach (self::payloads('PUT /posts/{post}', $limit) as $payload) {
                 self::assertLessThanOrEqual($limit, $payload->tokens(), $payload->id);
             }

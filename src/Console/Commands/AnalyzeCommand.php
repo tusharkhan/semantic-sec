@@ -49,11 +49,21 @@ final class AnalyzeCommand extends Command
             return $this->fail($output, 'analysis needs the LLM layer (M5); use --dry-run');
         }
 
+        if ($input->getOption('project-root') === '') {
+            return $this->fail($output, '--project-root must not be empty');
+        }
         $root = $this->resolveRoot($input->getOption('project-root'));
         if ($root === null) {
             return $this->fail($output, 'Project root does not exist: '.(string) $input->getOption('project-root'));
         }
         $paths = $this->paths($root, $input->getArgument('paths'));
+        $dir = $root.'/'.self::DRY_RUN_DIR;
+        $redactor = new Redactor();
+        try {
+            self::guard($root, false);
+        } catch (\RuntimeException $e) {
+            return $this->fail($output, $redactor->redact($e->getMessage()));
+        }
 
         try {
             [$results, $warnings] = (new AnalysisPipeline())->run(
@@ -67,14 +77,15 @@ final class AnalyzeCommand extends Command
             return $this->fail($output, $e->getMessage());
         }
 
-        $dir = $root.'/'.self::DRY_RUN_DIR;
         try {
-            $this->write($dir, $results);
+            $this->write($root, $results);
         } catch (\RuntimeException $e) {
-            return $this->fail($output, $e->getMessage());
+            return $this->fail($output, $redactor->redact($e->getMessage()));
         }
 
-        $rows = $this->rows($results);
+        $rows = $this->rows($results, $redactor);
+        $warnings = array_map($redactor->redact(...), $warnings);
+        $dir = $redactor->redact($dir);
         if ($format === 'json') {
             $output->writeln(json_encode([
                 'summary' => [
@@ -117,20 +128,50 @@ final class AnalyzeCommand extends Command
     }
 
     /** @param list<array{candidate: Candidate, payloads: list<Payload>}> $results */
-    private function write(string $dir, array $results): void
+    private function write(string $root, array $results): void
     {
-        self::remove($dir);
-        if (! @mkdir($dir, 0777, true) && ! is_dir($dir)) {
-            throw new \RuntimeException('Cannot create '.$dir);
-        }
+        $dir = self::guard($root, true);
         foreach ($results as $result) {
             foreach ($result['payloads'] as $payload) {
                 $file = $dir.'/'.$payload->id.'.txt';
-                if (@file_put_contents($file, $payload->text()."\n") === false) {
+                $handle = @fopen($file, 'x');
+                if ($handle === false || @fwrite($handle, $payload->text()."\n") === false) {
                     throw new \RuntimeException('Cannot write '.$file);
                 }
+                fclose($handle);
             }
         }
+    }
+
+    // Refuses a symlinked or escaping .semantic-sec or dry-run dir; with $create, empties dry-run (creating dirs one level at a time).
+    private static function guard(string $root, bool $create): string
+    {
+        $realRoot = realpath($root);
+        if ($realRoot === false) {
+            throw new \RuntimeException('Project root does not exist: '.$root);
+        }
+        $path = $root;
+        foreach (explode('/', self::DRY_RUN_DIR) as $i => $part) {
+            $path .= '/'.$part;
+            $last = $i === substr_count(self::DRY_RUN_DIR, '/');
+            if (is_link($path)) {
+                throw new \RuntimeException(sprintf('Refusing to write dry-run output: %s is a symlink', $path));
+            }
+            if (file_exists($path)) {
+                $real = realpath($path);
+                if (! is_dir($path) || $real === false || ! str_starts_with($real.'/', $realRoot.'/')) {
+                    throw new \RuntimeException(sprintf('Refusing to write dry-run output: %s is not a directory inside %s', $path, $realRoot));
+                }
+                if ($create && $last) {
+                    self::remove($path);
+                }
+            }
+            if ($create && ! is_dir($path) && ! @mkdir($path, 0777) && ! is_dir($path)) {
+                throw new \RuntimeException('Cannot create '.$path);
+            }
+        }
+
+        return $path;
     }
 
     // Deletes the dry-run directory; a symlink is unlinked, never followed.
@@ -160,9 +201,8 @@ final class AnalyzeCommand extends Command
      * @param  list<array{candidate: Candidate, payloads: list<Payload>}>  $results
      * @return list<array{number: int, route: string, categories: list<string>, tokens: int, payloads: list<array{id: string, file: string, part: int, parts: int, tokens: int, truncated: bool}>}>
      */
-    private function rows(array $results): array
+    private function rows(array $results, Redactor $redactor): array
     {
-        $redactor = new Redactor();
         $rows = [];
         foreach ($results as $i => $result) {
             $route = $result['candidate']->route;

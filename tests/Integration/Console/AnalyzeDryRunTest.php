@@ -256,6 +256,108 @@ final class AnalyzeDryRunTest extends TestCase
         }
     }
 
+    public function testSymlinkedSemanticSecDirIsRefused(): void
+    {
+        $root = self::copy('laravel10-app', 'link-base');
+        $outside = self::outside($root);
+        symlink('../outside', $root.'/.semantic-sec');
+
+        self::assertRefused($root, $outside);
+    }
+
+    public function testSymlinkedDryRunDirIsRefused(): void
+    {
+        $root = self::copy('laravel10-app', 'link-dry');
+        $outside = self::outside($root);
+        mkdir($root.'/.semantic-sec');
+        symlink('../../outside/dry-run', $root.'/.semantic-sec/dry-run');
+
+        self::assertRefused($root, $outside);
+    }
+
+    public function testLinksInsideDryRunAreUnlinkedNotFollowed(): void
+    {
+        $root = self::copy('laravel10-app', 'link-inner');
+        $outside = self::outside($root);
+        mkdir($root.'/.semantic-sec/dry-run', 0777, true);
+        symlink($outside.'/dry-run', $root.'/.semantic-sec/dry-run/dir-link');
+        symlink($outside.'/dry-run/sub/keep.txt', $root.'/.semantic-sec/dry-run/file-link');
+
+        self::assertSame(0, self::tester()->execute(['--project-root' => $root, '--dry-run' => true]));
+        self::assertFalse(is_link($root.'/.semantic-sec/dry-run/dir-link'));
+        self::assertFalse(is_link($root.'/.semantic-sec/dry-run/file-link'));
+        self::assertSame('keep', file_get_contents($outside.'/dry-run/sub/keep.txt'));
+        self::assertSame(['sub'], array_values(array_diff(scandir($outside.'/dry-run') ?: [], ['.', '..'])));
+    }
+
+    public function testEmptyProjectRootWritesNothing(): void
+    {
+        $cwd = (string) getcwd();
+        $before = file_exists($cwd.'/.semantic-sec');
+        $t = self::tester();
+        self::assertSame(2, $t->execute(['--project-root' => '', '--dry-run' => true], ['capture_stderr_separately' => true]));
+        self::assertStringContainsString('--project-root', $t->getErrorOutput());
+        self::assertSame($before, file_exists($cwd.'/.semantic-sec'));
+
+        $empty = dirname(self::copy('laravel10-app', 'empty')).'/empty';
+        mkdir($empty);
+        self::assertSame(2, self::tester()->execute(['--project-root' => $empty, '--dry-run' => true]));
+        self::assertSame(['.', '..'], scandir($empty));
+    }
+
+    public function testWarningsAndDirectoryAreRedacted(): void
+    {
+        $secret = 'sk_live_51HxYzAbCdEfGhIjKlMnOpQrStUv';
+        $base = sys_get_temp_dir().'/semsec-analyze-'.bin2hex(random_bytes(4));
+        mkdir($base.'/'.$secret, 0777, true);
+        exec('cp -R '.escapeshellarg(BenchmarkCorpus::root().'/laravel10-app').' '.escapeshellarg($base.'/'.$secret.'/app'), $out, $code);
+        self::assertSame(0, $code);
+        self::$copies[$base] = $base.'/x';
+        $root = $base.'/'.$secret.'/app';
+        file_put_contents($root.'/routes/web.php', "\nRoute::get('/leak', 'Missing\\\\LeakController@".$secret."');\n", FILE_APPEND);
+
+        foreach (['console', 'json'] as $format) {
+            $t = self::tester();
+            self::assertSame(0, $t->execute(['--project-root' => $root, '--dry-run' => true, '--format' => $format]));
+            self::assertStringNotContainsString($secret, $t->getDisplay(), $format);
+            self::assertStringContainsString('LeakController', $t->getDisplay(), $format);
+        }
+    }
+
+    // Curl handles are objects in PHP 8, invisible to get_resources(); so src/ is scanned for raw network calls instead.
+    public function testSourceMakesNoRawNetworkCalls(): void
+    {
+        $hits = [];
+        $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator(dirname(__DIR__, 3).'/src', \FilesystemIterator::SKIP_DOTS));
+        foreach ($files as $file) {
+            foreach (token_get_all((string) file_get_contents((string) $file)) as $token) {
+                if (is_array($token) && $token[0] === T_STRING && preg_match('~^(curl_\w+|p?fsockopen|stream_socket_client|socket_create|socket_connect)$~i', $token[1]) === 1) {
+                    $hits[] = $file.':'.$token[2].': '.$token[1];
+                }
+            }
+        }
+        self::assertSame([], $hits);
+    }
+
+    // A sibling dir outside the project, holding dry-run/sub/keep.txt.
+    private static function outside(string $root): string
+    {
+        $outside = dirname($root).'/outside';
+        mkdir($outside.'/dry-run/sub', 0777, true);
+        file_put_contents($outside.'/dry-run/sub/keep.txt', 'keep');
+
+        return $outside;
+    }
+
+    private static function assertRefused(string $root, string $outside): void
+    {
+        $t = self::tester();
+        self::assertSame(2, $t->execute(['--project-root' => $root, '--dry-run' => true], ['capture_stderr_separately' => true]));
+        self::assertStringContainsString('symlink', $t->getErrorOutput());
+        self::assertSame('keep', file_get_contents($outside.'/dry-run/sub/keep.txt'));
+        self::assertSame(['sub'], array_values(array_diff(scandir($outside.'/dry-run') ?: [], ['.', '..'])));
+    }
+
     // Proves only that no known HTTP client class was loaded and no http(s) stream was opened in-process; raw curl_* or socket calls are not intercepted.
     public function testDryRunUsesNoNetworkAndNoApiKey(): void
     {

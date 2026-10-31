@@ -356,6 +356,27 @@ final class CandidateSelectorTest extends TestCase
         self::assertSame(['idor', 'missing_authorization'], self::categories('POST /orders/{order}/refund-guarded', true));
     }
 
+    public function testDeepReasonsKeepTheNormalDetail(): void
+    {
+        $checked = 0;
+        foreach (self::selectAll(false)[0] as $key => $normal) {
+            $deep = self::candidate($key, true);
+            self::assertNotNull($deep, $key);
+            foreach ($normal->reasons as $category => $reason) {
+                self::assertSame(self::deepPrefixed($category, $reason), $deep->reasons[$category] ?? null, $key.' '.$category);
+                $checked++;
+            }
+        }
+        self::assertGreaterThan(10, $checked);
+    }
+
+    public function testDeepReasonsNameTheCheckTheyIgnore(): void
+    {
+        self::assertStringContainsString("authorize('view', \$post)", self::reason('GET /authorized/{post}', Category::Idor, true));
+        self::assertStringContainsString("Gate::authorize('admin')", self::reason('POST /store-admin', Category::MissingAuthorization, true));
+        self::assertStringContainsString('$account->update', self::reason('PUT /store-own-var', Category::MissingAuthorization, true));
+    }
+
     public function testPathsFilterSkipsActionsOutsideThePaths(): void
     {
         [$candidates, $exclusions] = self::selectAll(false, ['app/Http/Controllers/Other']);
@@ -403,9 +424,9 @@ final class CandidateSelectorTest extends TestCase
         return array_map(static fn (Category $c): string => $c->value, $candidate->categories);
     }
 
-    private static function reason(string $key, Category $category): string
+    private static function reason(string $key, Category $category, bool $deep = false): string
     {
-        $candidate = self::candidate($key);
+        $candidate = self::candidate($key, $deep);
         self::assertNotNull($candidate);
 
         return $candidate->reasons[$category->value] ?? '';
@@ -463,5 +484,11 @@ final class CandidateSelectorTest extends TestCase
         }
 
         return self::$runs[$cacheKey] = [$byKey, $selector->exclusions()];
+    }
+
+    // --deep relabels only the categories it stops excluding; the normal detail follows the prefix.
+    private static function deepPrefixed(string $category, string $reason): string
+    {
+        return in_array($category, [Category::Idor->value, Category::MissingAuthorization->value], true) ? '--deep: '.$reason : $reason;
     }
 }

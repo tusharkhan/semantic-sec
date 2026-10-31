@@ -412,12 +412,6 @@ final class CandidateSelector
      */
     private function idor(string $key, array $identifiers, array $checks, bool $deep, array &$reasons): void
     {
-        $labels = array_map(static fn (array $i): string => $i['label'], $identifiers);
-        if ($deep) {
-            $reasons[Category::Idor->value] = '--deep: identifiers '.implode(', ', $labels);
-
-            return;
-        }
         $uncovered = [];
         $sources = [];
         foreach ($identifiers as $identifier) {
@@ -429,11 +423,17 @@ final class CandidateSelector
             }
         }
         if ($uncovered !== []) {
-            $reasons[Category::Idor->value] = 'identifier '.implode(', ', $uncovered).' not covered by an authorization check';
+            $reasons[Category::Idor->value] = ($deep ? '--deep: ' : '').'identifier '.implode(', ', $uncovered).' not covered by an authorization check';
 
             return;
         }
-        $this->exclude($key, Category::Idor, 'every identifier is covered by an authorization check', implode('; ', array_unique($sources)));
+        $covered = implode('; ', array_unique($sources));
+        if ($deep) {
+            $reasons[Category::Idor->value] = '--deep: every identifier is covered by an authorization check: '.$covered;
+
+            return;
+        }
+        $this->exclude($key, Category::Idor, 'every identifier is covered by an authorization check', $covered);
     }
 
     /**
@@ -1062,13 +1062,13 @@ final class CandidateSelector
     private function missingAuthorization(string $key, ExecutionPath $path, array $verbs, array $writes, array $checks, bool $deep, array &$reasons): void
     {
         $change = $verbs !== [] ? implode('/', $verbs).' route' : 'writes via '.$this->print($writes[0][1]);
-        if ($deep) {
-            $reasons[Category::MissingAuthorization->value] = '--deep: '.$change.' changes state';
+        // A query scope only limits what is read; it does not authorize a write.
+        $authorizing = array_values(array_filter($checks, static fn (AuthCheck $c): bool => $c->kind !== AuthCheckKind::QueryScope));
+        if ($authorizing !== [] && $deep) {
+            $reasons[Category::MissingAuthorization->value] = '--deep: '.$change.' changes state; an authorization check is on the path: '.$this->checkText($authorizing[0]);
 
             return;
         }
-        // A query scope only limits what is read; it does not authorize a write.
-        $authorizing = array_values(array_filter($checks, static fn (AuthCheck $c): bool => $c->kind !== AuthCheckKind::QueryScope));
         if ($authorizing !== []) {
             $this->exclude($key, Category::MissingAuthorization, 'an authorization check is on the path', $this->checkText($authorizing[0]));
 
@@ -1082,12 +1082,18 @@ final class CandidateSelector
             $scoped = $scoped && AuthExpressions::isCall($call) && $this->authRooted($call->var, $this->bodies[$node->id], $node);
             $texts[] = sprintf('%s (%s:%d)', $this->print($call), $node->file, $call->getStartLine());
         }
-        if ($scoped) {
-            $this->exclude($key, Category::MissingAuthorization, 'every model write is reached through the authenticated user or a user-scoped query', implode('; ', array_unique($texts)));
+        $selfScoped = 'every model write is reached through the authenticated user or a user-scoped query';
+        if ($scoped && $deep) {
+            $reasons[Category::MissingAuthorization->value] = '--deep: '.$change.' changes state; '.$selfScoped.': '.implode('; ', array_unique($texts));
 
             return;
         }
-        $reasons[Category::MissingAuthorization->value] = $change.' with no authorization check'.($hidden === null ? '' : '; unresolved call '.$hidden);
+        if ($scoped) {
+            $this->exclude($key, Category::MissingAuthorization, $selfScoped, implode('; ', array_unique($texts)));
+
+            return;
+        }
+        $reasons[Category::MissingAuthorization->value] = ($deep ? '--deep: ' : '').$change.' with no authorization check'.($hidden === null ? '' : '; unresolved call '.$hidden);
     }
 
     /**

@@ -80,6 +80,18 @@ final class BenchmarkCandidateTest extends TestCase
         }
     }
 
+    public function testDeepReasonsKeepTheNormalDetail(): void
+    {
+        foreach (self::APPS as $app) {
+            $deep = self::selected($app, true)[0];
+            foreach (self::selected($app)[0] as $key => $candidate) {
+                foreach ($candidate->reasons as $category => $reason) {
+                    self::assertSame(self::deepPrefixed($category, $reason), $deep[$key]->reasons[$category] ?? null, $app.' '.$key.' '.$category);
+                }
+            }
+        }
+    }
+
     /** @return array{0: array<string, Candidate>, 1: list<Exclusion>} */
     private static function selected(string $app, bool $deep = false): array
     {
@@ -119,5 +131,11 @@ final class BenchmarkCandidateTest extends TestCase
         }
 
         return $out === [] ? 'none' : implode('; ', $out);
+    }
+
+    // --deep relabels only the categories it stops excluding; the normal detail follows the prefix.
+    private static function deepPrefixed(string $category, string $reason): string
+    {
+        return in_array($category, [Category::Idor->value, Category::MissingAuthorization->value], true) ? '--deep: '.$reason : $reason;
     }
 }
