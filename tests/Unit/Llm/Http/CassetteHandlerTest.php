@@ -378,6 +378,68 @@ final class CassetteHandlerTest extends TestCase
         return json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
     }
 
+    public function testBodyModeIgnoresOrder(): void
+    {
+        $path = $this->writeCassette([
+            $this->bodied('POST', 'https://api.example.test/v1/m', '{"q":"one","k":"<scrubbed>"}', '{"n":1}'),
+            $this->bodied('POST', 'https://api.example.test/v1/m', '{"q":"two","k":"<scrubbed>"}', '{"n":2}'),
+            $this->bodied('POST', 'https://api.example.test/v1/m', '{"q":"two","k":"<scrubbed>"}', '{"n":3}'),
+        ]);
+        $handler = new CassetteHandler(Cassette::load($path), 'replay', secrets: [self::KEY], match: 'body');
+        $client = HttpClientFactory::create($handler);
+        $send = static fn (string $q): string => (string) $client->post('https://api.example.test/v1/m', ['body' => json_encode(['q' => $q, 'k' => self::KEY], JSON_UNESCAPED_SLASHES)])->getBody();
+
+        self::assertSame('{"n":2}', $send('two'));
+        self::assertSame('{"n":1}', $send('one'));
+        try {
+            $handler->assertExhausted();
+            self::fail('one interaction is still unused');
+        } catch (\LogicException $e) {
+            self::assertStringContainsString('1 unused interactions', $e->getMessage());
+        }
+        self::assertSame('{"n":3}', $send('two'), 'a used interaction is never replayed twice');
+        $handler->assertExhausted();
+
+        $this->expectException(\LogicException::class);
+        $send('two');
+    }
+
+    public function testBodyModeMismatchNamesNothingSecret(): void
+    {
+        $path = $this->writeCassette([$this->bodied('POST', 'https://api.example.test/v1/m', '{"q":"recorded"}', '{}')]);
+        $client = HttpClientFactory::create(new CassetteHandler(Cassette::load($path), 'replay', secrets: [self::KEY], match: 'body'));
+        $body = json_encode(['q' => 'private source code', 'k' => self::KEY, 'aws' => 'AKIAIOSFODNN7EXAMPLE'], JSON_UNESCAPED_SLASHES);
+        $scrubbed = json_encode(['q' => 'private source code', 'k' => '<scrubbed>', 'aws' => '<redacted>'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        try {
+            $client->post('https://api.example.test/v1/m', ['body' => $body]);
+            self::fail('a mismatch must throw');
+        } catch (\LogicException $e) {
+            $message = $e->getMessage();
+        }
+
+        self::assertSame("cassette {$path}: no unused interaction for POST https://api.example.test/v1/m with body sha256 " . hash('sha256', (string) $scrubbed), $message);
+        foreach (['private source code', self::KEY, 'AKIAIOSFODNN7EXAMPLE', 'recorded'] as $leak) {
+            self::assertStringNotContainsString($leak, $message);
+        }
+    }
+
+    public function testBodyModeRejectsUnknownMatch(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+
+        new CassetteHandler(Cassette::load($this->writeCassette([])), 'replay', match: 'random');
+    }
+
+    /** @return array<string, mixed> */
+    private function bodied(string $method, string $uri, string $requestBody, string $responseBody): array
+    {
+        return [
+            'request' => ['method' => $method, 'uri' => $uri, 'headers' => [], 'body' => $requestBody],
+            'response' => ['status' => 200, 'headers' => ['content-type' => 'application/json'], 'body' => $responseBody],
+        ];
+    }
+
     /** @param list<array<string, mixed>> $interactions */
     private function writeCassette(array $interactions): string
     {

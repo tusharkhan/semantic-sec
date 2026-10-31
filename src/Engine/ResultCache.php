@@ -139,6 +139,12 @@ final class ResultCache
         }
     }
 
+    // The prompt the key hashes, so requests are sent with exactly that text.
+    public function systemPrompt(): string
+    {
+        return $this->systemPrompt;
+    }
+
     public function hits(): int
     {
         return $this->hits;
