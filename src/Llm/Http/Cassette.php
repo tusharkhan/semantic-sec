@@ -44,6 +44,11 @@ final class Cassette
         return $this->interactions;
     }
 
+    public function clear(): void
+    {
+        $this->interactions = [];
+    }
+
     /** @param Interaction $interaction */
     public function add(array $interaction): void
     {

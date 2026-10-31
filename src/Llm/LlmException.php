@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Llm;
 
+/** Messages must never include the request URI or a raw Guzzle exception message (either may carry a key). */
 final class LlmException extends \RuntimeException
 {
     public function __construct(
