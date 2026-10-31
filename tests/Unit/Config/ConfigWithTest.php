@@ -66,8 +66,8 @@ final class ConfigWithTest extends TestCase
         yield 'model blank' => [['model' => ' '], '"model" must be a non-empty string'];
         yield 'concurrency zero' => [['concurrency' => '0'], '"concurrency" must be a positive integer'];
         yield 'concurrency text' => [['concurrency' => 'two'], '"concurrency" must be a positive integer'];
-        yield 'budget negative' => [['budget_tokens' => '-1'], '"budget_tokens" must be an integer of 0 or more'];
-        yield 'budget float' => [['budget_tokens' => '1e6'], '"budget_tokens" must be an integer of 0 or more'];
+        yield 'budget negative' => [['budget_tokens' => '-1'], '"budget_tokens" must be an integer ≥ 0'];
+        yield 'budget float' => [['budget_tokens' => '1e6'], '"budget_tokens" must be an integer ≥ 0'];
         yield 'ollama without model' => [['provider' => 'ollama'], 'ollama needs a model'];
     }
 
@@ -80,6 +80,13 @@ final class ConfigWithTest extends TestCase
         $this->expectException(ConfigException::class);
         $this->expectExceptionMessage($message);
         $c->with($overrides);
+    }
+
+    public function testErrorsCanNameTheFlag(): void
+    {
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('--budget must be an integer ≥ 0.');
+        (new ConfigLoader())->load($this->dir)->with(['budget_tokens' => '-5'], ['budget_tokens' => '--budget']);
     }
 
     public function testUnknownKeyIsAProgrammingError(): void

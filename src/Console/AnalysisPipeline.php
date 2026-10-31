@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Console;
 
+use TusharKhan\SemanticSec\Config\Config;
 use TusharKhan\SemanticSec\Framework\Laravel\LaravelContext;
 use TusharKhan\SemanticSec\Llm\SecurityPrompt;
 
@@ -20,13 +21,14 @@ final class AnalysisPipeline
     /**
      * @param  list<string>|null  $paths  project-relative report scope; null keeps the config's `paths`
      * @param  array{level?: mixed, min_confidence?: mixed, provider?: mixed, model?: mixed, concurrency?: mixed, budget_tokens?: mixed}  $overrides  CLI options, see Config::with()
+     * @param  Config|null  $config  already loaded (and validated) by the caller; null reads $configPath
      *
      * @throws \TusharKhan\SemanticSec\Config\ConfigException
      * @throws \TusharKhan\SemanticSec\Framework\FrameworkNotDetected
      */
-    public function run(string $root, ?string $configPath, ?string $framework, bool $deep, ?array $paths, array $overrides = []): PipelineResult
+    public function run(string $root, ?string $configPath, ?string $framework, bool $deep, ?array $paths, array $overrides = [], ?Config $config = null): PipelineResult
     {
-        $mapped = $this->mapper->project($root, $configPath, $framework);
+        $mapped = $this->mapper->project($root, $configPath, $framework, $config);
         $config = $mapped->config->with($paths === null ? $overrides : [...$overrides, 'paths' => $paths]);
         $project = new MappedProject($config, $mapped->framework, $mapped->parsed, $mapped->symbols, $mapped->map, $mapped->warnings);
         $context = new LaravelContext();

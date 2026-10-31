@@ -16,6 +16,7 @@ use TusharKhan\SemanticSec\Analysis\Category;
 use TusharKhan\SemanticSec\Candidates\Candidate;
 use TusharKhan\SemanticSec\Config\Config;
 use TusharKhan\SemanticSec\Config\ConfigException;
+use TusharKhan\SemanticSec\Config\ConfigLoader;
 use TusharKhan\SemanticSec\Console\AnalysisPipeline;
 use TusharKhan\SemanticSec\Console\ExitCode;
 use TusharKhan\SemanticSec\Console\OutputDir;
@@ -104,11 +105,11 @@ final class AnalyzeCommand extends Command
                 return $this->fail($output, "--{$name} is available in a later release");
             }
         }
-        if ($dryRun && ! in_array($format, ['console', 'json'], true)) {
-            return $this->fail($output, '--format must be console or json');
+        if ($format === 'sarif' || ($format === 'json' && ! $dryRun)) {
+            return $this->fail($output, "--format {$format} is available in a later release");
         }
-        if (! $dryRun && $format !== 'console') {
-            return $this->fail($output, in_array($format, ['json', 'sarif'], true) ? "--format {$format} is available in a later release" : '--format must be console');
+        if ($format !== 'console' && $format !== 'json') {
+            return $this->fail($output, $dryRun ? '--format must be console or json' : '--format must be console');
         }
         $overrides = [];
         foreach (self::OVERRIDES as $option => $key) {
@@ -126,8 +127,17 @@ final class AnalyzeCommand extends Command
             return $this->fail($output, 'Project root does not exist: '.(string) $input->getOption('project-root'));
         }
         $paths = $this->paths($root, $input->getArgument('paths'));
-        if (! $dryRun) {
-            return $this->analyze($input, $output, $root, $paths, $overrides);
+
+        // Flags, config and key are checked before the project is parsed, so a mistake fails fast.
+        try {
+            $config = (new ConfigLoader())->load($root, $this->stringOption($input, 'config'))->with($overrides, self::flagNames());
+            if (! $dryRun) {
+                $client = $this->providerClient === null ? ClientFactory::validated($config) : new ValidatingClient(($this->providerClient)($config));
+
+                return $this->analyze($input, $output, $root, $paths, $overrides, $config, $client);
+            }
+        } catch (ConfigException $e) {
+            return $this->fail($output, $e->getMessage());
         }
         $dir = $root.'/'.self::DRY_RUN_DIR;
         $redactor = new Redactor();
@@ -145,6 +155,7 @@ final class AnalyzeCommand extends Command
                 $input->getOption('deep') === true,
                 $paths,
                 $overrides,
+                $config,
             );
         } catch (ConfigException|FrameworkNotDetected $e) {
             return $this->fail($output, $e->getMessage());
@@ -185,7 +196,7 @@ final class AnalyzeCommand extends Command
      * @param  list<string>|null  $paths
      * @param  array<string, mixed>  $overrides
      */
-    private function analyze(InputInterface $input, OutputInterface $output, string $root, ?array $paths, array $overrides): int
+    private function analyze(InputInterface $input, OutputInterface $output, string $root, ?array $paths, array $overrides, Config $config, ClientInterface $client): int
     {
         $redactor = new Redactor();
         try {
@@ -202,9 +213,9 @@ final class AnalyzeCommand extends Command
                 $input->getOption('deep') === true,
                 $paths,
                 $overrides,
+                $config,
             );
             $config = $run->project->config;
-            $client = $this->providerClient === null ? ClientFactory::validated($config) : new ValidatingClient(($this->providerClient)($config));
         } catch (ConfigException|FrameworkNotDetected $e) {
             return $this->fail($output, $e->getMessage());
         }
@@ -291,6 +302,17 @@ final class AnalyzeCommand extends Command
     private static function clean(string $text): string
     {
         return (string) LlmResponse::clean($text);
+    }
+
+    /** @return array<string, string> Config::with() key => the CLI flag its errors name */
+    private static function flagNames(): array
+    {
+        $out = [];
+        foreach (self::OVERRIDES as $option => $key) {
+            $out[$key] = '--'.$option;
+        }
+
+        return $out;
     }
 
     /** @return list<string>|null project-relative paths, or null when none were given */

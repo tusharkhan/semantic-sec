@@ -20,6 +20,7 @@ use TusharKhan\SemanticSec\Llm\LlmResponse;
 use TusharKhan\SemanticSec\Llm\Provider\JsonOutput;
 use TusharKhan\SemanticSec\Payload\Payload;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkCorpus;
+use TusharKhan\SemanticSec\Tests\Support\LiveBenchmark;
 use TusharKhan\SemanticSec\Tests\Support\NetworkTrap;
 
 final class BenchmarkEngineTest extends TestCase
@@ -94,10 +95,11 @@ final class BenchmarkEngineTest extends TestCase
 
     public function testRecordedBenchmarkCassetteReplays(): void
     {
-        if (!is_file(self::FIXTURES.'/live-benchmark-laravel11.json')) {
-            self::markTestSkipped('live-benchmark-laravel11.json is recorded in M6 Task 6; replay assertions land with it');
+        $cassette = LiveBenchmark::recordedCassette();
+        if ($cassette === null) {
+            self::markTestSkipped('no live benchmark cassette yet (M6 Task 6 Step 6); Anthropic is replayed when present, else Groq');
         }
-        self::markTestIncomplete('pin the recorded result here once the cassette exists');
+        self::markTestIncomplete('pin the recorded result of '.basename($cassette).' here');
     }
 
     // The engine reuses the pipeline's parse, as AnalyzeCommand does.

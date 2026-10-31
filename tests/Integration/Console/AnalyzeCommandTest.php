@@ -171,24 +171,59 @@ final class AnalyzeCommandTest extends TestCase
         self::assertStringContainsString('(medium, not failing)', $out);
     }
 
-    public function testInvalidOverridesExitTwo(): void
+    public function testInvalidOverridesExitTwoNamingTheFlag(): void
     {
         foreach ([
-            ['--level' => 'severe'],
-            ['--min-confidence' => 'sure'],
-            ['--provider' => 'gemini'],
-            ['--model' => ' '],
-            ['--concurrency' => '0'],
-            ['--concurrency' => 'two'],
-            ['--budget' => '-1'],
-            ['--budget' => '1e6'],
-        ] as $args) {
-            [$code, , $err] = $this->analyze($args, $this->answers(self::finding()));
-            self::assertSame(2, $code, (string) json_encode($args));
-            self::assertStringStartsWith('Error: ', $err);
-            self::assertStringContainsString(str_replace('-', '_', ltrim((string) array_key_first($args), '-')), $err);
+            [['--level' => 'severe'], '--level must be one of: low, medium, high, critical.'],
+            [['--min-confidence' => 'sure'], '--min-confidence must be one of: low, medium, high.'],
+            [['--provider' => 'gemini'], '--provider must be one of: openai, anthropic, ollama.'],
+            [['--model' => ' '], '--model must be a non-empty string.'],
+            [['--concurrency' => '0'], '--concurrency must be a positive integer.'],
+            [['--concurrency' => 'two'], '--concurrency must be a positive integer.'],
+            [['--budget' => '-1'], '--budget must be an integer ≥ 0.'],
+            [['--budget' => '1e6'], '--budget must be an integer ≥ 0.'],
+        ] as [$args, $message]) {
+            $mapper = new MapBuilder();
+            [$code, , $err] = $this->analyze($args, $this->answers(self::finding()), $mapper);
+            self::assertSame(2, $code, $message);
+            self::assertSame("Error: {$message}\n", $err);
+            self::assertSame(0, $mapper->parses(), "{$message}: fails before the project is parsed");
         }
         self::assertSame([], $this->requests);
+    }
+
+    public function testConfigFileErrorsStillNameTheKey(): void
+    {
+        file_put_contents($this->root.'/semantic-sec.yaml', "level: severe\n");
+        [$code, , $err] = $this->analyze([], $this->answers(self::finding()));
+
+        self::assertSame(2, $code);
+        self::assertSame("Error: Config key \"level\" must be one of: low, medium, high, critical.\n", $err);
+    }
+
+    public function testMissingKeyFailsBeforeParsing(): void
+    {
+        $saved = getenv('ANTHROPIC_API_KEY');
+        putenv('ANTHROPIC_API_KEY');
+        $mapper = new MapBuilder();
+        try {
+            $t = new CommandTester(new AnalyzeCommand(null, new AnalysisPipeline($mapper)));
+            $code = $t->execute(['--project-root' => $this->root], ['capture_stderr_separately' => true]);
+        } finally {
+            $saved === false ? putenv('ANTHROPIC_API_KEY') : putenv('ANTHROPIC_API_KEY='.$saved);
+        }
+
+        self::assertSame(2, $code);
+        self::assertSame("Error: ANTHROPIC_API_KEY is not set\n", $t->getErrorOutput());
+        self::assertSame(0, $mapper->parses());
+    }
+
+    public function testDryRunSarifIsALaterRelease(): void
+    {
+        [$code, , $err] = $this->analyze(['--dry-run' => true, '--format' => 'sarif'], $this->answers(self::finding()));
+
+        self::assertSame(2, $code);
+        self::assertSame("Error: --format sarif is available in a later release\n", $err);
     }
 
     public function testPartialResultsWrittenOnBudget(): void
