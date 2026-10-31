@@ -36,6 +36,14 @@ final class Terminal
         return OutputFormatter::escape(rtrim(self::controls(str_replace("\t", '    ', self::utf8($line)))));
     }
 
+    // Multi-line prose or a diff for a non-console encoding: clean per line, indentation and line breaks kept, nothing escaped.
+    public static function block(string $text): string
+    {
+        $lines = preg_split('/\r\n|\r|\n/', self::utf8($text)) ?: [];
+
+        return rtrim(implode("\n", array_map(static fn (string $l): string => rtrim(self::controls(str_replace("\t", '    ', $l))), $lines)), "\n");
+    }
+
     // safe() per line, keeping the line breaks (multi-line table cells).
     public static function safeLines(string $text): string
     {

@@ -34,6 +34,7 @@ use TusharKhan\SemanticSec\Llm\ClientInterface;
 use TusharKhan\SemanticSec\Llm\GroundingChecker;
 use TusharKhan\SemanticSec\Llm\ValidatingClient;
 use TusharKhan\SemanticSec\Output\ConsoleFormatter;
+use TusharKhan\SemanticSec\Output\JsonFormatter;
 use TusharKhan\SemanticSec\Output\SafeWriter;
 use TusharKhan\SemanticSec\Payload\Payload;
 use TusharKhan\SemanticSec\Payload\Redactor;
@@ -83,7 +84,7 @@ final class AnalyzeCommand extends Command
             ->addOption('budget', null, InputOption::VALUE_REQUIRED, 'Hard cap on provider tokens; below one request\'s reservation (~35k at the default max_tokens) nothing is sent (config: budget_tokens)')
             ->addOption('no-cache', null, InputOption::VALUE_NONE, 'Ignore cached answers (new answers are still cached)')
             ->addOption('strict', null, InputOption::VALUE_NONE, 'Exit 2 if any request failed, was refused, invalid or truncated, or any payload went unsent (ignored with --dry-run)')
-            ->addOption('format', null, InputOption::VALUE_REQUIRED, 'console; with --dry-run also json', 'console')
+            ->addOption('format', null, InputOption::VALUE_REQUIRED, 'console or json', 'console')
             ->addOption('output', null, InputOption::VALUE_REQUIRED, 'Write the report to this file (never through a symlink); the summary and warnings go to stderr')
             ->addOption('baseline', null, InputOption::VALUE_REQUIRED, 'Baseline file (available in a later release)')
             ->addOption('generate-baseline', null, InputOption::VALUE_NONE, 'Write a baseline (available in a later release)')
@@ -117,11 +118,11 @@ final class AnalyzeCommand extends Command
         if ($dryRun && $input->getOption('output') !== null) {
             return $this->fail($output, '--output cannot be used with --dry-run');
         }
-        if ($format === 'sarif' || ($format === 'json' && ! $dryRun)) {
+        if ($format === 'sarif') {
             return $this->fail($output, "--format {$format} is available in a later release");
         }
         if ($format !== 'console' && $format !== 'json') {
-            return $this->fail($output, $dryRun ? '--format must be console or json' : '--format must be console');
+            return $this->fail($output, '--format must be console or json');
         }
         $report = $this->stringOption($input, 'output');
         if ($report !== null) {
@@ -257,6 +258,7 @@ final class AnalyzeCommand extends Command
         $strict = $input->getOption('strict') === true;
         $warnings = array_map($redactor->redact(...), [...$run->warnings, ...$result->warnings]);
         $report = new AnalysisResult($result->findings, $result->suppressed, $result->baselined, $warnings, $result->stats, $result->filtered);
+        $exit = ExitCode::for($result, $strict);
         $meta = [
             'tool' => Application::NAME,
             'version' => Application::VERSION,
@@ -265,24 +267,34 @@ final class AnalyzeCommand extends Command
             'strictReason' => ExitCode::strictReason($result, $strict),
             'level' => $config->level->value,
             'budget' => $config->budgetTokens,
+            'exitCode' => $exit,
         ];
 
         $file = $this->stringOption($input, 'output');
-        if ($file === null) {
+        $json = $input->getOption('format') === 'json';
+        if ($file === null && ! $json) {
             $output->write((new ConsoleFormatter($output->isDecorated()))->format($report, $meta), false, OutputInterface::OUTPUT_RAW);
 
-            return ExitCode::for($result, $strict);
+            return $exit;
         }
         $err = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
-        try {
-            SafeWriter::write($file, (new ConsoleFormatter())->format($report, $meta));
-        } catch (\RuntimeException $e) {
-            return $this->fail($output, $redactor->redact($e->getMessage()));
+        $formatter = $json ? new JsonFormatter() : new ConsoleFormatter();
+        $document = $formatter->format($report, $meta);
+        if ($file === null) {
+            $output->write($document, false, OutputInterface::OUTPUT_RAW);
+        } else {
+            try {
+                SafeWriter::write($file, $document);
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, $redactor->redact($e->getMessage()));
+            }
         }
         $err->write((new ConsoleFormatter($err->isDecorated()))->summary($report, $meta), false, OutputInterface::OUTPUT_RAW);
-        $err->writeln('Report written to '.Terminal::safe($file));
+        if ($file !== null) {
+            $err->writeln('Report written to '.Terminal::safe($file));
+        }
 
-        return ExitCode::for($result, $strict);
+        return $exit;
     }
 
     /** @return array<string, string> Config::with() key => the CLI flag its errors name */

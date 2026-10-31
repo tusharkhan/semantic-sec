@@ -184,7 +184,6 @@ final class AnalyzeCommandTest extends TestCase
     public function testM7OptionsRejected(): void
     {
         foreach ([
-            [['--format' => 'json'], '--format json is available in a later release'],
             [['--format' => 'sarif'], '--format sarif is available in a later release'],
             [['--baseline' => 'b.json'], '--baseline is available in a later release'],
             [['--generate-baseline' => true], '--generate-baseline is available in a later release'],
@@ -195,6 +194,33 @@ final class AnalyzeCommandTest extends TestCase
             self::assertSame("Error: {$message}\n", $err);
         }
         self::assertSame([], $this->requests);
+    }
+
+    public function testJsonStdoutIsOnlyTheDocument(): void
+    {
+        [$code, $out, $err] = $this->analyze(['--format' => 'json'], $this->answers(self::finding()));
+
+        self::assertSame(1, $code, $err);
+        $doc = json_decode($out, true, 512, JSON_THROW_ON_ERROR);
+        self::assertSame(1, $doc['version']);
+        self::assertCount(1, $doc['findings']);
+        self::assertSame(1, $doc['summary']['exitCode']);
+        self::assertStringEndsWith("}\n", $out);
+        self::assertMatchesRegularExpression('~^Summary$~m', $err, 'the summary goes to stderr');
+        self::assertStringNotContainsString('"findings"', $err);
+    }
+
+    public function testJsonOutputWritesTheDocumentToTheFile(): void
+    {
+        $file = $this->base.'/reports/report.json';
+        [$code, $out, $err] = $this->analyze(['--format' => 'json', '--output' => $file], $this->answers(self::finding()));
+
+        self::assertSame(1, $code, $err);
+        self::assertSame('', $out);
+        $doc = json_decode((string) file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
+        self::assertCount(1, $doc['findings']);
+        self::assertMatchesRegularExpression('~^Summary$~m', $err);
+        self::assertStringContainsString('Report written to '.$file, $err);
     }
 
     public function testOutputWritesFileSummaryToStderr(): void

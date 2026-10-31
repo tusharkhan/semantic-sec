@@ -334,7 +334,13 @@ Precedence, from `AnalysisResult`, is `1 > strict-2 > 3 > all-failed-2 > 0`: `1`
   - `Suppressed (n)` and `Baselined (n)` lists, each entry `- <title> — <file>:<line> — <reason>` (the suppression reason, `no reason given`, or `in baseline`); filtered findings appear only as a count
   - the `Summary` block (candidates, payloads, skipped, unsent, cache hits, sent, ok, refused, truncated, invalid, failed, dropped, findings, filtered, suppressed, baselined, tokens, budget), the `strict: …` line when `--strict` decides the exit, then `Warnings`
   - every model- or source-derived string goes through the `Terminal` helper (invalid UTF-8 bytes become U+FFFD, bidi controls are removed, other control characters become spaces, console tags are escaped); multi-line prose keeps its line breaks, and patch lines keep their indentation. Colour comes only from the formatter's own template and only when the output is decorated; the `--output` file is plain text
-- **JSON:** `{version, tool, summary, findings[], suppressed[], baselined[], warnings[]}`, each finding in the section 10 shape plus `fingerprint`.
+- **JSON** (`--format json`; stdout carries only the document, the summary and warnings go to stderr; with `--output` the document goes to the file):
+  - `{version, tool, summary, findings[], suppressed[], baselined[], filtered[], warnings[]}`, in that key order, pretty-printed with unescaped slashes and unicode and a trailing newline
+  - `version` is the JSON schema version (`1`); `tool` is `{name, version}`
+  - `summary` is every engine stat (`candidates` … `tokens`, `budgetExceeded`) plus `exitCode` and `strictReason` (`null` unless `--strict` decided the exit)
+  - each finding has the section 10 fields in the order `title, category, severity, confidence, file, line, symbol, context, flaw, fix, patch, path[{file,line,symbol}]`, then `fingerprint`, `failing`, `routeKey`, `model`; findings are sorted by file then line
+  - a `suppressed` entry adds `suppression: {file, line, category|null, reason|null}` (the comment's location); `baselined` and `filtered` entries use the same shape with `failing: false`
+  - model text has control characters and bidi marks stripped and invalid UTF-8 replaced by U+FFFD, with no console-tag escaping; prose and patches keep their line breaks; fingerprints, paths and keys are never redacted
 - **SARIF 2.1.0:**
   - one `rule` per category: `id = CWE-xxx`, name, `helpUri` = the cwe.mitre.org page
   - `results` with `ruleId`, `level` (critical/high → `error`, medium → `warning`, low → `note`), `message`, `locations` (relative URI and `startLine`), `partialFingerprints: {"semanticSec/v1": <fingerprint>}`, `properties.confidence`, `fixes` when a patch exists, and `codeFlows[].threadFlows[].locations` from `path`
