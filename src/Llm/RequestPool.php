@@ -94,10 +94,12 @@ final class RequestPool
         }
     }
 
-    // Worst case for one slot: two calls (the schema retry), each at full input and maxTokens output.
+    // Worst case for one slot: two full calls (prompt, schema, maxTokens), plus the longest retry text on the second.
     private static function reservation(LlmRequest $request): int
     {
-        return 2 * (TokenEstimator::estimate($request->system.$request->user) + $request->maxTokens);
+        $input = TokenEstimator::estimate($request->system.$request->user.json_encode($request->schema));
+
+        return 2 * ($input + $request->maxTokens) + TokenEstimator::forBytes(ValidatingClient::MAX_RETRY_SUFFIX_BYTES);
     }
 
     // Only LlmException messages are known secret-safe, so anything else is named by class alone.

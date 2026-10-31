@@ -44,10 +44,10 @@ final class RequestPoolTest extends TestCase
 
     public function testBudgetStopsDispatchKeepsInFlight(): void
     {
-        // Each request reserves 2 × (10 + 5) = 30 tokens and each answer costs 15.
+        // Each request reserves 2 × (10 + 5) + T tokens and each answer costs 15.
         $client = new DeferredClient(tokens: 15);
 
-        $result = (new RequestPool($client, 2, 60))->run(self::requests(5));
+        $result = (new RequestPool($client, 2, 60 + 2 * self::retryText()))->run(self::requests(5));
 
         self::assertTrue($result->budgetExceeded);
         self::assertCount(2, $client->requests);
@@ -59,14 +59,14 @@ final class RequestPoolTest extends TestCase
     {
         $client = new DeferredClient(tokens: 10);
 
-        // The second dispatch lands exactly on 10 used + 30 reserved = 40.
-        $result = (new RequestPool($client, 1, 40))->run(self::requests(3));
+        // The second dispatch lands exactly on 10 used + (30 + T) reserved.
+        $result = (new RequestPool($client, 1, 40 + self::retryText()))->run(self::requests(3));
 
         self::assertCount(2, $result->responses);
         self::assertSame(20, $result->usedTokens);
         self::assertTrue($result->budgetExceeded);
 
-        $single = (new RequestPool(new DeferredClient(tokens: 10), 1, 30))->run(self::requests(1));
+        $single = (new RequestPool(new DeferredClient(tokens: 10), 1, 30 + self::retryText()))->run(self::requests(1));
         self::assertCount(1, $single->responses);
         self::assertFalse($single->budgetExceeded);
     }
@@ -74,44 +74,61 @@ final class RequestPoolTest extends TestCase
     public function testActualAboveReservationStillMarksBudgetExceeded(): void
     {
         // A client that bills more than it reserved is the only way past the cap.
-        $client = new DeferredClient(tokens: 45);
+        $client = new DeferredClient(tokens: 45 + self::retryText());
 
-        $result = (new RequestPool($client, 2, 60))->run(self::requests(2));
+        $result = (new RequestPool($client, 2, 60 + 2 * self::retryText()))->run(self::requests(2));
 
         self::assertCount(2, $result->responses);
-        self::assertSame(90, $result->usedTokens);
+        self::assertSame(90 + 2 * self::retryText(), $result->usedTokens);
         self::assertTrue($result->budgetExceeded);
     }
 
     public function testBudgetCountsSystemAndUserAndMaxTokens(): void
     {
-        // Estimate 20, so the reservation is 2 × (20 + 5) = 50.
-        $request = new LlmRequest('p1', str_repeat('s', 35), str_repeat('u', 35), [], 'm', maxTokens: 5);
+        // 70 bytes with the `[]` schema estimate to 20, so the reservation is 2 × (20 + 5) + T.
+        $request = new LlmRequest('p1', str_repeat('s', 35), str_repeat('u', 33), [], 'm', maxTokens: 5);
 
-        $result = (new RequestPool(new DeferredClient(tokens: 1), 1, 49))->run([$request]);
+        $result = (new RequestPool(new DeferredClient(tokens: 1), 1, 49 + self::retryText()))->run([$request]);
         self::assertTrue($result->budgetExceeded);
         self::assertSame([], $result->responses);
 
-        $result = (new RequestPool(new DeferredClient(tokens: 1), 1, 50))->run([$request]);
+        $result = (new RequestPool(new DeferredClient(tokens: 1), 1, 50 + self::retryText()))->run([$request]);
         self::assertFalse($result->budgetExceeded);
         self::assertCount(1, $result->responses);
     }
 
     public function testDefaultMaxTokensIsReserved(): void
     {
-        $request = new LlmRequest('p1', '', str_repeat('x', 35), [], 'm');
+        $request = new LlmRequest('p1', '', str_repeat('x', 33), [], 'm');
 
-        $result = (new RequestPool(new DeferredClient(tokens: 1), 1, 32019))->run([$request]);
+        $result = (new RequestPool(new DeferredClient(tokens: 1), 1, 32019 + self::retryText()))->run([$request]);
 
         self::assertTrue($result->budgetExceeded);
         self::assertSame([], $result->responses);
+    }
+
+    public function testLargeSchemaAndRetryTextStayWithinBudget(): void
+    {
+        $schema = ['description' => str_repeat('s', 7000)];
+        $base = TokenEstimator::estimate(str_repeat('x', 35).json_encode($schema));
+        // Exactly one full reservation: two calls at full input and output, plus the longest retry text.
+        $budget = 2 * ($base + 5) + TokenEstimator::forBytes(ValidatingClient::MAX_RETRY_SUFFIX_BYTES);
+        $inner = new SchemaBillingClient();
+        $requests = array_map(static fn (int $i): LlmRequest => new LlmRequest("p{$i}", '', str_repeat('x', 35), $schema, 'm', 5), [1, 2, 3]);
+
+        $result = (new RequestPool(new ValidatingClient($inner), 2, $budget))->run($requests);
+
+        self::assertCount(2, $inner->requests);
+        self::assertGreaterThan(2 * ($base + 5), $result->usedTokens);
+        self::assertLessThanOrEqual($budget, $result->usedTokens);
+        self::assertTrue($result->budgetExceeded);
     }
 
     public function testBudgetBelowOneReservationDispatchesNothing(): void
     {
         $client = new DeferredClient(tokens: 1);
 
-        $result = (new RequestPool($client, 5, 29))->run(self::requests(3));
+        $result = (new RequestPool($client, 5, 29 + self::retryText()))->run(self::requests(3));
 
         self::assertSame([], $client->requests);
         self::assertSame([], $result->responses);
@@ -132,8 +149,8 @@ final class RequestPoolTest extends TestCase
             'p7' => new LlmResponse('p7', LlmOutcome::Ok, ['findings' => []], 10, 0, 'm'),
         ]);
 
-        // Failures free their 30; p6 lands on 25 + 30 = 55, and p7 would need 35 + 30 = 65.
-        $result = (new RequestPool($client, 1, 60))->run(self::requests(7));
+        // Failures free their 30 + T; p6 lands on 25 + 30 + T, and p7 would need 35 + 30 + T.
+        $result = (new RequestPool($client, 1, 60 + self::retryText()))->run(self::requests(7));
 
         self::assertSame(['p1', 'p2', 'p3', 'p4', 'p5', 'p6'], array_map(static fn (LlmRequest $r): string => $r->payloadId, $client->requests));
         self::assertCount(3, $result->failures);
@@ -155,7 +172,7 @@ final class RequestPoolTest extends TestCase
 
     public function testNeverExceedsBudgetWithConcurrencyAndRetries(): void
     {
-        $budget = 400;
+        $budget = 5 * (30 + self::retryText()) + 400;
         $inner = new BillingClient(budget: $budget);
 
         $result = (new RequestPool(new ValidatingClient($inner), 5, $budget))->run(self::requests(50));
@@ -260,9 +277,15 @@ final class RequestPoolTest extends TestCase
     private static function requests(int $n, int $maxTokens = 5): \Generator
     {
         for ($i = 1; $i <= $n; $i++) {
-            // 35 bytes estimate to exactly 10 tokens, so the default reservation is 30.
-            yield new LlmRequest("p{$i}", '', str_repeat('x', 35), [], 'm', $maxTokens);
+            // 33 bytes plus the `[]` schema estimate to exactly 10 tokens, so the default reservation is 30 + T.
+            yield new LlmRequest("p{$i}", '', str_repeat('x', 33), [], 'm', $maxTokens);
         }
+    }
+
+    // T: the tokens reserved for the longest schema-retry text.
+    private static function retryText(): int
+    {
+        return TokenEstimator::forBytes(ValidatingClient::MAX_RETRY_SUFFIX_BYTES);
     }
 }
 
@@ -322,10 +345,10 @@ final class ScriptedClient implements ClientInterface
     }
 }
 
-/** Bills each call up to its share of the reservation, mixing instant and deferred answers, invalid first attempts and failed retries. */
+/** Bills each call up to what it sends plus maxTokens, mixing instant and deferred answers, invalid first attempts and failed retries. */
 final class BillingClient implements ClientInterface
 {
-    /** @var array<string, int> per-call ceiling keyed by payload id, from the first attempt */
+    /** @var array<string, int> first attempt's ceiling keyed by payload id */
     public array $dispatched = [];
 
     public int $retries = 0;
@@ -347,8 +370,8 @@ final class BillingClient implements ClientInterface
     public function analyze(LlmRequest $request): PromiseInterface
     {
         $retry = isset($this->dispatched[$request->payloadId]);
-        $this->dispatched[$request->payloadId] ??= TokenEstimator::estimate($request->system.$request->user) + $request->maxTokens;
-        $ceiling = $this->dispatched[$request->payloadId];
+        $ceiling = TokenEstimator::estimate($request->system.$request->user.json_encode($request->schema)) + $request->maxTokens;
+        $this->dispatched[$request->payloadId] ??= $ceiling;
         $n = ++$this->calls;
         $this->retries += $retry ? 1 : 0;
         $id = (int) substr($request->payloadId, 1);
@@ -391,5 +414,22 @@ final class BillingClient implements ClientInterface
         });
 
         return $promise;
+    }
+}
+
+/** Bills what is really sent: system, user (retry text included) and schema, at full maxTokens; the first answer carries the longest error text. */
+final class SchemaBillingClient implements ClientInterface
+{
+    /** @var list<LlmRequest> */
+    public array $requests = [];
+
+    public function analyze(LlmRequest $request): PromiseInterface
+    {
+        $this->requests[] = $request;
+        $input = TokenEstimator::estimate($request->system.$request->user.json_encode($request->schema));
+        $first = count($this->requests) === 1;
+        $outcome = $first ? LlmOutcome::Invalid : LlmOutcome::Ok;
+
+        return Create::promiseFor(new LlmResponse($request->payloadId, $outcome, $first ? null : ['findings' => []], $input, $request->maxTokens, 'm', $first ? str_repeat("\u{1D11E}", 5000) : null));
     }
 }
