@@ -132,7 +132,7 @@ final class ConsoleFormatter implements Formatter
         $patch = rtrim($v->patch, "\r\n");
         if (trim($patch) !== '') {
             $lines[] = sprintf(self::FIELD, 'Patch:', '');
-            foreach (preg_split('/\R/', $patch) ?: [] as $line) {
+            foreach (preg_split('/\r\n|\r|\n/', $patch) ?: [] as $line) {
                 $lines[] = rtrim(self::PATCH_INDENT.self::diffLine($line), ' ');
             }
         }
@@ -143,7 +143,7 @@ final class ConsoleFormatter implements Formatter
     // Model prose keeps its line breaks, each line cleaned, escaped and indented under the value.
     private static function prose(string $text): string
     {
-        $lines = array_map(Terminal::safe(...), preg_split('/\R/', trim($text)) ?: []);
+        $lines = array_map(Terminal::safe(...), preg_split('/\r\n|\r|\n/', trim($text)) ?: []);
 
         return implode("\n", array_map(static fn (string $l, int $i): string => $i === 0 || $l === '' ? $l : self::VALUE_INDENT.$l, $lines, array_keys($lines)));
     }

@@ -73,6 +73,65 @@ final class SafeWriterTest extends TestCase
         self::assertFileDoesNotExist($this->dir.'/real/report.txt');
     }
 
+    public function testSymlinkedAncestorRefused(): void
+    {
+        mkdir($this->dir.'/real/sub', 0777, true);
+        symlink($this->dir.'/real', $this->dir.'/plink');
+
+        $this->assertRefused($this->dir.'/plink/sub/f', 'is a symlink');
+        $this->assertRefused($this->dir.'/plink/new/f', 'is a symlink');
+        self::assertFileDoesNotExist($this->dir.'/real/sub/f');
+        self::assertDirectoryDoesNotExist($this->dir.'/real/new');
+    }
+
+    public function testParentThatIsAFileRefused(): void
+    {
+        file_put_contents($this->dir.'/file', 'x');
+
+        $this->assertRefused($this->dir.'/file/g/f', 'is not a directory');
+    }
+
+    public function testOverwriteKeepsMode(): void
+    {
+        file_put_contents($this->dir.'/r.txt', 'old');
+        chmod($this->dir.'/r.txt', 0600);
+        SafeWriter::write($this->dir.'/r.txt', 'new');
+        clearstatcache();
+
+        self::assertSame('new', file_get_contents($this->dir.'/r.txt'));
+        self::assertSame(0600, fileperms($this->dir.'/r.txt') & 0777);
+    }
+
+    public function testNewFileIs0644WithinUmask(): void
+    {
+        $old = umask(0022);
+        try {
+            SafeWriter::write($this->dir.'/a.txt', 'x');
+            umask(0077);
+            SafeWriter::write($this->dir.'/b.txt', 'x');
+        } finally {
+            umask($old);
+        }
+        clearstatcache();
+
+        self::assertSame(0644, fileperms($this->dir.'/a.txt') & 0777);
+        self::assertSame(0600, fileperms($this->dir.'/b.txt') & 0777);
+    }
+
+    public function testCheckValidatesWithoutWriting(): void
+    {
+        SafeWriter::check($this->dir.'/x/y/r.txt');
+        self::assertDirectoryDoesNotExist($this->dir.'/x');
+
+        symlink($this->dir.'/victim', $this->dir.'/link');
+        try {
+            SafeWriter::check($this->dir.'/link');
+            self::fail('expected a RuntimeException');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('is a symlink', $e->getMessage());
+        }
+    }
+
     public function testEmptyPathRefused(): void
     {
         $this->assertRefused('', 'empty');

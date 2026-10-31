@@ -291,7 +291,7 @@ semantic-sec baseline             # alias for analyze --generate-baseline
 | `--level` | **`high`** [new] | Minimum severity to report and to fail on: `low`, `medium`, `high`, `critical` |
 | `--min-confidence` | **`medium`** [new] | Below this: reported (marked `not failing`), but never fails the build |
 | `--format` | `console` | `console`, `json`, `sarif`. Until M7 only `console`, plus `json` with `--dry-run` |
-| `--output` | stdout | Writes the formatter output to this file (relative to the cwd; may be outside the project) and the summary, strict line and warnings to stderr; stdout stays empty and exit codes are unchanged. Refused (exit 2) when the target is a symlink or a directory, or its parent is a symlink; a missing parent is created; the write is temp-then-rename. Not allowed with `--dry-run` |
+| `--output` | stdout | Writes the formatter output to this file (relative to the cwd; may be outside the project) and the summary, strict line and warnings to stderr; stdout stays empty and exit codes are unchanged. Checked before the project is parsed: exit 2 when the target is a symlink or not a regular file, or any existing ancestor directory is a symlink or not a directory. A missing parent is created; the write is temp-then-rename, keeps an existing file's mode, and creates a new one as 0644 within the umask. `--output` with `--dry-run` is exit 2 |
 | `--provider` / `--model` | from config | |
 | `--concurrency` | 5 | A positive integer |
 | `--budget` | unlimited | Hard token cap (§12), an integer ≥ 0. Below one request's reservation (~35k+ at the default 16000 `max_tokens`), nothing is sent and the run exits 3 |
@@ -333,7 +333,7 @@ Precedence, from `AnalysisResult`, is `1 > strict-2 > 3 > all-failed-2 > 0`: `1`
     or `No findings.`
   - `Suppressed (n)` and `Baselined (n)` lists, each entry `- <title> — <file>:<line> — <reason>` (the suppression reason, `no reason given`, or `in baseline`); filtered findings appear only as a count
   - the `Summary` block (candidates, payloads, skipped, unsent, cache hits, sent, ok, refused, truncated, invalid, failed, dropped, findings, filtered, suppressed, baselined, tokens, budget), the `strict: …` line when `--strict` decides the exit, then `Warnings`
-  - every model- or source-derived string goes through the `Terminal` helper (control characters replaced, console tags escaped); multi-line prose keeps its line breaks, and patch lines keep their indentation. Colour comes only from the formatter's own template and only when the output is decorated; the `--output` file is plain text
+  - every model- or source-derived string goes through the `Terminal` helper (invalid UTF-8 bytes become U+FFFD, bidi controls are removed, other control characters become spaces, console tags are escaped); multi-line prose keeps its line breaks, and patch lines keep their indentation. Colour comes only from the formatter's own template and only when the output is decorated; the `--output` file is plain text
 - **JSON:** `{version, tool, summary, findings[], suppressed[], baselined[], warnings[]}`, each finding in the section 10 shape plus `fingerprint`.
 - **SARIF 2.1.0:**
   - one `rule` per category: `id = CWE-xxx`, name, `helpUri` = the cwe.mitre.org page

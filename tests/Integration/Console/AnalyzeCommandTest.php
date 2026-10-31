@@ -235,6 +235,20 @@ final class AnalyzeCommandTest extends TestCase
         self::assertStringContainsString('is not a regular file', $err);
     }
 
+    public function testBadOutputFailsBeforeParsing(): void
+    {
+        mkdir($this->base.'/dir');
+        $mapper = new MapBuilder();
+        [$code, $out, $err] = $this->analyze(['--output' => $this->base.'/dir'], $this->answers(self::finding()), $mapper);
+
+        self::assertSame(2, $code);
+        self::assertSame('', $out);
+        self::assertStringContainsString('is not a regular file', $err);
+        self::assertSame(0, $mapper->parses(), 'the project is never parsed');
+        self::assertSame([], $this->requests);
+        self::assertDirectoryDoesNotExist($this->root.'/.semantic-sec/cache');
+    }
+
     public function testOutputRejectedWithDryRun(): void
     {
         $t = new CommandTester(new AnalyzeCommand());

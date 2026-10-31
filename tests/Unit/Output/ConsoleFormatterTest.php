@@ -99,6 +99,21 @@ final class ConsoleFormatterTest extends TestCase
         self::assertStringContainsString('app/ [31mEvil<info>.php', $plain);
     }
 
+    public function testUtf8StaysIntact(): void
+    {
+        $text = 'Å Ӆ naïve অ';
+        $v = self::vuln(['title' => $text, 'flaw' => $text, 'patch' => "-    \$a = '{$text}';\n+    \$b = '{$text}';"]);
+        foreach ([false, true] as $decorated) {
+            $out = (new ConsoleFormatter($decorated))->format(self::analysis([[$v, true]]), self::META);
+
+            self::assertTrue(mb_check_encoding($out, 'UTF-8'));
+            self::assertStringNotContainsString("\u{FFFD}", $out);
+            self::assertMatchesRegularExpression('~Flaw:\s+'.preg_quote($text, '~').'$~mu', $out);
+            self::assertMatchesRegularExpression('~-    \$a = \''.preg_quote($text, '~').'\';~u', $out);
+            self::assertMatchesRegularExpression('~\+    \$b = \''.preg_quote($text, '~').'\';~u', $out);
+        }
+    }
+
     public function testPatchShownOnlyWhenPresent(): void
     {
         $with = self::vuln(['title' => 'with', 'line' => 1, 'patch' => self::PATCH]);

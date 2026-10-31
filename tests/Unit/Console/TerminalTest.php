@@ -27,4 +27,31 @@ final class TerminalTest extends TestCase
     {
         self::assertSame("a\nb [1m", (new OutputFormatter(false))->format(Terminal::safeLines("a\nb\x1b[1m")));
     }
+
+    public function testBidiControlsStripped(): void
+    {
+        $bidi = "a\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}b\u{2066}\u{2067}\u{2068}\u{2069}c\u{200E}\u{200F}\u{061C}d";
+
+        self::assertSame('abcd', Terminal::clean($bidi));
+        self::assertSame('  abcd', Terminal::safeLine('  '.$bidi));
+    }
+
+    public function testInvalidUtf8BecomesReplacementCharacter(): void
+    {
+        foreach (["a\x9b31mb", "a\xC3b", "a\xE0\xA6b", "a\xFFb", "a\xED\xA0\x80b"] as $bad) {
+            foreach ([Terminal::clean($bad), Terminal::safe($bad), Terminal::safeLine($bad)] as $out) {
+                self::assertTrue(mb_check_encoding($out, 'UTF-8'), bin2hex($bad));
+                self::assertStringStartsWith("a\u{FFFD}", $out);
+                self::assertStringNotContainsString("\x9b", $out);
+            }
+        }
+    }
+
+    public function testMultibyteTextKeptWhole(): void
+    {
+        $text = 'Å Ӆ naïve অ …';
+
+        self::assertSame($text, Terminal::clean($text));
+        self::assertSame('    '.$text, Terminal::safeLine("\t".$text));
+    }
 }

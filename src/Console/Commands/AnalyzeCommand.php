@@ -123,6 +123,14 @@ final class AnalyzeCommand extends Command
         if ($format !== 'console' && $format !== 'json') {
             return $this->fail($output, $dryRun ? '--format must be console or json' : '--format must be console');
         }
+        $report = $this->stringOption($input, 'output');
+        if ($report !== null) {
+            try {
+                SafeWriter::check($report);
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, (new Redactor())->redact($e->getMessage()));
+            }
+        }
         $overrides = [];
         foreach (self::OVERRIDES as $option => $key) {
             $value = $input->getOption($option);
