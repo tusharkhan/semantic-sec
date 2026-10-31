@@ -60,6 +60,7 @@ final class MapCommandTest extends TestCase
             foreach ($route['checks'] as $check) {
                 $this->assertContains($check['kind'], $valid);
                 $this->assertArrayHasKey('covers', $check);
+                $this->assertArrayHasKey('model', $check);
             }
         }
     }

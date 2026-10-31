@@ -14,4 +14,10 @@ interface FrameworkContext
     public function name(): string;
 
     public function buildAuthorizationMap(ParseResult $parsed, SymbolTable $symbols, Config $config, DetectedFramework $framework): AuthorizationMap;
+
+    /** @return array<string, string> facade FQN and short alias (bare and with a leading backslash) => stable facade id */
+    public function facadeMap(): array;
+
+    // Short fixed framework notes for the payload.
+    public function promptContext(): string;
 }

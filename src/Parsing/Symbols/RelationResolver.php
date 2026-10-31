@@ -1,0 +1,239 @@
+<?php
+
+declare(strict_types=1);
+
+namespace TusharKhan\SemanticSec\Parsing\Symbols;
+
+use PhpParser\Node;
+use PhpParser\Node\Expr;
+use PhpParser\Node\Stmt;
+use PhpParser\NodeFinder;
+
+/** Resolves an Eloquent relation name on a model to the related model class (SPEC §8); never guesses. */
+final class RelationResolver
+{
+    private const ELOQUENT_MODEL = 'Illuminate\\Database\\Eloquent\\Model';
+
+    private const RELATIONS = [
+        'hasone', 'hasmany', 'belongsto', 'belongstomany', 'hasonethrough', 'hasmanythrough',
+        'morphone', 'morphmany', 'morphtomany', 'morphedbymany',
+    ];
+
+    private const TO_ONE = ['hasone', 'belongsto', 'hasonethrough', 'morphone'];
+
+    private const RELATION_NS = 'Illuminate\\Database\\Eloquent\\Relations\\';
+
+    /** @var array<string, ?string> */
+    private array $cache = [];
+
+    public function __construct(private readonly SymbolTable $symbols)
+    {
+    }
+
+    public function relatedClass(string $model, string $relation): ?string
+    {
+        $model = ltrim($model, '\\');
+        $key = $model."\0".$relation;
+        if (! array_key_exists($key, $this->cache)) {
+            $this->cache[$key] = $this->resolve($model, $relation);
+        }
+
+        return $this->cache[$key];
+    }
+
+    /** True when reading the relation as a property gives one model, false for a collection, null when unknown. */
+    public function isToOne(string $model, string $relation): ?bool
+    {
+        $model = ltrim($model, '\\');
+        $method = $this->symbols->findMethod($model, $relation);
+        if ($method !== null) {
+            if ($this->callsMorphTo($method)) {
+                return true;
+            }
+            $kinds = [];
+            foreach ($this->returns($method->node->stmts ?? []) as $return) {
+                $call = $return->expr === null ? null : $this->relationCall($return->expr);
+                $kinds[] = $call === null ? null : in_array($call->name instanceof Node\Identifier ? $call->name->toLowerString() : '', self::TO_ONE, true);
+            }
+            $unique = array_unique($kinds, SORT_REGULAR);
+            if (count($unique) === 1 && $unique[0] !== null) {
+                return $unique[0];
+            }
+            $declared = $method->returnAmbiguous || $method->returnType === null ? '' : strtolower(ltrim($method->returnType, '\\'));
+            if (str_starts_with($declared, strtolower(self::RELATION_NS))) {
+                $kind = substr($declared, strlen(self::RELATION_NS));
+
+                return in_array($kind, self::RELATIONS, true) ? in_array($kind, self::TO_ONE, true) : null;
+            }
+
+            return null;
+        }
+        // A class @property naming a model is one model.
+        foreach ($this->symbols->lineage($model) as $symbol) {
+            if (isset($symbol->docProperties[$relation])) {
+                return $this->modelOrNull($symbol->docProperties[$relation]) !== null ? true : null;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param list<string> $relations resolved hop by hop; any unknown hop gives null */
+    public function followChain(string $model, array $relations): ?string
+    {
+        $current = ltrim($model, '\\');
+        foreach ($relations as $relation) {
+            $current = $this->relatedClass($current, $relation);
+            if ($current === null) {
+                return null;
+            }
+        }
+
+        return $current;
+    }
+
+    private function resolve(string $model, string $relation): ?string
+    {
+        $method = $this->symbols->findMethod($model, $relation);
+        if ($method !== null) {
+            // A polymorphic target is only known at runtime.
+            if ($this->callsMorphTo($method)) {
+                return null;
+            }
+            $fromBody = $this->fromBody($method, $model);
+            if ($fromBody !== null) {
+                return $fromBody;
+            }
+            if ($method->returnGeneric !== null) {
+                return $this->modelOrNull($method->returnGeneric);
+            }
+        }
+        foreach ($this->symbols->lineage($model) as $symbol) {
+            $type = $symbol->docProperties[$relation] ?? $symbol->docMethods[strtolower($relation)] ?? null;
+            if ($type !== null) {
+                return $this->modelOrNull($type);
+            }
+        }
+
+        return null;
+    }
+
+    // Doc types may name a collection, builder or the base Model; only a concrete model subclass is an answer.
+    private function modelOrNull(string $type): ?string
+    {
+        return $this->symbols->isSubclassOf($type, self::ELOQUENT_MODEL) ? $type : null;
+    }
+
+    private function callsMorphTo(MethodSymbol $method): bool
+    {
+        return (new NodeFinder())->findFirst($method->node->stmts ?? [], static fn (Node $n): bool => $n instanceof Expr\MethodCall
+            && $n->var instanceof Expr\Variable && $n->var->name === 'this' && $n->name instanceof Node\Identifier
+            && str_starts_with($n->name->toLowerString(), 'morphto') && $n->name->toLowerString() !== 'morphtomany') !== null;
+    }
+
+    // The class every return of `$this->hasMany(X::class, …)…` names, or null if any return differs.
+    private function fromBody(MethodSymbol $method, string $model): ?string
+    {
+        $returns = $this->returns($method->node->stmts ?? []);
+        $found = null;
+        foreach ($returns as $return) {
+            $class = $return->expr === null ? null : $this->relationTarget($return->expr, $method, $model);
+            if ($class === null || ($found !== null && $found !== $class)) {
+                return null;
+            }
+            $found = $class;
+        }
+
+        return $found;
+    }
+
+    // The `$this->hasMany(…)` call at the root of a returned chain.
+    private function relationCall(Expr $expr): ?Expr\MethodCall
+    {
+        while (($expr instanceof Expr\MethodCall || $expr instanceof Expr\NullsafeMethodCall)
+            && ! ($expr->var instanceof Expr\Variable && $expr->var->name === 'this')) {
+            $expr = $expr->var;
+        }
+        if (! $expr instanceof Expr\MethodCall || ! $expr->name instanceof Node\Identifier
+            || ! in_array($expr->name->toLowerString(), self::RELATIONS, true) || $expr->isFirstClassCallable()) {
+            return null;
+        }
+
+        return $expr;
+    }
+
+    private function relationTarget(Expr $expr, MethodSymbol $method, string $model): ?string
+    {
+        $expr = $this->relationCall($expr);
+        if ($expr === null) {
+            return null;
+        }
+        $first = $expr->getArgs()[0] ?? null;
+        if ($first === null || $first->unpack || ($first->name !== null && $first->name->toString() !== 'related')) {
+            return null;
+        }
+        $value = $first->value;
+        if ($value instanceof Node\Scalar\String_) {
+            return $value->value === '' ? null : ltrim($value->value, '\\');
+        }
+        if (! $value instanceof Expr\ClassConstFetch || ! $value->class instanceof Node\Name
+            || ! $value->name instanceof Node\Identifier || $value->name->toLowerString() !== 'class') {
+            return null;
+        }
+
+        // In a trait, self and static mean the using class; parent is unknowable.
+        $inTrait = $this->symbols->getClass($method->class)?->kind === 'trait';
+
+        return match ($value->class->toLowerString()) {
+            'self' => $inTrait ? $this->traitUser($model, $method->class) : $method->class,
+            'static' => $model,
+            'parent' => $inTrait ? null : $this->symbols->getClass($method->class)?->parent,
+            default => ltrim($value->class->toString(), '\\'),
+        };
+    }
+
+    // The first class in the model's lineage whose traits (recursively) include the trait; what `self` means there.
+    private function traitUser(string $model, string $trait): ?string
+    {
+        foreach ($this->symbols->lineage($model) as $symbol) {
+            if ($symbol->kind === 'trait') {
+                continue;
+            }
+            foreach ($symbol->traits as $used) {
+                foreach ($this->symbols->lineage($used) as $nested) {
+                    if ($nested->name === $trait) {
+                        return $symbol->name;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Return statements of the body, not those of nested closures or classes.
+     *
+     * @param  array<Node>  $nodes
+     * @return list<Stmt\Return_>
+     */
+    private function returns(array $nodes): array
+    {
+        $out = [];
+        foreach ($nodes as $node) {
+            if ($node instanceof Node\FunctionLike || $node instanceof Stmt\ClassLike) {
+                continue;
+            }
+            if ($node instanceof Stmt\Return_) {
+                $out[] = $node;
+            }
+            foreach ($node->getSubNodeNames() as $name) {
+                $child = $node->$name;
+                $children = is_array($child) ? $child : [$child];
+                $out = [...$out, ...$this->returns(array_values(array_filter($children, static fn ($c): bool => $c instanceof Node)))];
+            }
+        }
+
+        return $out;
+    }
+}

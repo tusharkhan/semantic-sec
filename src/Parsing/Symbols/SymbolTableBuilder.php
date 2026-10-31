@@ -19,6 +19,7 @@ use PhpParser\Node\Stmt\Property;
 use PhpParser\Node\Stmt\Trait_;
 use PhpParser\Node\Stmt\TraitUse;
 use PhpParser\Node\UnionType;
+use PhpParser\NodeFinder;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
@@ -70,28 +71,33 @@ final class SymbolTableBuilder
     public function build(ParseResult $result): SymbolTable
     {
         $classes = [];
+        $functions = [];
         $failures = [];
         foreach ($result->files as $parsed) {
             try {
-                $found = $this->symbolsForFile($parsed);
+                [$found, $defined] = $this->symbolsForFile($parsed);
             } catch (\Throwable $e) {
                 $failures[] = sprintf('%s: %s: %s', $parsed->file->path, $e::class, $e->getMessage());
 
                 continue;
             }
             array_push($classes, ...$found);
+            array_push($functions, ...$defined);
         }
 
-        return new SymbolTable($classes, $failures);
+        return new SymbolTable($classes, $failures, $functions);
     }
 
-    /** @return list<ClassSymbol> */
+    /** @return array{list<ClassSymbol>, list<FunctionSymbol>} */
     private function symbolsForFile(ParsedFile $parsed): array
     {
         $resolver = new NameResolver(null, ['replaceNodes' => false]);
         $collector = new class ($this, $resolver, $parsed->file->path) extends NodeVisitorAbstract {
             /** @var list<ClassSymbol> */
             public array $found = [];
+
+            /** @var list<FunctionSymbol> */
+            public array $functions = [];
 
             public function __construct(
                 private readonly SymbolTableBuilder $builder,
@@ -105,13 +111,17 @@ final class SymbolTableBuilder
                 if ($node instanceof ClassLike && $node->name !== null && $node->namespacedName !== null) {
                     $this->found[] = $this->builder->symbolFor($node, $this->file, $this->resolver);
                 }
+                // Functions anywhere in the file, including inside `if (! function_exists(..))`.
+                if ($node instanceof Node\Stmt\Function_ && $node->namespacedName !== null) {
+                    $this->functions[] = new FunctionSymbol($node->namespacedName->toString(), $this->file, $node);
+                }
 
                 return null;
             }
         };
         (new NodeTraverser($resolver, $collector))->traverse($parsed->ast);
 
-        return $collector->found;
+        return [$collector->found, $collector->functions];
     }
 
     /** @internal Called by the traversal visitor. */
@@ -175,7 +185,16 @@ final class SymbolTableBuilder
             }
         }
 
-        return new ClassSymbol($fqn, $kind, $file, $node->getStartLine(), $node->getEndLine(), $parent, $interfaces, $traits, $properties, $methods, $node);
+        $ctor = $methods['__construct'] ?? null;
+        foreach ($ctor === null ? [] : $this->constructorAssignedTypes($ctor) as $name => $type) {
+            $prop = $properties[$name] ?? null;
+            if ($prop !== null && $prop->type === null) {
+                $properties[$name] = new PropertySymbol($prop->name, $type, $prop->line, $prop->default);
+            }
+        }
+        [$docProperties, $docMethods] = $this->classDocTags($node, $fqn, $parent, $resolve, $templates);
+
+        return new ClassSymbol($fqn, $kind, $file, $node->getStartLine(), $node->getEndLine(), $parent, $interfaces, $traits, $properties, $methods, $node, $docProperties, $docMethods);
     }
 
     /**
@@ -203,12 +222,249 @@ final class SymbolTableBuilder
         }
 
         $returnType = $this->nativeType($node->returnType, $class, $parent);
+        $shape = $this->nativeShape($node->returnType);
         if ($returnType === null) {
             $tags = $doc?->getReturnTagValues() ?? [];
             $returnType = $tags !== [] ? $this->docType($tags[0]->type, $class, $parent, $resolve, $templates) : null;
+            $shape = $tags !== [] && $node->returnType === null ? $this->docShape($tags[0]->type) : $shape;
+        }
+        $genericTags = $doc === null ? [] : ($doc->getReturnTagValues('@phpstan-return') ?: $doc->getReturnTagValues('@psalm-return') ?: $doc->getReturnTagValues());
+        $returnGeneric = $genericTags !== [] ? $this->genericArgument($genericTags[0]->type, $class, $parent, $resolve, $templates) : null;
+
+        $docVars = $this->localVarTags($node, $class, $parent, $resolve, $templates);
+
+        return new MethodSymbol($class, $node->name->toString(), $file, $node->getStartLine(), $node->getEndLine(), $params, $returnType, $node->isStatic(), $node, $returnGeneric, $docVars, ...$shape);
+    }
+
+    /** @return array{bool, bool, bool} returns static/$this, returns self, ambiguous */
+    private function nativeShape(Identifier|Name|ComplexType|null $type): array
+    {
+        $members = $type instanceof UnionType ? $type->types : [$type instanceof NullableType ? $type->type : $type];
+        $classes = [];
+        foreach ($members as $member) {
+            if ($member instanceof IntersectionType) {
+                $classes[] = '&';
+
+                continue;
+            }
+            $text = $member instanceof Identifier || $member instanceof Name ? strtolower(ltrim($member->toString(), '\\')) : '';
+            if ($text !== '' && ! in_array($text, self::BUILTINS, true)) {
+                $classes[] = $text;
+            }
         }
 
-        return new MethodSymbol($class, $node->name->toString(), $file, $node->getStartLine(), $node->getEndLine(), $params, $returnType, $node->isStatic(), $node);
+        return self::shape($classes);
+    }
+
+    /** @return array{bool, bool, bool} returns static/$this, returns self, ambiguous */
+    private function docShape(TypeNode $type): array
+    {
+        $members = $type instanceof UnionTypeNode ? $type->types : [$type];
+        $classes = [];
+        foreach ($members as $member) {
+            while ($member instanceof NullableTypeNode || $member instanceof GenericTypeNode) {
+                $member = $member->type;
+            }
+            if ($member instanceof ThisTypeNode) {
+                $classes[] = '$this';
+            } elseif ($member instanceof IdentifierTypeNode) {
+                $lower = strtolower($member->name);
+                if (! $this->isBuiltin($lower) && ! isset(self::LEGACY[$lower]) && ! in_array($lower, self::PSEUDO, true) && ! str_contains($lower, '-')) {
+                    $classes[] = $lower;
+                }
+            }
+        }
+
+        return self::shape($classes);
+    }
+
+    /**
+     * @param  list<string>  $classes  lower-cased class-like members of a return type
+     * @return array{bool, bool, bool}
+     */
+    private static function shape(array $classes): array
+    {
+        if (count($classes) > 1) {
+            return [false, false, true];
+        }
+        $only = $classes[0] ?? null;
+
+        // `parent` names an instance of the parent or any subclass, so it is as unknown as a union.
+        return [$only === 'static' || $only === '$this', $only === 'self', $only === 'parent'];
+    }
+
+    /**
+     * Class-typed `@var` tags on `$x = …;` statements anywhere in the body.
+     *
+     * @param  callable(string): string  $resolve
+     * @param  list<string>  $templates
+     * @return array<int, array<string, string>>
+     */
+    private function localVarTags(ClassMethod $node, string $class, ?string $parent, callable $resolve, array $templates): array
+    {
+        $out = [];
+        foreach ((new NodeFinder())->findInstanceOf($node->stmts ?? [], Node\Stmt\Expression::class) as $stmt) {
+            $assign = $stmt->expr;
+            if (! $assign instanceof Node\Expr\Assign || ! $assign->var instanceof Node\Expr\Variable || ! is_string($assign->var->name)) {
+                continue;
+            }
+            $name = $assign->var->name;
+            foreach ($this->parseDoc($stmt)?->getVarTagValues() ?? [] as $tag) {
+                if ($tag->variableName !== '' && ltrim($tag->variableName, '$') !== $name) {
+                    continue;
+                }
+                $type = $this->docType($tag->type, $class, $parent, $resolve, $templates);
+                if ($type !== null && ! $this->isBuiltin($type)) {
+                    $out[$stmt->getStartFilePos()][$name] = $type;
+                }
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * The first class-like argument of a generic type, e.g. `HasMany<Invoice>`.
+     *
+     * @param  callable(string): string  $resolve
+     * @param  list<string>  $templates
+     */
+    private function genericArgument(TypeNode $type, string $class, ?string $parent, callable $resolve, array $templates): ?string
+    {
+        if ($type instanceof NullableTypeNode) {
+            return $this->genericArgument($type->type, $class, $parent, $resolve, $templates);
+        }
+        if ($type instanceof UnionTypeNode) {
+            foreach ($type->types as $inner) {
+                $found = $this->genericArgument($inner, $class, $parent, $resolve, $templates);
+                if ($found !== null) {
+                    return $found;
+                }
+            }
+
+            return null;
+        }
+        if (! $type instanceof GenericTypeNode) {
+            return null;
+        }
+        foreach ($type->genericTypes as $argument) {
+            $name = $this->docType($argument, $class, $parent, $resolve, $templates);
+            if ($name !== null && ! $this->isBuiltin($name)) {
+                return $name;
+            }
+        }
+
+        return null;
+    }
+
+    private function isBuiltin(string $name): bool
+    {
+        return in_array($name, self::BUILTINS, true) || in_array($name, self::DOC_ONLY_BUILTINS, true);
+    }
+
+    /**
+     * Class-level @property* and @method tags; phpstan/psalm variants win over plain ones.
+     *
+     * @param  callable(string): string  $resolve
+     * @param  list<string>  $templates
+     * @return array{0: array<string, string>, 1: array<string, string>}
+     */
+    private function classDocTags(ClassLike $node, string $class, ?string $parent, callable $resolve, array $templates): array
+    {
+        $doc = $this->parseDoc($node);
+        if ($doc === null) {
+            return [[], []];
+        }
+        $properties = [];
+        foreach (['@property', '@property-read', '@psalm-property', '@psalm-property-read', '@phpstan-property', '@phpstan-property-read'] as $tag) {
+            $values = str_ends_with($tag, '-read') ? $doc->getPropertyReadTagValues($tag) : $doc->getPropertyTagValues($tag);
+            foreach ($values as $value) {
+                $type = in_array(true, $this->docShape($value->type), true) ? null : $this->docType($value->type, $class, $parent, $resolve, $templates);
+                if ($type !== null && $type !== 'null') {
+                    $properties[ltrim($value->propertyName, '$')] = $type;
+                }
+            }
+        }
+        $methods = [];
+        foreach (['@method', '@psalm-method', '@phpstan-method'] as $tag) {
+            foreach ($doc->getMethodTagValues($tag) as $value) {
+                $type = $value->returnType === null || in_array(true, $this->docShape($value->returnType), true) ? null : $this->docType($value->returnType, $class, $parent, $resolve, $templates);
+                if ($type !== null && $type !== 'null') {
+                    $methods[strtolower($value->methodName)] = $type;
+                }
+            }
+        }
+
+        return [$properties, $methods];
+    }
+
+    /**
+     * Property types proven by top-level `$this->p = $param;` (or `$param ?? …`) constructor statements.
+     *
+     * @return array<string, string>
+     */
+    private function constructorAssignedTypes(MethodSymbol $ctor): array
+    {
+        $stmts = $ctor->node->stmts ?? [];
+        $variadic = [];
+        foreach ($ctor->node->params as $param) {
+            if ($param->variadic && $param->var instanceof Node\Expr\Variable && is_string($param->var->name)) {
+                $variadic[$param->var->name] = true;
+            }
+        }
+        $topLevel = [];
+        foreach ($stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\Expression && $stmt->expr instanceof Node\Expr\Assign) {
+                $topLevel[spl_object_id($stmt->expr)] = true;
+            }
+        }
+
+        $finder = new NodeFinder();
+        $written = [];
+        $types = [];
+        $writes = $finder->find($stmts, static fn (Node $n): bool => $n instanceof Node\Expr\Assign || $n instanceof Node\Expr\AssignRef
+            || $n instanceof Node\Expr\AssignOp || $n instanceof Node\Stmt\Foreach_ || $n instanceof Node\Stmt\Catch_
+            || $n instanceof Node\Expr\PreInc || $n instanceof Node\Expr\PreDec || $n instanceof Node\Expr\PostInc || $n instanceof Node\Expr\PostDec);
+        foreach ($writes as $write) {
+            $targets = match (true) {
+                $write instanceof Node\Stmt\Foreach_ => [$write->keyVar, $write->valueVar],
+                $write instanceof Node\Stmt\Catch_, $write instanceof Node\Expr\Assign, $write instanceof Node\Expr\AssignRef, $write instanceof Node\Expr\AssignOp,
+                $write instanceof Node\Expr\PreInc, $write instanceof Node\Expr\PreDec, $write instanceof Node\Expr\PostInc, $write instanceof Node\Expr\PostDec => [$write->var],
+                default => [],
+            };
+            foreach ($targets as $target) {
+                if ($target === null) {
+                    continue;
+                }
+                foreach ($finder->findInstanceOf([$target], Node\Expr\Variable::class) as $var) {
+                    if (is_string($var->name)) {
+                        $written[$var->name] = true;
+                    }
+                }
+                if ($target instanceof Node\Expr\PropertyFetch && $target->var instanceof Node\Expr\Variable && $target->var->name === 'this' && $target->name instanceof Identifier) {
+                    $value = $write instanceof Node\Expr\Assign && isset($topLevel[spl_object_id($write)]) ? $write->expr : null;
+                    $fallback = $value instanceof Node\Expr\BinaryOp\Coalesce ? $value->right : null;
+                    $value = $value instanceof Node\Expr\BinaryOp\Coalesce ? $value->left : $value;
+                    $source = $value instanceof Node\Expr\Variable && is_string($value->name) && ! isset($variadic[$value->name]) ? $value->name : null;
+                    $types[$target->name->toString()][] = $source === null ? null : [$source, $fallback];
+                }
+            }
+        }
+
+        $out = [];
+        foreach ($types as $property => $sources) {
+            $resolved = [];
+            foreach ($sources as $source) {
+                $type = $source === null || isset($written[$source[0]]) ? null : ($ctor->params[$source[0]] ?? null);
+                $resolved[] = $type !== null && self::fallbackKeepsType($source[1], $type) ? $type : null;
+            }
+            $unique = array_unique($resolved, SORT_REGULAR);
+            if (count($unique) === 1 && $unique[0] !== null) {
+                $out[$property] = $unique[0];
+            }
+        }
+
+        return $out;
     }
 
 
@@ -315,6 +571,19 @@ final class SymbolTableBuilder
         }
 
         return $resolve($text);
+    }
+
+    // `?? null` or `?? new <same class>` keep the param's type; any other fallback could differ.
+    private static function fallbackKeepsType(?Node\Expr $fallback, string $type): bool
+    {
+        if ($fallback === null) {
+            return true;
+        }
+        if ($fallback instanceof Node\Expr\ConstFetch) {
+            return $fallback->name->toLowerString() === 'null';
+        }
+
+        return $fallback instanceof Node\Expr\New_ && $fallback->class instanceof Name && ltrim($fallback->class->toString(), '\\') === $type;
     }
 
     /** @return list<string> */

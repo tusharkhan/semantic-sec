@@ -12,6 +12,8 @@ final readonly class ClassSymbol
      * @param  list<string>  $traits
      * @param  array<string, PropertySymbol>  $properties
      * @param  array<string, MethodSymbol>  $methods  keyed by lowercased name
+     * @param  array<string, string>  $docProperties  class-level @property* name => type
+     * @param  array<string, string>  $docMethods  class-level @method lowercased name => return type
      */
     public function __construct(
         public string $name,
@@ -25,6 +27,8 @@ final readonly class ClassSymbol
         public array $properties,
         public array $methods,
         public \PhpParser\Node\Stmt\ClassLike $node,
+        public array $docProperties = [],
+        public array $docMethods = [],
     ) {
     }
 }

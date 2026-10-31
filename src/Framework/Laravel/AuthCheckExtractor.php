@@ -10,6 +10,7 @@ use PhpParser\NodeFinder;
 use PhpParser\PrettyPrinter\Standard;
 use TusharKhan\SemanticSec\Parsing\Symbols\ClassSymbol;
 use TusharKhan\SemanticSec\Parsing\Symbols\MethodSymbol;
+use TusharKhan\SemanticSec\Parsing\Symbols\RelationResolver;
 use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTable;
 
 /** Finds the depth-0 authorization checks that protect a route (SPEC §6). */
@@ -27,6 +28,9 @@ final class AuthCheckExtractor
     private const THROWING = ['authorize', 'authorizeforuser'];
 
     private const GUARDS = ['abort_if', 'abort_unless', 'throw_if', 'throw_unless'];
+
+    // Non-throwing ability calls whose true result means "denied".
+    private const DENYING = ['denies', 'none', 'cannot', 'cant'];
 
     private const MAX_SOURCE = 120;
 
@@ -47,6 +51,8 @@ final class AuthCheckExtractor
         private readonly PolicyRegistry $policies,
         private readonly ControllerMiddlewareReader $controllerMiddleware,
         array $authHelpers,
+        private readonly ?RelationResolver $relations = null,
+        private readonly ?string $authUserModel = null,
     ) {
         $this->eval = new ConstantEvaluator();
         $this->printer = new Standard();
@@ -100,7 +106,7 @@ final class AuthCheckExtractor
             ? ($closure instanceof Expr\Closure ? $closure->stmts : [$closure->expr])
             : ($method->node->stmts ?? []);
         $context = new AuthExpressions($this->symbols, $paramTypes, $body);
-        [$bodyChecks, $coveredVariables] = $this->bodyChecks($body, $context, new BodyPositions($body), $file, $class, array_flip($variables));
+        [$bodyChecks, $coveredVariables] = $this->checksIn($body, $context, new BodyPositions($body), $file, $class, array_flip($variables));
         foreach ($variables as $parameter => $variable) {
             if (isset($coveredVariables[$variable])) {
                 $covered[$parameter] = true;
@@ -134,6 +140,7 @@ final class AuthCheckExtractor
                 continue;
             }
             $kind = $this->middleware->kind($m);
+            $abilityOf = [null, null];
             if ($kind === MiddlewareKind::Authentication) {
                 $check = [AuthCheckKind::Authentication, AuthStrength::Authentication, 'middleware '.$m];
             } elseif ($kind === MiddlewareKind::Ability) {
@@ -144,14 +151,16 @@ final class AuthCheckExtractor
                 if ($reason === null && $parameter !== null && ! $unresolved) {
                     $covered[$parameter->name] = true;
                 }
-                $check = [AuthCheckKind::RouteAbility, $reason === null ? AuthStrength::Authorization : AuthStrength::None, 'middleware '.$m.($reason === null ? '' : ': '.$reason), $parameter?->name];
+                $check = [AuthCheckKind::RouteAbility, $reason === null ? AuthStrength::Authorization : AuthStrength::None, 'middleware '.$m.($reason === null ? '' : ': '.$reason), $parameter?->name, $ability !== null && $ability['arguments'] === []];
+                $abilityOf = [$ability === null ? [] : [$ability['ability']], $model === null ? null : ltrim($model, '\\')];
             } else {
                 continue;
             }
             if ($unresolved) {
                 $check = [$check[0], AuthStrength::None, $check[2].' (may be removed by unresolved withoutMiddleware)', $check[3] ?? null];
             }
-            $checks[] = new AuthCheck($check[0], $check[1], $check[2], $route->file, $route->line, $check[1] === AuthStrength::Authorization ? ($check[3] ?? null) : null);
+            $authorization = $check[1] === AuthStrength::Authorization;
+            $checks[] = new AuthCheck($check[0], $check[1], $check[2], $route->file, $route->line, $authorization ? ($check[3] ?? null) : null, null, $authorization && ($check[4] ?? false), $abilityOf[0], $abilityOf[1]);
         }
 
         return $checks;
@@ -214,7 +223,7 @@ final class AuthCheckExtractor
                 continue;
             }
             $variables[$p->name] = $variable;
-            $out[] = new RouteParameter($p->name, $p->field, $p->optional, ltrim((string) $types[$variable], '\\'));
+            $out[] = new RouteParameter($p->name, $p->field, $p->optional, ltrim((string) $types[$variable], '\\'), $p->domain);
         }
 
         return [$out, $variables];
@@ -300,7 +309,7 @@ final class AuthCheckExtractor
                 }
                 $covers = $this->routeParameter($route, $covers)?->name;
                 $source = sprintf('authorizeResource(%s) %s -> %s', $model === null ? '?' : self::short($model).'::class', $method->name, $ability);
-                $checks[] = new AuthCheck(AuthCheckKind::ControllerAbility, $reason === null ? AuthStrength::Authorization : AuthStrength::None, $source.($reason === null ? '' : ': '.$reason), $ctor->file, $call->getStartLine(), $reason === null ? $covers : null);
+                $checks[] = new AuthCheck(AuthCheckKind::ControllerAbility, $reason === null ? AuthStrength::Authorization : AuthStrength::None, $source.($reason === null ? '' : ': '.$reason), $ctor->file, $call->getStartLine(), $reason === null ? $covers : null, null, false, [$ability], $model === null ? null : ltrim($model, '\\'));
             }
         }
 
@@ -379,7 +388,7 @@ final class AuthCheckExtractor
             }
             $authorize = $this->symbols->findMethod($type, 'authorize');
             $name = 'FormRequest '.self::short($type);
-            [$strength, $reference] = $authorize === null || PolicyRegistry::allowsAll($authorize) ? [AuthStrength::None, null] : $this->authorizeStrength($authorize);
+            [$strength, $reference, $routeWide] = $authorize === null || PolicyRegistry::allowsAll($authorize) ? [AuthStrength::None, null, false] : $this->authorizeStrength($authorize);
             $source = match (true) {
                 $authorize === null => $name.' has no authorize()',
                 PolicyRegistry::allowsAll($authorize) => $name.'::authorize returns true',
@@ -388,7 +397,7 @@ final class AuthCheckExtractor
                 default => $name.'::authorize has no authorization logic',
             };
             $covers = $strength === AuthStrength::Authorization ? $this->routeParameter($route, $reference)?->name : null;
-            $checks[] = new AuthCheck(AuthCheckKind::FormRequest, $strength, $source, $file, $param->getStartLine(), $covers);
+            $checks[] = new AuthCheck(AuthCheckKind::FormRequest, $strength, $source, $file, $param->getStartLine(), $covers, null, $strength === AuthStrength::Authorization && $routeWide);
         }
 
         return $checks;
@@ -397,16 +406,17 @@ final class AuthCheckExtractor
     /**
      * Authorization for an enforced ability call, role call or auth comparison; Authentication for login-only checks.
      *
-     * @return array{AuthStrength, ?string} strength, and the $this->route('<p>') parameter that evidence reads
+     * @return array{AuthStrength, ?string, bool} strength, the $this->route('<p>') parameter that evidence reads, and whether every piece of evidence is route-wide
      */
     private function authorizeStrength(MethodSymbol $authorize): array
     {
         $stmts = $authorize->node->stmts ?? [];
         $context = new AuthExpressions($this->symbols, self::nativeTypes($authorize->node->params), $stmts, true);
         $positions = new BodyPositions($stmts);
-        $leaf = fn (Expr $e, bool $allow): bool => $this->abilityCall($e, $context) !== null || $context->isRoleCall($e) || $context->guardQualifies($e, $allow);
+        $leaf = fn (Expr $e, bool $allow): bool => $this->decidingAbility($e, $context) || $context->isRoleCall($e) || $context->guardQualifies($e, $allow);
         $found = false;
         $reference = null;
+        $routeWide = true;
         foreach ((new NodeFinder())->find($stmts, static fn (Node $n): bool => $n instanceof Expr) as $node) {
             \assert($node instanceof Expr);
             $ability = $this->abilityCall($node, $context);
@@ -414,14 +424,26 @@ final class AuthCheckExtractor
             if (($ability === null && ! $comparison && ! $context->isRoleCall($node)) || ! $positions->isUnconditional($node, $ability === null || ! $ability[3])) {
                 continue;
             }
-            if (($ability !== null && $ability[3]) || $positions->isConditionPosition($node, true, $leaf)) {
+            // Gate::inspect returns an always-truthy Response; only `return Gate::inspect(..)` enforces it.
+            $inspect = $ability !== null && AuthExpressions::name($node) === 'inspect';
+            $polarities = match (true) {
+                $ability !== null => [! in_array(AuthExpressions::name($node), self::DENYING, true)],
+                $comparison => [$node instanceof Expr\BinaryOp\Identical || $node instanceof Expr\BinaryOp\Equal],
+                default => [true, false],
+            };
+            $decides = false;
+            foreach ($polarities as $trueAllows) {
+                $decides = $decides || $positions->isConditionPosition($node, true, $leaf, $trueAllows, true);
+            }
+            if (($ability !== null && $ability[3]) || ($inspect ? $positions->parent($node) instanceof Node\Stmt\Return_ : $decides)) {
                 $found = true;
+                $routeWide = $routeWide && ($ability !== null ? $ability[1] === null : ! $comparison);
                 $operands = $ability !== null ? AuthExpressions::args($node) : ($node instanceof Expr\BinaryOp ? [$node->left, $node->right] : []);
                 $reference ??= self::routeRead($operands, $context);
             }
         }
         if ($found) {
-            return [AuthStrength::Authorization, $reference];
+            return [AuthStrength::Authorization, $reference, $routeWide];
         }
         $login = false;
         foreach ($stmts as $stmt) {
@@ -431,12 +453,12 @@ final class AuthCheckExtractor
             }
             $only = $stmt instanceof Node\Stmt\Return_ && $stmt->expr !== null ? $context->loginOnly($stmt->expr) : null;
             if ($only === null) {
-                return [AuthStrength::None, null];
+                return [AuthStrength::None, null, false];
             }
             $login = $login || $only;
         }
 
-        return [$login ? AuthStrength::Authentication : AuthStrength::None, null];
+        return [$login ? AuthStrength::Authentication : AuthStrength::None, null, false];
     }
 
     /**
@@ -469,11 +491,34 @@ final class AuthCheckExtractor
     }
 
     /**
+     * The action-body rules applied to any function; a check's `covers` names one of the function's own parameters from $boundParams.
+     *
+     * @param  array<string, string>  $boundParams  parameter name => the model FQN bound to it
+     * @return array{0: list<AuthCheck>, 1: list<string>}
+     */
+    public function bodyChecks(MethodSymbol|Expr\Closure|Expr\ArrowFunction $fn, string $file, array $boundParams): array
+    {
+        $node = $fn instanceof MethodSymbol ? $fn->node : $fn;
+        $types = array_merge(self::nativeTypes($node->params), $boundParams);
+        $body = $node instanceof Expr\ArrowFunction ? [$node->expr] : ($node->stmts ?? []);
+        $class = $fn instanceof MethodSymbol ? $this->symbols->getClass($fn->class) : null;
+        $parameters = [];
+        foreach (array_keys($boundParams) as $name) {
+            if (array_key_exists($name, $types)) {
+                $parameters[$name] = $name;
+            }
+        }
+        [$checks] = $this->checksIn($body, new AuthExpressions($this->symbols, $types, $body), new BodyPositions($body), $file, $class, $parameters);
+
+        return [$checks, []];
+    }
+
+    /**
      * @param  array<Node>  $body
      * @param  array<string, string>  $parameters  action variable => the route parameter bound to it
      * @return array{0: list<AuthCheck>, 1: array<string, true>} checks, and action variables an ability call covers
      */
-    private function bodyChecks(array $body, AuthExpressions $context, BodyPositions $positions, string $file, ?ClassSymbol $class, array $parameters): array
+    private function checksIn(array $body, AuthExpressions $context, BodyPositions $positions, string $file, ?ClassSymbol $class, array $parameters): array
     {
         $finder = new NodeFinder();
         $nodes = $finder->find($body, static fn (Node $n): bool => $n instanceof Expr\CallLike);
@@ -486,7 +531,7 @@ final class AuthCheckExtractor
         }
         $checks = [];
         $covered = [];
-        $leaf = fn (Expr $e, bool $allow): bool => $this->abilityCall($e, $context) !== null || $context->guardQualifies($e, $allow);
+        $leaf = fn (Expr $e, bool $allow): bool => $this->decidingAbility($e, $context) || $context->guardQualifies($e, $allow);
         foreach ($nodes as $node) {
             \assert($node instanceof Expr);
             $ability = $this->abilityCall($node, $context);
@@ -494,16 +539,17 @@ final class AuthCheckExtractor
             if (! $positions->isUnconditional($node, $ability !== null && ! $ability[3])) {
                 continue;
             }
-            $add = static function (AuthCheckKind $kind, AuthStrength $strength, string $source, ?string $covers = null) use (&$checks, $file, $node): void {
-                $checks[] = new AuthCheck($kind, $strength, $source, $file, $node->getStartLine(), $strength === AuthStrength::Authorization ? $covers : null);
+            $add = static function (AuthCheckKind $kind, AuthStrength $strength, string $source, ?string $covers = null, ?string $model = null, bool $routeWide = false, ?array $abilities = null, ?string $abilityModel = null) use (&$checks, $file, $node): void {
+                $authorization = $strength === AuthStrength::Authorization;
+                $checks[] = new AuthCheck($kind, $strength, $source, $file, $node->getStartLine(), $authorization ? $covers : null, $model, $authorization && $routeWide, $abilities === null ? null : array_values($abilities), $abilityModel);
             };
-            // A non-throwing check counts only where its result decides a branch or guard.
-            if ($ability !== null && ($ability[3] || $positions->isConditionPosition($node, false, $leaf))) {
+            // A non-throwing check counts only where its result decides a blocking branch or a guard.
+            if ($ability !== null && ($ability[3] || ($this->decidingAbility($node, $context) && $positions->isConditionPosition($node, false, $leaf, ! in_array(AuthExpressions::name($node), self::DENYING, true))))) {
                 [$abilityArg, $modelArg, $any] = $ability;
                 $reason = $this->abilityReason($abilityArg, $modelArg, $any, $context, $file, $class);
                 $variable = $modelArg instanceof Expr\Array_ ? ($modelArg->items[0]->value ?? null) : $modelArg;
                 $untouched = $variable instanceof Expr\Variable && is_string($variable->name) && $context->isUntouchedParam($variable->name, $variable->getStartFilePos());
-                $add(AuthCheckKind::ControllerAbility, $reason === null ? AuthStrength::Authorization : AuthStrength::None, $this->describe($node).($reason === null ? '' : ': '.$reason), $untouched ? ($parameters[$variable->name] ?? null) : null);
+                $add(AuthCheckKind::ControllerAbility, $reason === null ? AuthStrength::Authorization : AuthStrength::None, $this->describe($node).($reason === null ? '' : ': '.$reason), $untouched ? ($parameters[$variable->name] ?? null) : null, null, $modelArg === null, $this->abilityNames($abilityArg, $file, $class), $modelArg === null ? null : $this->modelOf($modelArg, $context, $modelArg->getStartFilePos()));
                 if ($reason === null && $untouched) {
                     $covered[$variable->name] = true;
                 }
@@ -511,11 +557,12 @@ final class AuthCheckExtractor
             if ($node instanceof Expr\FuncCall && in_array(AuthExpressions::name($node), self::GUARDS, true)) {
                 $condition = AuthExpressions::args($node)[0] ?? null;
                 if ($condition !== null && $context->guardQualifies($condition, str_ends_with((string) AuthExpressions::name($node), '_unless'))) {
-                    $add(AuthCheckKind::AbortGuard, AuthStrength::Authorization, $this->describe($node));
+                    $add(AuthCheckKind::AbortGuard, AuthStrength::Authorization, $this->describe($node), self::guardSubject($condition, $context, $parameters));
                 }
             }
-            if (((! isset($inner[spl_object_id($node)]) && $context->isRelationRead($node)) || $context->isWhereScope($node)) && ! self::chainHasOrWhere($node, $inner)) {
-                $add(AuthCheckKind::QueryScope, AuthStrength::Authorization, $this->describe($node));
+            $where = $context->isWhereScope($node);
+            if (((! isset($inner[spl_object_id($node)]) && $context->isRelationRead($node)) || $where) && ! self::chainHasOrWhere($node, $inner)) {
+                $add(AuthCheckKind::QueryScope, AuthStrength::Authorization, $this->describe($node), null, $where ? self::scopedModel($node) : $this->relationModel($node, $context));
             }
             if ($this->isHelper($node, $class)) {
                 $add(AuthCheckKind::CustomHelper, AuthStrength::Authorization, $this->describe($node));
@@ -523,6 +570,69 @@ final class AuthCheckExtractor
         }
 
         return [$checks, $covered];
+    }
+
+    /**
+     * The route parameter a single-comparison guard reads as `$x->prop`, where `$x` is the untouched bound variable.
+     *
+     * @param  array<string, string>  $parameters
+     */
+    private static function guardSubject(Expr $condition, AuthExpressions $context, array $parameters): ?string
+    {
+        while ($condition instanceof Expr\BooleanNot) {
+            $condition = $condition->expr;
+        }
+        if (! $condition instanceof Expr\BinaryOp || ! $context->isAuthComparison($condition, null)) {
+            return null;
+        }
+        foreach ([$condition->left, $condition->right] as $side) {
+            $var = $side instanceof Expr\PropertyFetch || $side instanceof Expr\NullsafePropertyFetch ? $side->var : null;
+            if ($var instanceof Expr\Variable && is_string($var->name) && isset($parameters[$var->name]) && $context->isUntouchedParam($var->name, $var->getStartFilePos())) {
+                return $parameters[$var->name];
+            }
+        }
+
+        return null;
+    }
+
+    // X for X::where*(..) and X::query()->...->where(..); null for other roots.
+    private static function scopedModel(Expr $node): ?string
+    {
+        while (AuthExpressions::isCall($node)) {
+            $node = $node->var;
+        }
+        $root = $node instanceof Expr\StaticCall ? (AuthExpressions::name($node) ?? '') : '';
+
+        return $node instanceof Expr\StaticCall && $node->class instanceof Node\Name && ($root === 'query' || str_starts_with($root, 'where')) ? self::modelName($node->class) : null;
+    }
+
+    // The related model of a relation read rooted at the auth user (`->team->projects()->find(..)`), hop by hop.
+    private function relationModel(Expr $node, AuthExpressions $context): ?string
+    {
+        if ($this->relations === null || $this->authUserModel === null) {
+            return null;
+        }
+        $hops = [];
+        while (! $context->isAuthUser($node)) {
+            $isFetch = $node instanceof Expr\PropertyFetch || $node instanceof Expr\NullsafePropertyFetch;
+            if (! $isFetch && ! AuthExpressions::isCall($node)) {
+                return null;
+            }
+            if (! $node->name instanceof Node\Identifier) {
+                return null;
+            }
+            array_unshift($hops, [$isFetch, $node->name->toString()]);
+            $node = $node->var;
+        }
+        $relations = [];
+        foreach ($hops as [$isFetch, $name]) {
+            $relations[] = $name;
+            if (! $isFetch) {
+                return $this->relations->followChain($this->authUserModel, $relations);
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -543,6 +653,12 @@ final class AuthCheckExtractor
                 return false;
             }
         }
+    }
+
+    // An ability call whose boolean result can decide a condition (Gate::inspect's Response is always truthy).
+    private function decidingAbility(Expr $node, AuthExpressions $context): bool
+    {
+        return $this->abilityCall($node, $context) !== null && AuthExpressions::name($node) !== 'inspect';
     }
 
     /** @return array{0: ?Expr, 1: ?Expr, 2: bool, 3: bool}|null ability arg, model arg, any-semantics, throws on denial */
@@ -566,6 +682,24 @@ final class AuthCheckExtractor
         }
 
         return null;
+    }
+
+    /** @return list<string> the ability names an argument holds, or [] when any cannot be resolved */
+    private function abilityNames(?Expr $abilityArg, string $file, ?ClassSymbol $class): array
+    {
+        if ($abilityArg === null) {
+            return [];
+        }
+        $names = [];
+        foreach ($abilityArg instanceof Expr\Array_ ? array_map(static fn (Node\ArrayItem $i): Expr => $i->value, $abilityArg->items) : [$abilityArg] as $expr) {
+            $name = $this->eval->string($expr, $file, $class);
+            if ($name === null) {
+                return [];
+            }
+            $names[] = $name;
+        }
+
+        return $names;
     }
 
     /** Why the ability call is trivially allowed, or null when it may deny. */
@@ -614,7 +748,7 @@ final class AuthCheckExtractor
     // Gate turns kebab-case abilities into camelCase policy methods.
     private static function abilityMethod(string $ability): string
     {
-        return str_contains($ability, '-') ? lcfirst(str_replace(' ', '', ucwords(str_replace('-', ' ', $ability)))) : $ability;
+        return PolicyRegistry::abilityMethod($ability);
     }
 
     /** The model class an ability argument refers to, or null when unknown. */
@@ -635,23 +769,42 @@ final class AuthCheckExtractor
             return str_contains($expr->value, '\\') ? ltrim($expr->value, '\\') : null;
         }
         if ($expr instanceof Expr\Variable && is_string($expr->name)) {
-            $value = $context->lastAssignment($expr->name, $pos);
-            if ($value === null) {
-                $type = $context->paramType($expr->name);
+            $name = $expr->name;
+            if ($context->isUntouchedParam($name, $pos)) {
+                return self::paramModel($context->paramType($name));
+            }
+            // Every value it may hold (loop-carried ones and a rebound parameter's own type included) must name one model.
+            $values = $context->valuesAt($name, $pos);
+            if ($values === null) {
+                return null;
+            }
+            $models = $context->hasParam($name) ? [self::paramModel($context->paramType($name))] : [];
+            foreach ($values as $value) {
+                $models[] = $this->valueModel($value, $context, $depth);
+            }
+            $unique = array_unique($models, SORT_REGULAR);
 
-                return $type === null || in_array(strtolower($type), self::SCALARS, true) ? null : ltrim($type, '\\');
-            }
-            if ($value instanceof Expr\New_) {
-                return $value->class instanceof Node\Name ? self::modelName($value->class) : null;
-            }
-            if ($value instanceof Expr\Variable) {
-                return $this->modelOf($value, $context, $value->getStartFilePos(), $depth + 1);
-            }
-
-            return self::queriedModel($value);
+            return count($unique) === 1 ? $unique[0] : null;
         }
 
         return null;
+    }
+
+    private static function paramModel(?string $type): ?string
+    {
+        return $type === null || in_array(strtolower($type), self::SCALARS, true) ? null : ltrim($type, '\\');
+    }
+
+    private function valueModel(Expr $value, AuthExpressions $context, int $depth): ?string
+    {
+        if ($value instanceof Expr\New_) {
+            return $value->class instanceof Node\Name ? self::modelName($value->class) : null;
+        }
+        if ($value instanceof Expr\Variable) {
+            return $this->modelOf($value, $context, $value->getStartFilePos(), $depth + 1);
+        }
+
+        return self::queriedModel($value);
     }
 
     // X::find*|first*(..), or X::where*|query(..)->...->find*|first*|sole(..) with no fetch or read in between.
@@ -672,7 +825,7 @@ final class AuthCheckExtractor
             return $fetches($root) ? self::modelName($node->class) : null;
         }
         $outer = array_pop($calls);
-        if (! $fetches($outer) || ! (str_starts_with($root, 'where') || $root === 'query') || array_filter($calls, static fn (string $n): bool => $fetches($n) || in_array($n, AuthExpressions::READS, true)) !== []) {
+        if (! $fetches($outer) || ! (str_starts_with($root, 'where') || $root === 'query') || array_filter($calls, static fn (string $n): bool => $fetches($n) || in_array($n, Verbs::READS, true)) !== []) {
             return null;
         }
 

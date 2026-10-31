@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use TusharKhan\SemanticSec\Parsing\AstGenerator;
 use TusharKhan\SemanticSec\Parsing\FileFinder;
 use TusharKhan\SemanticSec\Parsing\ProjectParser;
+use TusharKhan\SemanticSec\Parsing\Symbols\RelationResolver;
 use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTable;
 use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTableBuilder;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkCorpus;
@@ -37,6 +38,14 @@ final class BenchmarkSymbolTableTest extends TestCase
         self::assertGreaterThan(0, $checked);
 
         $this->assertServiceLayer($tables['laravel11-app']);
+        $this->assertRelations($tables['laravel11-app']);
+    }
+
+    private function assertRelations(SymbolTable $table): void
+    {
+        $relations = new RelationResolver($table);
+        self::assertSame('App\\Models\\Account', $relations->relatedClass('App\\Models\\User', 'account'));
+        self::assertSame('App\\Models\\Invoice', $relations->relatedClass('App\\Models\\User', 'invoices'));
     }
 
     private function assertServiceLayer(SymbolTable $table): void

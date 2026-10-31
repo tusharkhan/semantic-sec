@@ -15,12 +15,22 @@ final class SymbolTable
     /** @var list<string> */
     private array $duplicates = [];
 
+    /** @var array<string, array<string, true>> */
+    private array $ancestorCache = [];
+
+    /** @var array<string, FunctionSymbol> lower-cased name => first definition */
+    private array $functions = [];
+
     /**
      * @param  list<ClassSymbol>  $classes
      * @param  list<string>  $failures
+     * @param  list<FunctionSymbol>  $functions
      */
-    public function __construct(array $classes, private array $failures = [])
+    public function __construct(array $classes, private array $failures = [], array $functions = [])
     {
+        foreach ($functions as $function) {
+            $this->functions[strtolower($function->name)] ??= $function;
+        }
         foreach ($classes as $class) {
             if (isset($this->classes[$class->name])) {
                 $this->duplicates[] = sprintf('%s declared in %s and %s', $class->name, $this->classes[$class->name]->file, $class->file);
@@ -44,6 +54,12 @@ final class SymbolTable
         return $this->failures;
     }
 
+    // A function defined in the project, by its fully-qualified name; case-insensitive.
+    public function getFunction(string $fqn): ?FunctionSymbol
+    {
+        return $this->functions[strtolower(ltrim($fqn, '\\'))] ?? null;
+    }
+
     public function getClass(string $fqn): ?ClassSymbol
     {
         return $this->classes[ltrim($fqn, '\\')] ?? null;
@@ -52,9 +68,60 @@ final class SymbolTable
     // Own methods, then traits, then the parent chain; case-insensitive.
     public function findMethod(string $class, string $method): ?MethodSymbol
     {
-        $visited = [];
+        $method = strtolower($method);
+        foreach ($this->lineage($class) as $symbol) {
+            if (isset($symbol->methods[$method])) {
+                return $symbol->methods[$method];
+            }
+        }
 
-        return $this->lookup(ltrim($class, '\\'), strtolower($method), $visited);
+        return null;
+    }
+
+    // Own properties, then traits, then the parent chain.
+    public function findProperty(string $class, string $name): ?PropertySymbol
+    {
+        foreach ($this->lineage($class) as $symbol) {
+            if (isset($symbol->properties[$name])) {
+                return $symbol->properties[$name];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The class, its traits (recursively) and then its parent chain, in lookup order; cycle-safe.
+     *
+     * @return list<ClassSymbol>
+     */
+    public function lineage(string $class): array
+    {
+        $out = [];
+        $visited = [];
+        $this->collectLineage(ltrim($class, '\\'), $visited, $out);
+
+        return $out;
+    }
+
+    // Parents and interfaces (including interface `extends`), transitively; names outside the table still count.
+    public function isSubclassOf(string $class, string $ancestor): bool
+    {
+        return isset($this->ancestors(ltrim($class, '\\'))[ltrim($ancestor, '\\')]);
+    }
+
+    /** @return list<string> concrete classes and enums in the table that implement or extend the interface */
+    public function implementations(string $interface): array
+    {
+        $out = [];
+        foreach ($this->classes as $name => $symbol) {
+            $abstract = $symbol->node instanceof \PhpParser\Node\Stmt\Class_ && $symbol->node->isAbstract();
+            if (($symbol->kind === 'class' || $symbol->kind === 'enum') && ! $abstract && $this->isSubclassOf($name, $interface)) {
+                $out[] = $name;
+            }
+        }
+
+        return $out;
     }
 
     /** @return list<ClassSymbol> */
@@ -69,25 +136,49 @@ final class SymbolTable
         return array_values($this->classes);
     }
 
-    /** @param array<string, true> $visited */
-    private function lookup(string $fqn, string $method, array &$visited): ?MethodSymbol
+    /**
+     * @param  array<string, true>  $visited
+     * @param  list<ClassSymbol>  $out
+     */
+    private function collectLineage(string $fqn, array &$visited, array &$out): void
     {
         $symbol = $this->classes[$fqn] ?? null;
         if ($symbol === null || isset($visited[$fqn])) {
-            return null;
+            return;
         }
         $visited[$fqn] = true;
-
-        if (isset($symbol->methods[$method])) {
-            return $symbol->methods[$method];
-        }
+        $out[] = $symbol;
         foreach ($symbol->traits as $trait) {
-            $found = $this->lookup($trait, $method, $visited);
-            if ($found !== null) {
-                return $found;
+            $this->collectLineage(ltrim($trait, '\\'), $visited, $out);
+        }
+        if ($symbol->parent !== null) {
+            $this->collectLineage(ltrim($symbol->parent, '\\'), $visited, $out);
+        }
+    }
+
+    /** @return array<string, true> every ancestor name of the class, excluding itself */
+    private function ancestors(string $class): array
+    {
+        if (isset($this->ancestorCache[$class])) {
+            return $this->ancestorCache[$class];
+        }
+        $seen = [];
+        $queue = [$class];
+        while ($queue !== []) {
+            $symbol = $this->classes[array_shift($queue)] ?? null;
+            if ($symbol === null) {
+                continue;
+            }
+            foreach ([$symbol->parent, ...$symbol->interfaces] as $next) {
+                $next = $next === null ? null : ltrim($next, '\\');
+                if ($next !== null && ! isset($seen[$next])) {
+                    $seen[$next] = true;
+                    $queue[] = $next;
+                }
             }
         }
+        unset($seen[$class]);
 
-        return $symbol->parent !== null ? $this->lookup($symbol->parent, $method, $visited) : null;
+        return $this->ancestorCache[$class] = $seen;
     }
 }

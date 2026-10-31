@@ -253,6 +253,181 @@ class C {
         self::assertStringStartsWith('app/Bad.php: TypeError: ', $table->failures()[0]);
     }
 
+    public function testReturnGenericIsTheFirstClassLikeArgument(): void
+    {
+        $table = $this->build(['C.php' => '<?php
+namespace App\Models;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Collection;
+class C {
+    /** @return HasMany<Invoice> */
+    public function invoices(): HasMany {}
+    /** @return BelongsTo<\Other\Account, $this> */
+    public function account() {}
+    /** @return Collection<int, Invoice> */
+    public function all() {}
+    /**
+     * @return HasMany
+     * @phpstan-return HasMany<Order>
+     */
+    public function orders() {}
+    /**
+     * @psalm-return HasMany<Receipt>
+     * @return HasMany<Invoice>
+     */
+    public function receipts() {}
+    /** @return HasMany<int, string>|null */
+    public function scalars() {}
+    /** @return HasMany */
+    public function plain() {}
+    /** @return ?HasMany<Invoice> */
+    public function nullable() {}
+    /**
+     * @template T
+     * @return Collection<T>
+     */
+    public function templated() {}
+}']);
+
+        $class = $table->getClass('App\Models\C');
+        self::assertNotNull($class);
+        $m = $class->methods;
+        self::assertSame('App\Models\Invoice', $m['invoices']->returnGeneric);
+        self::assertSame('Illuminate\Database\Eloquent\Relations\HasMany', $m['invoices']->returnType);
+        self::assertSame('Other\Account', $m['account']->returnGeneric);
+        self::assertSame('App\Models\Invoice', $m['all']->returnGeneric);
+        self::assertSame('App\Models\Order', $m['orders']->returnGeneric);
+        self::assertSame('App\Models\Receipt', $m['receipts']->returnGeneric);
+        self::assertNull($m['scalars']->returnGeneric);
+        self::assertNull($m['plain']->returnGeneric);
+        self::assertSame('App\Models\Invoice', $m['nullable']->returnGeneric);
+        self::assertNull($m['templated']->returnGeneric);
+    }
+
+    public function testClassLevelPropertyAndMethodTags(): void
+    {
+        $table = $this->build(['C.php' => '<?php
+namespace App\Models;
+use Illuminate\Database\Eloquent\Collection;
+/**
+ * @property int $id
+ * @property-read Account $account
+ * @property-read Collection<int, Invoice> $invoices
+ * @phpstan-property \Other\Team $team
+ * @psalm-property ?Member $member
+ * @property-write Secret $secret
+ * @method Invoice latestInvoice()
+ * @method static Builder|C active()
+ * @method noType()
+ */
+class C {}']);
+
+        $class = $table->getClass('App\Models\C');
+        self::assertNotNull($class);
+        self::assertSame([
+            'id' => 'int',
+            'account' => 'App\Models\Account',
+            'invoices' => 'Illuminate\Database\Eloquent\Collection',
+            'member' => 'App\Models\Member',
+            'team' => 'Other\Team',
+        ], $class->docProperties);
+        // A two-class union (Builder|C) is ambiguous, so it is not recorded.
+        self::assertSame(['latestinvoice' => 'App\Models\Invoice'], $class->docMethods);
+    }
+
+    public function testReturnShapeMarkers(): void
+    {
+        $table = $this->build(['C.php' => '<?php
+namespace App;
+class C {
+    public function a(): static {}
+    public function b(): ?self {}
+    /** @return $this */
+    public function c() {}
+    public function d(): A|B|null {}
+    /** @return A|B */
+    public function e() {}
+    /** @return A|null */
+    public function f() {}
+    public function g(): parent {}
+}']);
+
+        $shapes = [];
+        foreach (['a', 'b', 'c', 'd', 'e', 'f', 'g'] as $name) {
+            $method = $table->findMethod('App\C', $name);
+            self::assertNotNull($method);
+            $shapes[$name] = [$method->returnsStatic, $method->returnsSelf, $method->returnAmbiguous];
+        }
+        self::assertSame([
+            'a' => [true, false, false],
+            'b' => [false, true, false],
+            'c' => [true, false, false],
+            'd' => [false, false, true],
+            'e' => [false, false, true],
+            'f' => [false, false, false],
+            'g' => [false, false, true],
+        ], $shapes);
+    }
+
+    public function testConstructorAssignedPropertyTakesTheParameterType(): void
+    {
+        $table = $this->build(['C.php' => '<?php
+namespace App\Http;
+use App\Services\Repo;
+use App\Services\Other;
+class C {
+    private $repo;
+    private $fallback;
+    private $branch;
+    private $reassigned;
+    private $twice;
+    /** @var Other */
+    private $documented;
+    private $untypedParam;
+    private $overwritten;
+    private $nullFallback;
+    private $otherFallback;
+    private $callFallback;
+    public function __construct(Repo $repo, ?Repo $maybe, Repo $b, Repo $r2, Other $o, Repo $d, $u, Repo $w, ?Repo $n1, ?Repo $n2, ?Repo $n3)
+    {
+        $this->repo = $repo;
+        $this->fallback = $maybe ?? new Repo();
+        $this->nullFallback = $n1 ?? null;
+        $this->otherFallback = $n2 ?? new Other();
+        $this->callFallback = $n3 ?? app(Repo::class);
+        if ($b) {
+            $this->branch = $b;
+        }
+        $r2 = new Other();
+        $this->reassigned = $r2;
+        $this->twice = $b;
+        $this->twice = $o;
+        $this->documented = $d;
+        $this->untypedParam = $u;
+        $this->overwritten = $w;
+        foreach ([1] as $x) {
+            $this->overwritten = $x;
+        }
+    }
+}']);
+
+        $class = $table->getClass('App\Http\C');
+        self::assertNotNull($class);
+        $p = $class->properties;
+        self::assertSame('App\Services\Repo', $p['repo']->type);
+        self::assertSame('App\Services\Repo', $p['fallback']->type);
+        self::assertNull($p['branch']->type);
+        self::assertNull($p['reassigned']->type);
+        self::assertNull($p['twice']->type);
+        self::assertSame('App\Services\Other', $p['documented']->type);
+        self::assertNull($p['untypedParam']->type);
+        self::assertNull($p['overwritten']->type);
+        self::assertSame('App\Services\Repo', $p['nullFallback']->type);
+        self::assertNull($p['otherFallback']->type);
+        self::assertNull($p['callFallback']->type);
+    }
+
     private function parsedFile(string $path, string $code): ParsedFile
     {
         return (new AstGenerator())->parse(new SourceFile($path, '/abs/'.$path, $code));
