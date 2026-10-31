@@ -48,7 +48,7 @@ final class GroundingChecker
     {
         $index = $this->index[$payload] ??= self::parse($payload->code);
 
-        $file = $finding['file'] ?? null;
+        $file = self::path($finding['file'] ?? null);
         if (!is_string($file) || !isset($index['tags'][$file])) {
             return [null, 'file '.self::show($file).' not in payload'];
         }
@@ -57,7 +57,7 @@ final class GroundingChecker
             return [null, 'line L'.self::show($finding['line'] ?? null).' not in payload'];
         }
         $symbol = $finding['symbol'] ?? null;
-        if (!$this->fits($symbol, $file, $line, $index)) {
+        if (!$this->fits($symbol, $file, $line, $index, $payload)) {
             $header = self::header($index, $file, $line);
             if ($header === null) {
                 return [null, "line {$line} outside ".self::show($symbol)];
@@ -67,29 +67,51 @@ final class GroundingChecker
 
         $path = [];
         foreach (is_array($finding['path'] ?? null) ? $finding['path'] : [] as $step) {
-            $stepFile = is_array($step) ? ($step['file'] ?? null) : null;
+            $stepFile = is_array($step) ? self::path($step['file'] ?? null) : null;
             $stepLine = is_array($step) ? self::line($step['line'] ?? null) : null;
             if (is_string($stepFile) && $stepLine !== null && isset($index['tags'][$stepFile][$stepLine])) {
                 $path[] = ['file' => $stepFile, 'line' => $stepLine, 'symbol' => is_string($step['symbol'] ?? null) ? $step['symbol'] : ''];
             }
         }
 
-        return [[...$finding, 'line' => $line, 'symbol' => $symbol, 'path' => $path], null];
+        return [[...$finding, 'file' => $file, 'line' => $line, 'symbol' => $symbol, 'path' => $path], null];
     }
 
-    // True when the symbol may stand: unknown to the table, its span holds the line, or it is class-level and declared outside the payload.
+    // True only for a known symbol whose span holds the line, or a class-level one declared outside the payload that the payload names.
     /** @param Index $index */
-    private function fits(mixed $symbol, string $file, int $line, array $index): bool
+    private function fits(mixed $symbol, string $file, int $line, array $index, Payload $payload): bool
     {
         if (!is_string($symbol)) {
             return false;
         }
         $span = $this->span($symbol);
-        if ($span === null || ($span[0] === $file && $line >= $span[1] && $line <= $span[2])) {
+        if ($span === null) {
+            return false;
+        }
+        if ($span[0] === $file && $line >= $span[1] && $line <= $span[2]) {
             return true;
         }
 
-        return $span[3] && !isset($index['tags'][$span[0]]);
+        return $span[3] && !isset($index['tags'][$span[0]]) && self::names($payload, explode('::', ltrim(trim($symbol), '\\'))[0]);
+    }
+
+    // The class FQN or its short name appears as a whole word in the context block or the code.
+    private static function names(Payload $payload, string $class): bool
+    {
+        $short = substr((string) strrchr('\\'.$class, '\\'), 1);
+        foreach (array_unique([$class, $short]) as $name) {
+            if ($name !== '' && preg_match('~(?<![\w\\\\])'.preg_quote($name, '~').'(?![\w])~', $payload->context."\n".$payload->code) === 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // Forward slashes, without a leading ./ or /, so it can match a header path exactly.
+    private static function path(mixed $file): mixed
+    {
+        return is_string($file) ? (string) preg_replace('~^(?:\./|/)+~', '', str_replace('\\', '/', $file)) : $file;
     }
 
     // The id of the smallest header range in the file that holds the line.

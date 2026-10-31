@@ -69,6 +69,17 @@ final class GroundingCheckerTest extends TestCase
         '}',
     ];
 
+    private const COMMENT = [
+        '<?php',
+        '',
+        'namespace App\Models;',
+        '',
+        'class Comment',
+        '{',
+        '    protected $fillable = [];',
+        '}',
+    ];
+
     private const SHOW_BLOCK = <<<'TXT'
         // FILE: app/Http/Controllers/PostController.php :: App\Http\Controllers\PostController::show (L11-L18)
         L11|     /**
@@ -251,13 +262,63 @@ final class GroundingCheckerTest extends TestCase
         self::assertNull($this->check(self::finding(['file' => self::GATES, 'line' => 31, 'symbol' => 'gate:edit-post', 'path' => []])));
     }
 
-    public function testUnknownSymbolSkipsSpanCheckOnly(): void
+    public function testUnknownSymbolIsReattributedToItsHeader(): void
     {
-        self::assertNull($this->check(self::finding(['line' => 22, 'symbol' => 'App\Unknown::handle'])));
-        self::assertNull($this->check(self::finding(['line' => 22, 'symbol' => self::CLS.'::missing'])));
-        self::assertNull($this->check(self::finding(['line' => 22, 'symbol' => self::CLS.'::$missing'])));
+        foreach (['Totally\Made::up', 'Made\Up::$bar', self::CLS.'::missing', self::CLS.'::$missing', 'App\Unknown'] as $symbol) {
+            [$grounded, $reason] = $this->ground(self::finding(['line' => 22, 'symbol' => $symbol]));
+            self::assertNull($reason, $symbol);
+            self::assertSame(self::CLS.'::index', $grounded['symbol'] ?? null, $symbol);
+        }
         self::assertSame('line L19 not in payload', $this->check(self::finding(['line' => 19, 'symbol' => 'App\Unknown::handle'])));
         self::assertSame('file app/Unknown.php not in payload', $this->check(self::finding(['file' => 'app/Unknown.php', 'symbol' => 'App\Unknown::handle'])));
+    }
+
+    public function testUnknownSymbolOutsideEveryHeaderIsDropped(): void
+    {
+        $code = "<untrusted_code>\n// FILE: ".self::FILE.' :: '.self::SHOW." (L14-L18)\nL16|         \$post = 1;\nL40|     // stray\n</untrusted_code>";
+
+        self::assertSame('line 40 outside Totally\Made::up', $this->checker()->check(self::finding(['line' => 40, 'symbol' => 'Totally\Made::up', 'path' => []]), self::payload($code)));
+    }
+
+    public function testGateHeaderIdIsAValidAttribution(): void
+    {
+        [$grounded] = $this->ground(self::finding(['file' => self::GATES, 'line' => 31, 'symbol' => 'Made\Up::gate']));
+
+        self::assertSame('gate:edit-post', $grounded['symbol'] ?? null);
+    }
+
+    public function testClassLevelSymbolThePayloadNeverNamesIsReattributed(): void
+    {
+        foreach (['App\Models\Comment::$fillable', 'App\Models\Comment'] as $symbol) {
+            [$grounded] = $this->ground(self::finding(['line' => 16, 'symbol' => $symbol]));
+            self::assertSame(self::SHOW, $grounded['symbol'] ?? null, $symbol);
+        }
+    }
+
+    public function testFilePathsAreNormalised(): void
+    {
+        $step = ['file' => '.\app\Http\Controllers\PostController.php', 'line' => 14, 'symbol' => self::SHOW];
+        foreach (['./'.self::FILE, '/'.self::FILE, str_replace('/', '\\', self::FILE)] as $file) {
+            [$grounded, $reason] = $this->ground(self::finding(['file' => $file, 'path' => [$step]]));
+            self::assertNull($reason, $file);
+            self::assertSame(self::FILE, $grounded['file'] ?? null, $file);
+            self::assertSame(self::FILE, $grounded['path'][0]['file'] ?? null, $file);
+        }
+        self::assertSame('file app/Http/Controllers/PostController.php.bak not in payload', $this->check(self::finding(['file' => self::FILE.'.bak'])));
+    }
+
+    public function testRealInvoiceFindingNeverKeepsAWrongSymbol(): void
+    {
+        $payload = self::benchmarkPayload('GET /vuln/invoices/{id}');
+        $checker = new GroundingChecker(BenchmarkMaps::symbols('laravel11-app'));
+        $show = 'App\Http\Controllers\Vuln\InvoiceController::show';
+        $symbols = ['Totally\Made::up', 'Made\Up::$bar', 'App\Models\Invoice::$madeUpProp', 'App\Models\User', 'App\Models\User::$fillable', 'App\Http\Controllers\Vuln\InvoiceController::destroy', 'App\Policies\InvoicePolicy::view', null, $show];
+
+        foreach ($symbols as $symbol) {
+            [$grounded, $reason] = $checker->ground(['file' => 'app/Http/Controllers/Vuln/InvoiceController.php', 'line' => 19, 'symbol' => $symbol, 'path' => []], $payload);
+            self::assertNull($reason, (string) $symbol);
+            self::assertSame($show, $grounded['symbol'] ?? null, (string) $symbol);
+        }
     }
 
     /**
@@ -396,7 +457,7 @@ final class GroundingCheckerTest extends TestCase
     private static function symbols(): SymbolTable
     {
         $files = [];
-        foreach ([self::FILE => self::SOURCE, 'app/Models/Post.php' => self::MODEL] as $path => $lines) {
+        foreach ([self::FILE => self::SOURCE, 'app/Models/Post.php' => self::MODEL, 'app/Models/Comment.php' => self::COMMENT] as $path => $lines) {
             $files[] = (new AstGenerator())->parse(new SourceFile($path, '/nonexistent/'.$path, implode("\n", $lines)."\n"));
         }
 
