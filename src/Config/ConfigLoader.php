@@ -16,7 +16,7 @@ final class ConfigLoader
     private const KEYS = [
         'provider', 'model', 'api_key_env', 'base_url', 'concurrency', 'budget_tokens',
         'max_payload_tokens', 'max_depth', 'level', 'min_confidence', 'paths', 'exclude',
-        'laravel', 'auth_helpers', 'auth_middleware', 'rulesets',
+        'laravel', 'auth_helpers', 'auth_middleware', 'rulesets', 'effort',
     ];
 
     private const LARAVEL_KEYS = ['route_files', 'sensitive_fields'];
@@ -48,6 +48,11 @@ final class ConfigLoader
             throw new ConfigException('Config key "provider" must be one of: '.implode(', ', self::PROVIDERS).'.');
         }
 
+        $model = $this->nullableString($data['model'] ?? null, 'model');
+        if ($model === null && $provider === 'ollama' && Defaults::model($provider) === null) {
+            throw new ConfigException('ollama needs a model in semantic-sec.yaml');
+        }
+
         $sensitive = array_values(array_unique([
             ...Config::DEFAULT_SENSITIVE_FIELDS,
             ...$this->stringList($laravel['sensitive_fields'] ?? [], 'laravel.sensitive_fields'),
@@ -56,7 +61,7 @@ final class ConfigLoader
         return new Config(
             projectRoot: $projectRoot,
             provider: $provider,
-            model: $this->nullableString($data['model'] ?? null, 'model'),
+            model: $model,
             apiKeyEnv: $this->nullableString($data['api_key_env'] ?? null, 'api_key_env'),
             baseUrl: $this->nullableString($data['base_url'] ?? null, 'base_url'),
             concurrency: $this->positiveInt($data['concurrency'] ?? 5, 'concurrency'),
@@ -72,6 +77,7 @@ final class ConfigLoader
             authHelpers: $this->stringList($data['auth_helpers'] ?? [], 'auth_helpers'),
             rulesets: $this->rulesets($data['rulesets'] ?? []),
             authMiddleware: $this->authMiddleware($data['auth_middleware'] ?? []),
+            effort: $this->effort($data['effort'] ?? 'high'),
         );
     }
 
@@ -108,7 +114,7 @@ final class ConfigLoader
         if ($value === null) {
             return null;
         }
-        if (! is_string($value) || $value === '') {
+        if (! is_string($value) || trim($value) === '') {
             throw new ConfigException(sprintf('Config key "%s" must be null or a non-empty string.', $key));
         }
 
@@ -161,6 +167,15 @@ final class ConfigLoader
             if (! is_string($item) || ($nonEmpty && $item === '')) {
                 throw new ConfigException(sprintf('Config key "%s" must be a list of %sstrings.', $key, $nonEmpty ? 'non-empty ' : ''));
             }
+        }
+
+        return $value;
+    }
+
+    private function effort(mixed $value): string
+    {
+        if (! is_string($value) || ! in_array($value, Config::EFFORTS, true)) {
+            throw new ConfigException('Config key "effort" must be one of: '.implode(', ', Config::EFFORTS).'.');
         }
 
         return $value;

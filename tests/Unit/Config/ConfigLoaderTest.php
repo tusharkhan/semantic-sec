@@ -149,6 +149,18 @@ YAML);
         $this->assertLoadFails("provider: gemini\n", 'provider', 'openai, anthropic, ollama');
     }
 
+    public function testWhitespaceOnlyBaseUrlFails(): void
+    {
+        $this->assertLoadFails("base_url: '   '\n", 'base_url');
+    }
+
+    public function testOllamaWithoutModelFails(): void
+    {
+        $this->assertLoadFails("provider: ollama\n", 'ollama needs a model in semantic-sec.yaml');
+        $this->write("provider: ollama\nmodel: llama4\n");
+        self::assertSame('llama4', (new ConfigLoader())->load($this->dir)->model);
+    }
+
     public function testListKeysMustBeListsOfStrings(): void
     {
         $this->assertLoadFails("paths: app\n", 'paths');
@@ -176,6 +188,19 @@ YAML);
         $this->expectException(ConfigException::class);
 
         (new ConfigLoader())->load($this->dir, $this->dir.'/missing.yaml');
+    }
+
+    public function testEffortDefaultsHighAndRejectsUnknown(): void
+    {
+        self::assertSame('high', (new ConfigLoader())->load($this->dir)->effort);
+
+        foreach (['low', 'medium', 'high', 'xhigh', 'max'] as $level) {
+            $this->write("effort: {$level}\n");
+            self::assertSame($level, (new ConfigLoader())->load($this->dir)->effort);
+        }
+
+        $this->assertLoadFails("effort: extreme\n", 'effort', 'low, medium, high, xhigh, max');
+        $this->assertLoadFails("effort: 3\n", 'effort');
     }
 
     public function testAuthMiddlewareDefaultsAndParses(): void

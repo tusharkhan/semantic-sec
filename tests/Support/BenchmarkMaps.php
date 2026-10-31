@@ -12,12 +12,13 @@ use TusharKhan\SemanticSec\Framework\Laravel\LaravelContext;
 use TusharKhan\SemanticSec\Parsing\AstGenerator;
 use TusharKhan\SemanticSec\Parsing\FileFinder;
 use TusharKhan\SemanticSec\Parsing\ProjectParser;
+use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTable;
 use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTableBuilder;
 use TusharKhan\SemanticSec\Payload\PayloadBuilder;
 
 final class BenchmarkMaps
 {
-    /** @var array<string, array{AuthorizationMap, CandidateSelector, PayloadBuilder}> */
+    /** @var array<string, array{AuthorizationMap, CandidateSelector, PayloadBuilder, SymbolTable}> */
     private static array $cache = [];
 
     public static function build(string $app): AuthorizationMap
@@ -35,7 +36,12 @@ final class BenchmarkMaps
         return self::project($app)[2];
     }
 
-    /** @return array{AuthorizationMap, CandidateSelector, PayloadBuilder} */
+    public static function symbols(string $app): SymbolTable
+    {
+        return self::project($app)[3];
+    }
+
+    /** @return array{AuthorizationMap, CandidateSelector, PayloadBuilder, SymbolTable} */
     private static function project(string $app): array
     {
         if (isset(self::$cache[$app])) {
@@ -52,6 +58,7 @@ final class BenchmarkMaps
             $context->buildAuthorizationMap($parsed, $symbols, $config, $framework),
             $context->candidateSelector($parsed, $symbols, $config, $framework),
             $context->payloadBuilder($parsed, $symbols, $config, $framework),
+            $symbols,
         ];
     }
 }

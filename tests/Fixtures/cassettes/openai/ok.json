@@ -1,0 +1,23 @@
+{
+    "interactions": [
+        {
+            "request": {
+                "method": "POST",
+                "uri": "https://api.openai.com/v1/chat/completions",
+                "headers": {
+                    "authorization": "<scrubbed>",
+                    "content-type": "application/json"
+                },
+                "body": "{\"model\":\"gpt-6-astra\",\"messages\":[{\"role\":\"system\",\"content\":\"You are a security reviewer.\"},{\"role\":\"user\",\"content\":\"payload\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"semantic_sec_findings\",\"strict\":true,\"schema\":{\"type\":\"object\"}}},\"max_completion_tokens\":16000}"
+            },
+            "response": {
+                "status": 200,
+                "headers": {
+                    "content-type": "application/json",
+                    "x-request-id": "req_TEST"
+                },
+                "body": "{\"id\":\"chatcmpl-TEST\",\"object\":\"chat.completion\",\"created\":1793404800,\"model\":\"gpt-6-astra-2026-09-01\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"{\\\"findings\\\":[{\\\"title\\\":\\\"Any user can read any invoice\\\",\\\"category\\\":\\\"idor\\\",\\\"severity\\\":\\\"high\\\",\\\"confidence\\\":\\\"high\\\",\\\"file\\\":\\\"app/Http/Controllers/InvoiceController.php\\\",\\\"line\\\":19,\\\"symbol\\\":\\\"App\\\\\\\\Http\\\\\\\\Controllers\\\\\\\\InvoiceController::show\\\",\\\"context\\\":\\\"GET /invoices/{id} behind auth only\\\",\\\"flaw\\\":\\\"L19 loads the invoice by id with no owner check\\\",\\\"fix\\\":\\\"Authorize with the InvoicePolicy\\\",\\\"patch\\\":\\\"\\\",\\\"path\\\":[{\\\"file\\\":\\\"app/Http/Controllers/InvoiceController.php\\\",\\\"line\\\":19,\\\"symbol\\\":\\\"App\\\\\\\\Http\\\\\\\\Controllers\\\\\\\\InvoiceController::show\\\"}]}]}\",\"refusal\":null},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2100,\"completion_tokens\":340,\"total_tokens\":2440}}"
+            }
+        }
+    ]
+}

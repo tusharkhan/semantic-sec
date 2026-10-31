@@ -14,6 +14,8 @@ final readonly class Config
         'password', 'user_id', 'owner_id', 'team_id', 'tenant_id', 'status',
     ];
 
+    public const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
     /**
      * @param  list<string>  $paths
      * @param  list<string>  $exclude
@@ -42,6 +44,7 @@ final readonly class Config
         public array $authHelpers,
         public array $rulesets,
         public array $authMiddleware = [],
+        public string $effort = 'high',
     ) {
     }
 }

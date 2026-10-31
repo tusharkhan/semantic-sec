@@ -205,7 +205,7 @@ final class PayloadBuilderTest extends TestCase
     public function testEveryLineTagMatchesSource(): void
     {
         $checked = 0;
-        foreach ([8000, 1350, 1100, 950] as $limit) {
+        foreach ([8000, 1083, 833, 683] as $limit) {
             foreach (self::all($limit) as $payload) {
                 $checked += self::assertTagsMatchSource($payload->text());
             }
@@ -265,8 +265,17 @@ final class PayloadBuilderTest extends TestCase
         self::assertStringContainsString('  - app/Services/PostService.php:21: [not-found] $this->mystery() → App\Services\PostService::mystery', $context);
         self::assertNotEmpty(array_filter(self::project(8000)[2]['PUT /posts/{post}']->path->unresolved, static fn (string $u): bool => str_contains($u, '[facade]')));
         self::assertStringNotContainsString('[facade]', $context);
-        self::assertStringContainsString("\nFramework notes:\nLaravel notes:\n", $context);
         self::assertStringNotContainsString('Upstream summary:', $context);
+    }
+
+    public function testNoFrameworkNotesInPayload(): void
+    {
+        $payloads = self::all(8000);
+        self::assertNotEmpty($payloads);
+        foreach ($payloads as $payload) {
+            self::assertStringNotContainsString('Framework notes:', $payload->context, $payload->id);
+            self::assertStringNotContainsString('Laravel notes:', $payload->context, $payload->id);
+        }
     }
 
     public function testEmptySectionsAreOmitted(): void
@@ -315,7 +324,7 @@ final class PayloadBuilderTest extends TestCase
 
     public function testSplitsAtSmallLimitWithUpstreamSummary(): void
     {
-        $payloads = self::payloads('PUT /posts/{post}', 1350);
+        $payloads = self::payloads('PUT /posts/{post}', 1083);
 
         self::assertGreaterThan(1, count($payloads));
         $ids = [];
@@ -346,7 +355,7 @@ final class PayloadBuilderTest extends TestCase
     public function testSplitPartsEachListTheUnresolvedCallsOfTheirOwnCode(): void
     {
         $candidate = self::project(8000)[2]['PUT /posts/{post}'];
-        $payloads = self::payloads('PUT /posts/{post}', 1350);
+        $payloads = self::payloads('PUT /posts/{post}', 1083);
         $expected = array_values(array_filter($candidate->path->unresolved, static fn (string $u): bool => ! str_contains($u, '[facade]') && ! str_contains($u, '[eloquent]')));
         $key = static fn (string $u): string => (string) preg_replace('~^(\S+?):\d+: ~', '$1 ', $u);
         $seen = [];
@@ -368,15 +377,15 @@ final class PayloadBuilderTest extends TestCase
 
     public function testTruncatesASingleNodeOverTheLimit(): void
     {
-        $payloads = self::payloads('PUT /posts/{post}', 1350);
-        $tight = self::payloads('PUT /posts/{post}', 1100);
+        $payloads = self::payloads('PUT /posts/{post}', 1083);
+        $tight = self::payloads('PUT /posts/{post}', 833);
 
         self::assertFalse($payloads[count($payloads) - 1]->truncated);
         $truncated = array_values(array_filter($tight, static fn (Payload $p): bool => $p->truncated));
         self::assertNotSame([], $truncated);
         foreach ($truncated as $payload) {
             self::assertMatchesRegularExpression('~\n// … truncated\n(?:\n// FILE: app/Policies/|</untrusted_code>$)~u', $payload->code);
-            self::assertLessThanOrEqual(1100, $payload->tokens());
+            self::assertLessThanOrEqual(833, $payload->tokens());
         }
         $kept = array_filter($truncated, static fn (Payload $p): bool => preg_match('~^L\\d+\\| ~m', $p->code) === 1);
         self::assertNotSame([], $kept);
@@ -384,7 +393,7 @@ final class PayloadBuilderTest extends TestCase
 
     public function testEveryPartStaysWithinTheLimitWhenTheContextFits(): void
     {
-        foreach ([1350, 1100] as $limit) {
+        foreach ([1083, 833] as $limit) {
             foreach (self::payloads('PUT /posts/{post}', $limit) as $payload) {
                 self::assertLessThanOrEqual($limit, $payload->tokens(), $payload->id);
             }

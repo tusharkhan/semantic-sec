@@ -117,7 +117,7 @@ final class LaravelContext implements FrameworkContext
         [$extractor] = $this->extractor($parsed, $symbols, $config, $registry, $eval);
         [$policies] = PolicyRegistry::fromProject($symbols, $eval);
 
-        return new PayloadBuilder($parsed, $symbols, $extractor, $policies, $this->promptContext(), $config);
+        return new PayloadBuilder($parsed, $symbols, $extractor, $policies, $config);
     }
 
     /** @return array{AuthCheckExtractor, list<string>} */
