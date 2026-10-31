@@ -18,12 +18,19 @@ final class SymbolTable
     /** @var array<string, array<string, true>> */
     private array $ancestorCache = [];
 
+    /** @var array<string, FunctionSymbol> lower-cased name => first definition */
+    private array $functions = [];
+
     /**
      * @param  list<ClassSymbol>  $classes
      * @param  list<string>  $failures
+     * @param  list<FunctionSymbol>  $functions
      */
-    public function __construct(array $classes, private array $failures = [])
+    public function __construct(array $classes, private array $failures = [], array $functions = [])
     {
+        foreach ($functions as $function) {
+            $this->functions[strtolower($function->name)] ??= $function;
+        }
         foreach ($classes as $class) {
             if (isset($this->classes[$class->name])) {
                 $this->duplicates[] = sprintf('%s declared in %s and %s', $class->name, $this->classes[$class->name]->file, $class->file);
@@ -45,6 +52,12 @@ final class SymbolTable
     public function failures(): array
     {
         return $this->failures;
+    }
+
+    // A function defined in the project, by its fully-qualified name; case-insensitive.
+    public function getFunction(string $fqn): ?FunctionSymbol
+    {
+        return $this->functions[strtolower(ltrim($fqn, '\\'))] ?? null;
     }
 
     public function getClass(string $fqn): ?ClassSymbol

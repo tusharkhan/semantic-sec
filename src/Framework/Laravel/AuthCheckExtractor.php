@@ -825,7 +825,7 @@ final class AuthCheckExtractor
             return $fetches($root) ? self::modelName($node->class) : null;
         }
         $outer = array_pop($calls);
-        if (! $fetches($outer) || ! (str_starts_with($root, 'where') || $root === 'query') || array_filter($calls, static fn (string $n): bool => $fetches($n) || in_array($n, AuthExpressions::READS, true)) !== []) {
+        if (! $fetches($outer) || ! (str_starts_with($root, 'where') || $root === 'query') || array_filter($calls, static fn (string $n): bool => $fetches($n) || in_array($n, Verbs::READS, true)) !== []) {
             return null;
         }
 

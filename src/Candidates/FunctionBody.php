@@ -28,7 +28,10 @@ final class FunctionBody
     /** @var array<string, ?string> parameter name => native class type */
     public readonly array $params;
 
-    public function __construct(SymbolTable $symbols, public readonly PathNode $node)
+    /** @var array<string, list<Expr\Assign|Expr\AssignOp|Expr\AssignRef>>|null variable name => assignments to it, built on first use */
+    private ?array $assignments = null;
+
+    public function __construct(SymbolTable $symbols, PathNode $node)
     {
         $fn = $node->closure ?? $node->method?->node;
         $this->stmts = match (true) {
@@ -52,6 +55,21 @@ final class FunctionBody
             $calls[] = $call;
         }
         $this->calls = $calls;
+    }
+
+    /** @return list<Expr\Assign|Expr\AssignOp|Expr\AssignRef> every plain, compound or reference assignment to $name */
+    public function assignmentsTo(string $name): array
+    {
+        if ($this->assignments === null) {
+            $this->assignments = [];
+            foreach ((new NodeFinder())->find($this->stmts, static fn (Node $n): bool => ($n instanceof Expr\Assign || $n instanceof Expr\AssignOp || $n instanceof Expr\AssignRef)
+                && $n->var instanceof Expr\Variable && is_string($n->var->name)) as $assign) {
+                \assert(($assign instanceof Expr\Assign || $assign instanceof Expr\AssignOp || $assign instanceof Expr\AssignRef) && $assign->var instanceof Expr\Variable && is_string($assign->var->name));
+                $this->assignments[$assign->var->name][] = $assign;
+            }
+        }
+
+        return $this->assignments[$name] ?? [];
     }
 
     private static function typeName(?Node $type): ?string

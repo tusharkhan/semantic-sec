@@ -13,6 +13,7 @@ use PhpParser\NodeVisitorAbstract;
 use PhpParser\PrettyPrinter\Standard;
 use TusharKhan\SemanticSec\Framework\Laravel\BodyPositions;
 use TusharKhan\SemanticSec\Framework\Laravel\RouteEntry;
+use TusharKhan\SemanticSec\Parsing\Symbols\FunctionSymbol;
 use TusharKhan\SemanticSec\Parsing\Symbols\MethodSymbol;
 use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTable;
 
@@ -81,15 +82,21 @@ final class CallGraphBuilder
                 continue;
             }
             foreach ($this->callees($node) as [$method, $bound, $site, $assumed, $text]) {
-                $bound = $bound !== null && $bound !== $method->class ? $bound : null;
-                $id = $bound === null ? $method->id() : $bound.'::'.$method->name;
+                if ($method instanceof FunctionSymbol) {
+                    $id = $method->id();
+                } else {
+                    $bound = $bound !== null && $bound !== $method->class ? $bound : null;
+                    $id = $bound === null ? $method->id() : $bound.'::'.$method->name;
+                }
                 if (isset($visited[$id])) {
                     $this->records[] = ['file' => $site->file, 'line' => $site->line, 'kind' => 'already-visited', 'text' => $text, 'suffix' => ' → '.$id];
 
                     continue;
                 }
                 $visited[$id] = true;
-                $nodes[] = new PathNode($id, $method, null, $method->file, $method->startLine, $method->endLine, $node->depth + 1, $site, $node->id, $bound, $node->assumed || $assumed);
+                $nodes[] = $method instanceof FunctionSymbol
+                    ? new PathNode($id, null, $method->node, $method->file, $method->node->getStartLine(), $method->node->getEndLine(), $node->depth + 1, $site, $node->id, null, $node->assumed || $assumed)
+                    : new PathNode($id, $method, null, $method->file, $method->startLine, $method->endLine, $node->depth + 1, $site, $node->id, $bound, $node->assumed || $assumed);
             }
         }
         $unresolved = array_map(static fn (array $r): string => sprintf('%s:%d: [%s] %s%s', $r['file'], $r['line'], $r['kind'], $r['text'], $r['suffix']), $this->records);
@@ -129,7 +136,7 @@ final class CallGraphBuilder
         }
     }
 
-    /** @return list<array{MethodSymbol, ?string, CallSite, bool, string}> callees in source order: method, bound class, site, assumed, call text */
+    /** @return list<array{MethodSymbol|FunctionSymbol, ?string, CallSite, bool, string}> callees in source order: method or app function, bound class, site, assumed, call text */
     private function callees(PathNode $node): array
     {
         $fn = $node->closure ?? $node->method?->node;
@@ -183,10 +190,14 @@ final class CallGraphBuilder
         return $visitor->calls;
     }
 
-    /** @return array{MethodSymbol, ?string, bool}|null the method to traverse, the class `$this` is bound to and whether it is assumed; null after recording why not */
+    /** @return array{MethodSymbol|FunctionSymbol, ?string, bool}|null the method or app function to traverse, the class `$this` is bound to and whether it is assumed; null after recording why not */
     private function resolve(Expr\CallLike $call, PathNode $node, BodyPositions $positions): ?array
     {
         if ($call instanceof Expr\FuncCall) {
+            $function = $this->projectFunction($call);
+            if ($function !== null) {
+                return [$function, null, false];
+            }
             $this->recordFunction($call, $node);
 
             return null;
@@ -218,6 +229,23 @@ final class CallGraphBuilder
         }
 
         return $this->lookup($call, $node, $class, $call->name->toString(), $isThis && $node->depth === 0);
+    }
+
+    // The project's own definition of a called function: the namespaced candidate first, then the global name, as PHP does.
+    private function projectFunction(Expr\FuncCall $call): ?FunctionSymbol
+    {
+        if (! $call->name instanceof Node\Name) {
+            return null;
+        }
+        $namespaced = $call->name->getAttribute('namespacedName');
+        foreach ([$namespaced instanceof Node\Name ? $namespaced->toString() : null, $call->name->toString()] as $name) {
+            $function = $name === null ? null : $this->symbols->getFunction($name);
+            if ($function !== null) {
+                return $function;
+            }
+        }
+
+        return null;
     }
 
     private function recordFunction(Expr\FuncCall $call, PathNode $node): void

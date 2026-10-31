@@ -19,6 +19,7 @@ use TusharKhan\SemanticSec\Framework\Laravel\AuthExpressions;
 use TusharKhan\SemanticSec\Framework\Laravel\AuthorizationMap;
 use TusharKhan\SemanticSec\Framework\Laravel\AuthStrength;
 use TusharKhan\SemanticSec\Framework\Laravel\RouteEntry;
+use TusharKhan\SemanticSec\Framework\Laravel\Verbs;
 use TusharKhan\SemanticSec\Parsing\CallGraph\CallGraphBuilder;
 use TusharKhan\SemanticSec\Parsing\CallGraph\ExecutionPath;
 use TusharKhan\SemanticSec\Parsing\CallGraph\PathNode;
@@ -36,7 +37,10 @@ final class CandidateSelector
 
     private const STATE_VERBS = ['POST', 'PUT', 'PATCH', 'DELETE'];
 
-    private const STATE_CALLS = ['save', 'update', 'delete', 'destroy', 'create', 'forcedelete', 'restore', 'insert', 'upsert'];
+    // An action named like this changes state even when its write is out of sight (SPEC §7 destroy-style action).
+    private const DESTROY_STYLE = '/^(destroy$|delete|remove|purge|truncate)/i';
+
+    private const DB_FACADES = ['Illuminate\\Support\\Facades\\DB', 'DB'];
 
     private const MASS_CALLS = ['create', 'update', 'fill', 'forcefill', 'upsert', 'firstorcreate', 'updateorcreate'];
 
@@ -68,6 +72,9 @@ final class CandidateSelector
         'morphedbymany', 'withpivot', 'withtimestamps', 'withdefault', 'as', 'using', 'wherepivot', 'ofmany', 'latestofmany', 'oldestofmany',
     ];
 
+    // Builder calls that keep the query on the same rows or only shape the result.
+    private const BUILDER_MODIFIERS = ['join', 'leftjoin', 'rightjoin', 'crossjoin', 'has', 'doesnthave', 'withwhere', 'lockforupdate', 'sharedlock', 'orderbyraw', 'selectraw', 'reorder', 'forpage', 'tosql', 'clone'];
+
     // Model reads usually called statically or on a collection of models.
     private const STATIC_READS = ['query', 'all', 'newquery', 'exists'];
 
@@ -98,10 +105,6 @@ final class CandidateSelector
     private const FACADES = ['Auth', 'Gate', 'DB', 'Cache', 'Log', 'Storage', 'Route', 'Request', 'Response', 'Session', 'Mail', 'Queue', 'Event', 'Config', 'Validator', 'Hash', 'URL', 'Redirect', 'Notification', 'Bus', 'Http'];
 
     private const WRAPPERS = ['intval', 'strval', 'trim', 'urldecode'];
-
-    // Calls that leave the user's relation scope.
-    private const SCOPE_RESETS = ['newquery', 'query', 'newmodelquery', 'replicate', 'getmodel', 'getrelated', 'newmodelinstance', 'make'];
-
 
     private const REQUESTS = ['Illuminate\\Http\\Request', 'Illuminate\\Foundation\\Http\\FormRequest'];
 
@@ -141,6 +144,17 @@ final class CandidateSelector
     /** @var array<string, array<string, true>> per route: node id => parameters that receive mass input */
     private array $massVars = [];
 
+    /** @var array<string, FunctionBody> per select(): function AST and class => its body, shared by every route */
+    private array $bodyCache = [];
+
+    /** @var array<string, true> per flowModels() walk: node and variable already expanded */
+    private array $flowVisited = [];
+
+    private int $flowDepth = 0;
+
+    /** @var array<int, array<string, true>> per select(): spl id of an expression => the variable names it mentions */
+    private array $mentionCache = [];
+
     /** @var array<string, true> per route: categories with a recorded exclusion */
     private array $decided = [];
 
@@ -159,6 +173,7 @@ final class CandidateSelector
     public function select(AuthorizationMap $map, bool $deep): array
     {
         $this->exclusions = [];
+        $this->bodyCache = $this->mentionCache = [];
         $candidates = [];
         $warnings = [];
         foreach ($map->routes as $route) {
@@ -171,7 +186,7 @@ final class CandidateSelector
                 $reason = 'selection failed: '.$e->getMessage();
                 $candidate = new Candidate($route, new ExecutionPath([$entry], []), [Category::Idor, Category::MissingAuthorization], ['idor' => $reason, 'missing_authorization' => $reason]);
             } finally {
-                $this->nodes = $this->bodies = $this->callees = $this->routeVars = $this->massVars = $this->decided = $this->writeNodes = $this->taintMemo = [];
+                $this->nodes = $this->bodies = $this->callees = $this->routeVars = $this->massVars = $this->decided = $this->writeNodes = $this->taintMemo = $this->flowVisited = [];
             }
             if ($candidate !== null) {
                 $candidates[] = $candidate;
@@ -206,10 +221,11 @@ final class CandidateSelector
         if ($identifiers !== []) {
             $this->idor($key, $identifiers, $checks, $deep, $reasons);
         }
-        $writes = $this->writes($path, self::STATE_CALLS);
+        $writes = $this->writes($path);
         $verbs = array_values(array_intersect($route->methods, self::STATE_VERBS));
-        if ($verbs !== [] || $writes !== []) {
-            $this->missingAuthorization($key, $path, $verbs, $writes, $checks, $deep, $reasons);
+        $destroy = $route->action->closure === null && $route->action->method !== null && preg_match(self::DESTROY_STYLE, $route->action->method) === 1 ? $route->action->method : null;
+        if ($verbs !== [] || $writes !== [] || $destroy !== null) {
+            $this->missingAuthorization($key, $path, $verbs, $writes, $destroy, $checks, $deep, $reasons);
         }
         $this->massAssignment($key, $path, $reasons);
         $this->deserialization($path, $reasons);
@@ -217,7 +233,7 @@ final class CandidateSelector
 
         $why = [
             Category::Idor->value => 'no route parameter or id-named request input reaching a call',
-            Category::MissingAuthorization->value => 'no state-changing verb or model write',
+            Category::MissingAuthorization->value => 'no state-changing verb, write or destroy-style action',
             Category::MassAssignment->value => 'no mass input reaching a model write',
             Category::InsecureDeserialization->value => 'no unserialize of a non-constant value',
             Category::WorkflowBypass->value => 'no status write or transition call',
@@ -229,7 +245,7 @@ final class CandidateSelector
         }
         $this->decided = [];
         if ($reasons === []) {
-            if ($identifiers === [] && $verbs === [] && $writes === []) {
+            if ($identifiers === [] && $verbs === [] && $writes === [] && $destroy === null) {
                 $this->exclude($key, null, self::NO_TRIGGER, '');
             }
 
@@ -250,17 +266,20 @@ final class CandidateSelector
     {
         foreach ($path->nodes as $node) {
             $this->nodes[$node->id] = $node;
-            $this->bodies[$node->id] = new FunctionBody($this->symbols, $node);
+            $fn = $node->closure ?? $node->method?->node;
+            $cacheKey = $fn === null ? null : spl_object_id($fn).':'.($node->method->class ?? '');
+            $this->bodies[$node->id] = $cacheKey === null ? new FunctionBody($this->symbols, $node) : ($this->bodyCache[$cacheKey] ??= new FunctionBody($this->symbols, $node));
         }
         // The call expression behind each edge: the only call at the site's line with the callee's name.
         foreach ($path->nodes as $node) {
             $parent = $node->calledBy === null ? null : ($this->bodies[$node->calledBy] ?? null);
-            if ($parent === null || $node->calledFrom === null || $node->method === null) {
+            $name = self::calleeName($node);
+            if ($parent === null || $node->calledFrom === null || $name === null) {
                 continue;
             }
             $found = [];
             foreach ($parent->calls as $call) {
-                if ($call->getStartLine() === $node->calledFrom->line && self::callName($call) === strtolower($node->method->name)) {
+                if ($call->getStartLine() === $node->calledFrom->line && ($call instanceof Expr\FuncCall) === ($node->method === null) && self::shortName(self::callName($call)) === $name) {
                     $found[] = $call;
                 }
             }
@@ -300,10 +319,33 @@ final class CandidateSelector
         return $out;
     }
 
+    // Lower-cased name a call to the node is written with: the method name, or an app function's unqualified name.
+    private static function calleeName(PathNode $node): ?string
+    {
+        if ($node->method !== null) {
+            return strtolower($node->method->name);
+        }
+
+        return $node->closure instanceof Stmt\Function_ ? strtolower($node->closure->name->toString()) : null;
+    }
+
+    private static function shortName(string $name): string
+    {
+        $pos = strrpos($name, '\\');
+
+        return $pos === false ? $name : substr($name, $pos + 1);
+    }
+
+    /** @return array<Node\Param> parameters of a method or app-function node */
+    private static function params(PathNode $node): array
+    {
+        return $node->method?->node->params ?? ($node->closure instanceof Stmt\Function_ ? $node->closure->params : []);
+    }
+
     /** @return list<array{0: Expr, 1: string, 2: PathNode}> argument in the caller, callee parameter, caller */
     private function argumentPairs(PathNode $node): array
     {
-        if ($node->method === null || $node->calledBy === null || ! isset($this->nodes[$node->calledBy])) {
+        if (self::calleeName($node) === null || $node->calledBy === null || ! isset($this->nodes[$node->calledBy])) {
             return [];
         }
         $call = null;
@@ -316,7 +358,7 @@ final class CandidateSelector
             return [];
         }
         $pairs = [];
-        $params = $node->method->node->params;
+        $params = self::params($node);
         foreach (AuthExpressions::args($call) as $i => $arg) {
             $param = $params[$i] ?? null;
             if ($param === null || $param->variadic || ! $param->var instanceof Expr\Variable || ! is_string($param->var->name)) {
@@ -391,7 +433,7 @@ final class CandidateSelector
             foreach ((new NodeFinder())->find($body->stmts, static fn (Node $n): bool => $n instanceof Expr\CallLike || $n instanceof Expr\PropertyFetch
                 || $n instanceof Expr\NullsafePropertyFetch || $n instanceof Expr\ArrayDimFetch) as $read) {
                 \assert($read instanceof Expr);
-                $name = $this->idInputName($read, $body);
+                $name = $this->idInputName($read, $body, $node);
                 if ($name === null) {
                     continue;
                 }
@@ -400,9 +442,32 @@ final class CandidateSelector
                     $out[] = ['label' => sprintf("request input '%s'", $name), 'param' => null, 'bound' => false, 'models' => self::knownModels($flows), 'flows' => $flows];
                 }
             }
+            // Request input of any name that reaches a pivot or relation write chooses which rows get linked.
+            foreach ($body->calls as $call) {
+                if (! AuthExpressions::isCall($call) && ! $call instanceof Expr\StaticCall || ! $this->isChosenLink($call) || ! $this->carriesInput($call, $body, $node)) {
+                    continue;
+                }
+                $where = sprintf('%s (%s:%d)', $this->print($call), $node->file, $call->getStartLine());
+                $out[] = ['label' => 'request input to '.$where, 'param' => null, 'bound' => false, 'models' => [], 'flows' => [self::unknownFlow($where)]];
+            }
         }
 
         return $out;
+    }
+
+    // Some argument of the call holds request input (directly, through a variable, or as a callee's mass-input parameter).
+    private function carriesInput(Expr\CallLike $call, FunctionBody $body, PathNode $node): bool
+    {
+        $massVars = $this->massVars[$node->id] ?? [];
+        foreach ($call->isFirstClassCallable() ? [] : $call->getArgs() as $arg) {
+            $hit = (new NodeFinder())->findFirst([$arg->value], static fn (Node $n): bool => $n instanceof Expr
+                && (($n instanceof Expr\Variable && is_string($n->name) && isset($massVars[$n->name])) || $body->auth->isRequestInput($n)));
+            if ($hit !== null || $this->isMassInput($arg->value, $body, $massVars)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -486,14 +551,15 @@ final class CandidateSelector
         return array_keys($out);
     }
 
-    // The id-like name a request read uses: ->input('post_id'), request('id'), Request::query('userId'), ->post_id, ['post_id'].
-    private function idInputName(Expr $read, FunctionBody $body): ?string
+    // The id-like name a request read uses: ->input('post_id'), request('id'), Request::query('userId'), ->post_id, ['post_id'],
+    // and ['post_id'] on an array of request input ($q = $request->all(); $q['post_id']).
+    private function idInputName(Expr $read, FunctionBody $body, PathNode $node): ?string
     {
         $key = null;
         if ($read instanceof Expr\PropertyFetch || $read instanceof Expr\NullsafePropertyFetch) {
             $key = $read->name instanceof Node\Identifier && $this->isRequestReceiver($read->var, $body) ? $read->name->toString() : null;
         } elseif ($read instanceof Expr\ArrayDimFetch) {
-            $key = $read->dim instanceof Node\Scalar\String_ && $this->isRequestReceiver($read->var, $body) ? $read->dim->value : null;
+            $key = $read->dim instanceof Node\Scalar\String_ && self::isIdName($read->dim->value) && $this->isRequestArray($read->var, $body, $node) ? $read->dim->value : null;
         } else {
             $name = AuthExpressions::name($read);
             $isRead = match (true) {
@@ -509,7 +575,26 @@ final class CandidateSelector
             return null;
         }
 
-        return $key === 'id' || str_ends_with($key, '_id') || preg_match('/[a-z0-9]Id$/', $key) === 1 ? $key : null;
+        return self::isIdName($key) ? $key : null;
+    }
+
+    private static function isIdName(string $key): bool
+    {
+        return $key === 'id' || str_ends_with($key, '_id') || preg_match('/[a-z0-9]Id$/', $key) === 1;
+    }
+
+    // The request itself, any request-input value ($request->all(), validated(), only(..), a variable holding one), or a
+    // callee parameter that receives mass input.
+    private function isRequestArray(Expr $expr, FunctionBody $body, PathNode $node): bool
+    {
+        if ($this->isRequestReceiver($expr, $body)) {
+            return true;
+        }
+        if ($expr instanceof Expr\Variable && is_string($expr->name) && isset($this->massVars[$node->id][$expr->name])) {
+            return true;
+        }
+
+        return ! $expr instanceof Expr\PropertyFetch && ! $expr instanceof Expr\NullsafePropertyFetch && $body->auth->isRequestInput($expr);
     }
 
     /**
@@ -577,13 +662,32 @@ final class CandidateSelector
     private function flowModels(PathNode $node, string $var, array $seen, bool $bound): array
     {
         $key = $node->id."\0".$var;
-        if (isset($seen[$key])) {
+        if ($this->flowDepth === 0) {
+            $this->flowVisited = [];
+        }
+        // Each variable is expanded once per walk: its flows are the same whichever path reached it.
+        if (isset($seen[$key]) || isset($this->flowVisited[$key])) {
             return [];
         }
         if (count($seen) > 24) {
             return [self::unknownFlow()];
         }
         $seen[$key] = true;
+        $this->flowVisited[$key] = true;
+        $this->flowDepth++;
+        try {
+            return $this->expandFlows($node, $var, $seen, $bound);
+        } finally {
+            $this->flowDepth--;
+        }
+    }
+
+    /**
+     * @param  array<string, true>  $seen
+     * @return list<array{known: bool, lookup: bool, model: ?string, scoped: bool, firm: bool, throws: bool, loose: bool, text: string}>
+     */
+    private function expandFlows(PathNode $node, string $var, array $seen, bool $bound): array
+    {
         $body = $this->bodies[$node->id];
         $flows = [];
         foreach ($body->calls as $call) {
@@ -619,7 +723,6 @@ final class CandidateSelector
                 $flows[] = $flow;
             }
         }
-
         return $flows;
     }
 
@@ -789,7 +892,7 @@ final class CandidateSelector
             $tainted = $param === null || $depth > 4 ? null : $this->calleeTaint($callee, $param, $depth + 1);
             if ($tainted !== null) {
                 $params = [];
-                foreach ($callee->method?->node->params ?? [] as $i => $p) {
+                foreach (self::params($callee) as $i => $p) {
                     if ($p->byRef && $p->var instanceof Expr\Variable && is_string($p->var->name) && isset($tainted[$p->var->name])) {
                         $params[$i] = $p->var->name;
                     }
@@ -859,7 +962,7 @@ final class CandidateSelector
     // The callee parameter an argument binds to, by name when named; null when it is variadic or not a plain variable.
     private function calleeParam(PathNode $callee, int $index, ?string $named): ?string
     {
-        $params = $callee->method?->node->params ?? [];
+        $params = self::params($callee);
         $param = $params[$index] ?? null;
         if ($named !== null) {
             $param = null;
@@ -895,7 +998,27 @@ final class CandidateSelector
 
     private function mentions(Expr $expr, string $var): bool
     {
-        return (new NodeFinder())->findFirst([$expr], fn (Node $n): bool => $this->mentionsDirectly($n, $var)) !== null;
+        $id = spl_object_id($expr);
+        if (! isset($this->mentionCache[$id])) {
+            $names = [];
+            foreach ((new NodeFinder())->find([$expr], static fn (Node $n): bool => $n instanceof Expr\Variable || AuthExpressions::isFunc($n, 'compact')) as $n) {
+                if ($n instanceof Expr\Variable) {
+                    if (is_string($n->name)) {
+                        $names[$n->name] = true;
+                    }
+
+                    continue;
+                }
+                foreach (AuthExpressions::args($n) as $arg) {
+                    if ($arg instanceof Node\Scalar\String_) {
+                        $names[$arg->value] = true;
+                    }
+                }
+            }
+            $this->mentionCache[$id] = $names;
+        }
+
+        return isset($this->mentionCache[$id][$var]);
     }
 
     /**
@@ -917,6 +1040,10 @@ final class CandidateSelector
 
             return $this->flowModels($callee, $param, $seen, $bound);
         }
+        // A pivot or relation write links whatever rows the value names.
+        if (! $call instanceof Expr\FuncCall && in_array($name, Verbs::RELATION_WRITES, true)) {
+            return [self::unknownFlow(sprintf('%s (%s:%d)', $this->print($call), $node->file, $call->getStartLine()))];
+        }
         if (($call instanceof Expr\StaticCall || AuthExpressions::isCall($call)) && $this->isRealLookup($node, $call)) {
             return [$this->lookupFlow($node, $call)];
         }
@@ -935,9 +1062,9 @@ final class CandidateSelector
     }
 
     /** @return array{known: bool, lookup: bool, model: ?string, scoped: bool, firm: bool, throws: bool, loose: bool, text: string} */
-    private static function unknownFlow(): array
+    private static function unknownFlow(string $text = ''): array
     {
-        return ['known' => false, 'lookup' => false, 'model' => null, 'scoped' => false, 'firm' => false, 'throws' => false, 'loose' => false, 'text' => ''];
+        return ['known' => false, 'lookup' => false, 'model' => null, 'scoped' => false, 'firm' => false, 'throws' => false, 'loose' => false, 'text' => $text];
     }
 
     /** @return array{known: bool, lookup: bool, model: ?string, scoped: bool, firm: bool, throws: bool, loose: bool, text: string} */
@@ -954,7 +1081,7 @@ final class CandidateSelector
             'known' => true,
             'lookup' => true,
             'model' => $this->lookupModel($node, $call),
-            'scoped' => $this->chainScoped($top, $body, $node, true),
+            'scoped' => $this->chainScoped($top, $body, $node, true) && ! $this->widened($top, $body),
             'firm' => $body->positions->isUnconditional($call) && $this->effective($node),
             'throws' => in_array(AuthExpressions::name($call), self::THROWING, true) || in_array(AuthExpressions::name($top), self::THROWING, true),
             'loose' => false,
@@ -962,15 +1089,10 @@ final class CandidateSelector
         ];
     }
 
-    private static function isLookup(string $name): bool
-    {
-        return str_starts_with($name, 'find') || str_starts_with($name, 'where') || str_starts_with($name, 'first') || $name === 'sole' || $name === 'destroy';
-    }
-
     // A lookup-named call on a model class, or on a receiver typed as a model, an Eloquent or query builder, or a relation.
     private function isRealLookup(PathNode $node, Expr\CallLike $call): bool
     {
-        if (! self::isLookup(AuthExpressions::name($call) ?? '')) {
+        if (! Verbs::isLookup(AuthExpressions::name($call) ?? '')) {
             return false;
         }
         if ($call instanceof Expr\StaticCall) {
@@ -1009,7 +1131,7 @@ final class CandidateSelector
         while (! $body->auth->isAuthUser($expr)) {
             if (AuthExpressions::isCall($expr) || $expr instanceof Expr\StaticCall) {
                 $name = AuthExpressions::name($expr) ?? '';
-                if (str_starts_with($name, 'orwhere') || in_array($name, self::SCOPE_RESETS, true)) {
+                if (str_starts_with($name, 'orwhere') || in_array($name, Verbs::SCOPE_RESETS, true)) {
                     return false;
                 }
                 // A model or value taken out of the query ends the scope for anything chained after it.
@@ -1037,6 +1159,108 @@ final class CandidateSelector
         return $relations && $first !== null && AuthExpressions::isCall($first) && $this->isRelation($expr, $first, $node);
     }
 
+    /**
+     * A still-unmaterialised query chain that leaves the code the selector can see: passed to a call that is not a builder
+     * method, or held in a variable that later is (or is reassigned from one, or widened by orWhere or an unknown method).
+     */
+    private function widened(Expr $top, FunctionBody $body): bool
+    {
+        $name = AuthExpressions::name($top) ?? '';
+        if (self::materialises($name) || in_array($name, Verbs::READS, true)) {
+            return false;
+        }
+        $parent = $body->positions->parent($top);
+        if ($parent instanceof Node\Arg) {
+            return $this->escapesInto($body->positions->parent($parent), $body);
+        }
+        if (! $parent instanceof Expr\Assign || $parent->expr !== $top || ! $parent->var instanceof Expr\Variable || ! is_string($parent->var->name)) {
+            return false;
+        }
+        $var = $parent->var->name;
+
+        return $this->builderEscapes($var, $body, true, fn (Expr $value): bool => $value === $top || $this->builderChainOn($value, $var));
+    }
+
+    /**
+     * Whether a builder held in $var may be changed out of sight: passed to a non-builder call, captured by a closure,
+     * taken by reference, reassigned from a value $keeps rejects, or (strict) chained with orWhere, a scope reset or an
+     * unknown method; otherwise only orWhere and scope resets count.
+     *
+     * @param  callable(Expr): bool  $keeps
+     */
+    private function builderEscapes(string $var, FunctionBody $body, bool $strict, callable $keeps): bool
+    {
+        foreach ((new NodeFinder())->find($body->stmts, static fn (Node $n): bool => ($n instanceof Expr\Variable && $n->name === $var)
+            || ($n instanceof Node\ClosureUse && $n->var->name === $var)) as $use) {
+            if ($use instanceof Node\ClosureUse) {
+                return true;
+            }
+            \assert($use instanceof Expr);
+            $parent = $body->positions->parent($use);
+            if ($parent instanceof Expr\AssignRef) {
+                return true;
+            }
+            if ($parent instanceof Expr\Assign && $parent->var === $use) {
+                if (! $keeps($parent->expr)) {
+                    return true;
+                }
+
+                continue;
+            }
+            if ($parent instanceof Node\Arg && $this->escapesInto($body->positions->parent($parent), $body)) {
+                return true;
+            }
+            for ($at = $use; ($p = $body->positions->parent($at)) !== null && AuthExpressions::isCall($p) && $p->var === $at; $at = $p) {
+                $call = AuthExpressions::name($p) ?? '';
+                if (str_starts_with($call, 'orwhere') || in_array($call, Verbs::SCOPE_RESETS, true) || ($strict && ! self::isBuilderMethod($call))) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    // A call a builder argument may be changed by: anything but a builder method or a request, response or safe-facade call.
+    private function escapesInto(?Node $call, FunctionBody $body): bool
+    {
+        if (! $call instanceof Expr\CallLike) {
+            return false;
+        }
+        $name = AuthExpressions::name($call) ?? '';
+        if ($call instanceof Expr\FuncCall) {
+            return ! $this->knownFunction($name);
+        }
+        if ($call instanceof Expr\StaticCall) {
+            return ! ($call->class instanceof Node\Name && self::isSafeFacade(ltrim($call->class->toString(), '\\'))) && ! self::isBuilderMethod($name);
+        }
+
+        return ! ($call instanceof Expr\MethodCall || $call instanceof Expr\NullsafeMethodCall) || ! ($this->harmlessReceiver($call->var, $body) || self::isBuilderMethod($name));
+    }
+
+    // $value is $var itself or a chain of builder methods on it.
+    private function builderChainOn(Expr $value, string $var): bool
+    {
+        while (AuthExpressions::isCall($value)) {
+            if (! self::isBuilderMethod(AuthExpressions::name($value) ?? '')) {
+                return false;
+            }
+            $value = $value->var;
+        }
+
+        return self::isVariable($value, $var);
+    }
+
+    // A query-builder method that never widens the query: where* (not orWhere*), a modifier, or a read.
+    private static function isBuilderMethod(string $name): bool
+    {
+        if (str_starts_with($name, 'orwhere') || in_array($name, Verbs::SCOPE_RESETS, true)) {
+            return false;
+        }
+
+        return str_starts_with($name, 'where') || self::materialises($name) || in_array($name, [...self::ELOQUENT_METHODS, ...self::BUILDER_MODIFIERS, ...Verbs::READS], true);
+    }
+
     private static function materialises(string $name): bool
     {
         return str_starts_with($name, 'first') || str_starts_with($name, 'find') || in_array($name, self::MATERIALISING, true);
@@ -1059,9 +1283,13 @@ final class CandidateSelector
      * @param  list<AuthCheck>  $checks
      * @param  array<string, string>  $reasons
      */
-    private function missingAuthorization(string $key, ExecutionPath $path, array $verbs, array $writes, array $checks, bool $deep, array &$reasons): void
+    private function missingAuthorization(string $key, ExecutionPath $path, array $verbs, array $writes, ?string $destroy, array $checks, bool $deep, array &$reasons): void
     {
-        $change = $verbs !== [] ? implode('/', $verbs).' route' : 'writes via '.$this->print($writes[0][1]);
+        $change = match (true) {
+            $verbs !== [] => implode('/', $verbs).' route',
+            $writes !== [] => 'writes via '.$this->print($writes[0][1]),
+            default => 'destroy-style action '.$destroy.'()',
+        };
         // A query scope only limits what is read; it does not authorize a write.
         $authorizing = array_values(array_filter($checks, static fn (AuthCheck $c): bool => $c->kind !== AuthCheckKind::QueryScope));
         if ($authorizing !== [] && $deep) {
@@ -1074,13 +1302,19 @@ final class CandidateSelector
 
             return;
         }
-        $all = $this->writes($path, [...self::STATE_CALLS, ...AuthExpressions::WRITES]);
+        $all = $writes;
         $hidden = $all === [] ? null : $this->unresolvedCall($path);
         $scoped = $all !== [] && $hidden === null;
         $texts = [];
+        $chosen = null;
         foreach ($all as [$node, $call]) {
-            $scoped = $scoped && AuthExpressions::isCall($call) && $this->authRooted($call->var, $this->bodies[$node->id], $node);
-            $texts[] = sprintf('%s (%s:%d)', $this->print($call), $node->file, $call->getStartLine());
+            $where = sprintf('%s (%s:%d)', $this->print($call), $node->file, $call->getStartLine());
+            // A pivot or relation write fed a non-constant value picks the rows itself: never self-scoped.
+            if ($chosen === null && $this->isChosenLink($call)) {
+                $chosen = $where;
+            }
+            $scoped = $scoped && $chosen === null && AuthExpressions::isCall($call) && $this->authRooted($call->var, $this->bodies[$node->id], $node);
+            $texts[] = $where;
         }
         $selfScoped = 'every model write is reached through the authenticated user or a user-scoped query';
         if ($scoped && $deep) {
@@ -1093,27 +1327,87 @@ final class CandidateSelector
 
             return;
         }
-        $reasons[Category::MissingAuthorization->value] = ($deep ? '--deep: ' : '').$change.' with no authorization check'.($hidden === null ? '' : '; unresolved call '.$hidden);
+        $reasons[Category::MissingAuthorization->value] = ($deep ? '--deep: ' : '').$change.' with no authorization check'
+            .($chosen === null ? '' : '; relation write from a non-constant value '.$chosen).($hidden === null ? '' : '; unresolved call '.$hidden);
     }
 
     /**
-     * Model writes anywhere on the path: a named call on a model, a query or relation, or a receiver of unknown type.
+     * Writes anywhere on the path: a write verb on a model, a query or relation, or a receiver of unknown type, and every
+     * DB facade write (DB::delete(..), DB::table(..)->truncate()).
      *
-     * @param  list<string>  $names
      * @return list<array{PathNode, Expr\CallLike}>
      */
-    private function writes(ExecutionPath $path, array $names): array
+    private function writes(ExecutionPath $path): array
     {
         $out = [];
         foreach ($path->nodes as $node) {
             foreach ($this->bodies[$node->id]->calls as $call) {
-                if (in_array(self::callName($call), $names, true) && ($call instanceof Expr\StaticCall || AuthExpressions::isCall($call)) && $this->isModelWrite($node, $call)) {
+                if (! $call instanceof Expr\StaticCall && ! AuthExpressions::isCall($call)) {
+                    continue;
+                }
+                if ($this->isDbWrite($call) || (Verbs::isWrite(self::callName($call)) && $this->isModelWrite($node, $call))) {
                     $out[] = [$node, $call];
                 }
             }
         }
 
         return $out;
+    }
+
+    // DB::insert/update/delete/statement/unprepared(..), or a write verb on a chain rooted at the DB facade.
+    private function isDbWrite(Expr\StaticCall|Expr\MethodCall|Expr\NullsafeMethodCall $call): bool
+    {
+        if ($call instanceof Expr\StaticCall) {
+            return self::isDbFacade($call->class) && in_array(self::callName($call), Verbs::DB_WRITES, true);
+        }
+        if (! Verbs::isWrite(self::callName($call))) {
+            return false;
+        }
+        $root = $call->var;
+        while (AuthExpressions::isCall($root)) {
+            $root = $root->var;
+        }
+
+        return $root instanceof Expr\StaticCall && self::isDbFacade($root->class);
+    }
+
+    private static function isDbFacade(Node $class): bool
+    {
+        return $class instanceof Node\Name && in_array(ltrim($class->toString(), '\\'), self::DB_FACADES, true);
+    }
+
+    // A pivot or relation write (sync, attach, ...) with any argument that is not a constant.
+    private function isChosenLink(Expr\CallLike $call): bool
+    {
+        if (! in_array(self::callName($call), Verbs::RELATION_WRITES, true) || $call->isFirstClassCallable()) {
+            return false;
+        }
+        foreach ($call->getRawArgs() as $arg) {
+            if (! $arg instanceof Node\Arg || ! self::isConstantValue($arg->value)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // A literal, a constant, or an array / concatenation of them.
+    private static function isConstantValue(Expr $expr): bool
+    {
+        if ($expr instanceof Expr\Array_) {
+            foreach ($expr->items as $item) {
+                if ($item->unpack || ! self::isConstantValue($item->value) || ($item->key !== null && ! self::isConstantValue($item->key))) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        if ($expr instanceof Expr\UnaryMinus || $expr instanceof Expr\UnaryPlus) {
+            return self::isConstantValue($expr->expr);
+        }
+
+        return self::isConstant($expr);
     }
 
     private function isModelWrite(PathNode $node, Expr\StaticCall|Expr\MethodCall|Expr\NullsafeMethodCall $call): bool
@@ -1151,7 +1445,7 @@ final class CandidateSelector
             return false;
         }
         $values = $body->auth->assignedValues($root);
-        if ($values === null || $values === []) {
+        if ($values === null || $values === [] || ! is_string($root->name) || $this->builderEscapes($root->name, $body, false, static fn (Expr $v): bool => true)) {
             return false;
         }
         foreach ($values as $value) {
@@ -1183,7 +1477,7 @@ final class CandidateSelector
         }
         foreach ($hops as $i => $hop) {
             $name = AuthExpressions::isCall($hop) ? (AuthExpressions::name($hop) ?? '') : null;
-            if ($name === null || in_array($name, self::SCOPE_RESETS, true) || $this->isRelationName($first, $name, $node)) {
+            if ($name === null || in_array($name, Verbs::SCOPE_RESETS, true) || $this->isRelationName($first, $name, $node)) {
                 return false;
             }
             if (self::materialises($name) && $i !== count($hops) - 1) {
@@ -1284,7 +1578,7 @@ final class CandidateSelector
 
     private static function isWriteName(string $name): bool
     {
-        return in_array($name, [...AuthExpressions::WRITES, ...self::STATE_CALLS], true);
+        return Verbs::isWrite($name);
     }
 
     // An Eloquent read on a receiver not proven to be an app class, a model write, or a relation of the model there.
@@ -1541,9 +1835,7 @@ final class CandidateSelector
     private function isMassVariable(string $name, FunctionBody $body, array $massVars, int $depth): bool
     {
         // Any assignment, compound or not, that contains a mass read makes the variable mass input.
-        foreach ((new NodeFinder())->find($body->stmts, static fn (Node $n): bool => ($n instanceof Expr\Assign || $n instanceof Expr\AssignOp || $n instanceof Expr\AssignRef)
-            && $n->var instanceof Expr\Variable && $n->var->name === $name) as $assign) {
-            \assert($assign instanceof Expr\Assign || $assign instanceof Expr\AssignOp || $assign instanceof Expr\AssignRef);
+        foreach ($body->assignmentsTo($name) as $assign) {
             if ($this->isMassInput($assign->expr, $body, $massVars, $depth)) {
                 return true;
             }

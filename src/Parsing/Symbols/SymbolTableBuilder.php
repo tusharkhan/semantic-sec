@@ -71,28 +71,33 @@ final class SymbolTableBuilder
     public function build(ParseResult $result): SymbolTable
     {
         $classes = [];
+        $functions = [];
         $failures = [];
         foreach ($result->files as $parsed) {
             try {
-                $found = $this->symbolsForFile($parsed);
+                [$found, $defined] = $this->symbolsForFile($parsed);
             } catch (\Throwable $e) {
                 $failures[] = sprintf('%s: %s: %s', $parsed->file->path, $e::class, $e->getMessage());
 
                 continue;
             }
             array_push($classes, ...$found);
+            array_push($functions, ...$defined);
         }
 
-        return new SymbolTable($classes, $failures);
+        return new SymbolTable($classes, $failures, $functions);
     }
 
-    /** @return list<ClassSymbol> */
+    /** @return array{list<ClassSymbol>, list<FunctionSymbol>} */
     private function symbolsForFile(ParsedFile $parsed): array
     {
         $resolver = new NameResolver(null, ['replaceNodes' => false]);
         $collector = new class ($this, $resolver, $parsed->file->path) extends NodeVisitorAbstract {
             /** @var list<ClassSymbol> */
             public array $found = [];
+
+            /** @var list<FunctionSymbol> */
+            public array $functions = [];
 
             public function __construct(
                 private readonly SymbolTableBuilder $builder,
@@ -106,13 +111,17 @@ final class SymbolTableBuilder
                 if ($node instanceof ClassLike && $node->name !== null && $node->namespacedName !== null) {
                     $this->found[] = $this->builder->symbolFor($node, $this->file, $this->resolver);
                 }
+                // Functions anywhere in the file, including inside `if (! function_exists(..))`.
+                if ($node instanceof Node\Stmt\Function_ && $node->namespacedName !== null) {
+                    $this->functions[] = new FunctionSymbol($node->namespacedName->toString(), $this->file, $node);
+                }
 
                 return null;
             }
         };
         (new NodeTraverser($resolver, $collector))->traverse($parsed->ast);
 
-        return $collector->found;
+        return [$collector->found, $collector->functions];
     }
 
     /** @internal Called by the traversal visitor. */

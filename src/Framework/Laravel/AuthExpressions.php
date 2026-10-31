@@ -15,15 +15,8 @@ use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTable;
 /** Recognises authenticated-user, auth-id, relation-read and where-scope expressions inside one action body. */
 final class AuthExpressions
 {
-    public const READS = ['find', 'findorfail', 'findmany', 'first', 'firstorfail', 'firstwhere', 'sole', 'get', 'paginate', 'simplepaginate', 'cursorpaginate', 'cursor', 'exists', 'doesntexist', 'count', 'pluck', 'value'];
-
-    public const WRITES = ['create', 'createmany', 'update', 'updateorcreate', 'firstorcreate', 'firstornew', 'save', 'savemany', 'delete', 'forcedelete', 'insert', 'upsert', 'attach', 'sync', 'detach', 'associate', 'increment', 'decrement', 'touch'];
-
     // Calls on the user that are not relations.
     private const NOT_RELATIONS = ['can', 'cannot', 'cant', 'getkey', 'tokencan', 'fresh', 'refresh', 'load', 'tojson', 'toarray', 'only', 'getattribute'];
-
-    // Calls that leave the user's relation scope.
-    private const SCOPE_RESETS = ['newquery', 'query', 'newmodelquery', 'replicate', 'getmodel', 'getrelated', 'newmodelinstance', 'make'];
 
     // Calls on the user that only tell whether someone is logged in.
     private const LOGIN_CALLS = ['check', 'guest', 'id', 'getkey', 'getauthidentifier'];
@@ -350,15 +343,15 @@ final class AuthExpressions
             array_unshift($calls, $name);
             $node = $node->var;
         }
-        if (array_intersect($calls, self::SCOPE_RESETS) !== []) {
+        if (array_intersect($calls, Verbs::SCOPE_RESETS) !== []) {
             return false;
         }
         $relation = array_shift($calls);
-        if ($relation === null || in_array($relation, [...self::READS, ...self::WRITES, ...self::NOT_RELATIONS], true) || str_starts_with($relation, 'where')) {
+        if ($relation === null || in_array($relation, [...Verbs::READS, ...self::NOT_RELATIONS], true) || Verbs::isWrite($relation) || str_starts_with($relation, 'where')) {
             return false;
         }
         foreach ($calls as $call) {
-            if (in_array($call, self::READS, true) || str_starts_with($call, 'where')) {
+            if (in_array($call, Verbs::READS, true) || str_starts_with($call, 'where')) {
                 return true;
             }
         }
