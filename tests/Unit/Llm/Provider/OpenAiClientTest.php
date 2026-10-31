@@ -118,6 +118,22 @@ final class OpenAiClientTest extends TestCase
         self::assertNull($response->detail);
     }
 
+    public function testEchoedKeyIsScrubbedFromTheAnswer(): void
+    {
+        $content = (string) json_encode(['findings' => [['title' => 'leak '.self::KEY, 'context' => 'ctx '.self::KEY]]]);
+        $body = (string) json_encode([
+            'model' => 'm-'.self::KEY,
+            'choices' => [['index' => 0, 'message' => ['role' => 'assistant', 'content' => $content, 'refusal' => null], 'finish_reason' => 'stop']],
+            'usage' => ['prompt_tokens' => 1, 'completion_tokens' => 1],
+        ]);
+
+        $response = $this->send(new OpenAiClient($this->mocking([new Response(200, [], $body)]), self::KEY));
+
+        self::assertSame(LlmOutcome::Ok, $response->outcome);
+        self::assertStringNotContainsString(self::KEY, serialize([$response->data, $response->model]));
+        self::assertSame('ctx <scrubbed>', $response->data['findings'][0]['context'] ?? null);
+    }
+
     public function testRefusalFieldIsRefused(): void
     {
         $response = $this->send($this->replaying('refusal'));

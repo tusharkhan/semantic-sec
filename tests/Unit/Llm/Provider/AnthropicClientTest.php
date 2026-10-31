@@ -124,6 +124,20 @@ final class AnthropicClientTest extends TestCase
         self::assertSame(2200, $response->inputTokens);
     }
 
+    public function testEchoedKeyIsScrubbedFromTheAnswer(): void
+    {
+        $text = (string) json_encode(['findings' => [['title' => 'leak '.self::KEY, 'path' => [['symbol' => 'A::b '.rawurlencode(self::KEY)]]]]]);
+        $body = (string) json_encode(['model' => 'm-'.self::KEY, 'content' => [['type' => 'text', 'text' => $text]], 'stop_reason' => 'end_turn', 'usage' => ['input_tokens' => 1, 'output_tokens' => 1]]);
+
+        $response = $this->send(new AnthropicClient($this->mocking([new Response(200, [], $body)]), self::KEY));
+
+        self::assertSame(LlmOutcome::Ok, $response->outcome);
+        $all = serialize([$response->data, $response->model]);
+        self::assertStringNotContainsString(self::KEY, $all);
+        self::assertStringNotContainsString(rawurlencode(self::KEY), $all);
+        self::assertSame('leak <scrubbed>', $response->data['findings'][0]['title'] ?? null);
+    }
+
     public function testRefusalCategoryLosesTerminalEscapes(): void
     {
         $body = (string) json_encode(['model' => 'm', 'content' => [], 'stop_reason' => 'refusal', 'stop_details' => ['category' => "cy\x1b[2Jber"], 'usage' => ['input_tokens' => 1, 'output_tokens' => 1]]);

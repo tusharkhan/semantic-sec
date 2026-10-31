@@ -25,7 +25,8 @@ final readonly class LlmResponse
         }
     }
 
-    private static function clean(?string $text): ?string
+    // One line with C0, DEL and C1 controls replaced, so model text cannot drive a terminal.
+    public static function clean(?string $text): ?string
     {
         return $text === null ? null : trim((string) preg_replace('/(?:[\x00-\x1F\x7F]|\xC2[\x80-\x9F])+/', ' ', $text));
     }

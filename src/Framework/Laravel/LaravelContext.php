@@ -61,7 +61,7 @@ final class LaravelContext implements FrameworkContext
         $eval = new ConstantEvaluator();
         $warnings = [];
 
-        [$registry, $w] = MiddlewareRegistry::fromProject($parsed, $symbols, $framework, $eval, $config->authMiddleware);
+        [$registry, $w] = MiddlewareRegistry::fromProject($parsed, $symbols, $framework, $eval, $config->authMiddleware, $config->authorizationMiddleware);
         array_push($warnings, ...$w);
 
         [$files, $w] = (new RouteFileLocator())->locate($parsed, $symbols, $framework, $config, $eval);
@@ -100,7 +100,7 @@ final class LaravelContext implements FrameworkContext
     public function candidateSelector(ParseResult $parsed, SymbolTable $symbols, Config $config, DetectedFramework $framework): CandidateSelector
     {
         $eval = new ConstantEvaluator();
-        [$registry] = MiddlewareRegistry::fromProject($parsed, $symbols, $framework, $eval, $config->authMiddleware);
+        [$registry] = MiddlewareRegistry::fromProject($parsed, $symbols, $framework, $eval, $config->authMiddleware, $config->authorizationMiddleware);
         [$extractor] = $this->extractor($parsed, $symbols, $config, $registry, $eval);
         $relations = new RelationResolver($symbols);
         $types = new TypeResolver($symbols, $relations, AuthUserModel::resolve($parsed, $symbols, $eval));
@@ -113,7 +113,7 @@ final class LaravelContext implements FrameworkContext
     public function payloadBuilder(ParseResult $parsed, SymbolTable $symbols, Config $config, DetectedFramework $framework): PayloadBuilder
     {
         $eval = new ConstantEvaluator();
-        [$registry] = MiddlewareRegistry::fromProject($parsed, $symbols, $framework, $eval, $config->authMiddleware);
+        [$registry] = MiddlewareRegistry::fromProject($parsed, $symbols, $framework, $eval, $config->authMiddleware, $config->authorizationMiddleware);
         [$extractor] = $this->extractor($parsed, $symbols, $config, $registry, $eval);
         [$policies] = PolicyRegistry::fromProject($symbols, $eval);
 

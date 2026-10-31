@@ -157,6 +157,18 @@ final class ValidatingClientTest extends TestCase
         self::assertStringNotContainsString(str_repeat('k', 300), (string) $response->detail);
     }
 
+    public function testWorstCaseRetrySuffixFitsTheReservedBytes(): void
+    {
+        // 4-byte characters make the 1000-character cap as long in bytes as it can be.
+        $inner = self::scripted([self::invalid(str_repeat("\u{1D11E}", 5000)), self::ok(['findings' => []])]);
+
+        self::send($inner);
+
+        $suffix = substr($inner->requests[1]->user, strlen('payload'));
+        self::assertGreaterThan(3900, strlen($suffix));
+        self::assertLessThanOrEqual(ValidatingClient::MAX_RETRY_SUFFIX_BYTES, strlen($suffix));
+    }
+
     public function testRejectionPassesThroughUntouched(): void
     {
         $e = new LlmException('anthropic rejected the API key (HTTP 401)', 401, false);

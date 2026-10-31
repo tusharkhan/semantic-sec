@@ -13,22 +13,53 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 use TusharKhan\SemanticSec\Analysis\Category;
 use TusharKhan\SemanticSec\Candidates\Candidate;
+use TusharKhan\SemanticSec\Config\Config;
 use TusharKhan\SemanticSec\Config\ConfigException;
+use TusharKhan\SemanticSec\Config\ConfigLoader;
 use TusharKhan\SemanticSec\Console\AnalysisPipeline;
 use TusharKhan\SemanticSec\Console\ExitCode;
+use TusharKhan\SemanticSec\Console\OutputDir;
+use TusharKhan\SemanticSec\Console\Terminal;
+use TusharKhan\SemanticSec\Engine\AnalysisResult;
+use TusharKhan\SemanticSec\Engine\Baseline;
+use TusharKhan\SemanticSec\Engine\Engine;
+use TusharKhan\SemanticSec\Engine\Fingerprinter;
+use TusharKhan\SemanticSec\Engine\ResultCache;
 use TusharKhan\SemanticSec\Framework\FrameworkNotDetected;
+use TusharKhan\SemanticSec\Llm\ClientFactory;
+use TusharKhan\SemanticSec\Llm\ClientInterface;
+use TusharKhan\SemanticSec\Llm\GroundingChecker;
+use TusharKhan\SemanticSec\Llm\ValidatingClient;
 use TusharKhan\SemanticSec\Payload\Payload;
 use TusharKhan\SemanticSec\Payload\Redactor;
 
-#[AsCommand(name: 'analyze', description: 'Select candidate routes and build their LLM payloads (--dry-run only until the engine lands in M6)')]
+#[AsCommand(name: 'analyze', description: 'Find authorization flaws: map, select candidates, build payloads, then ask the LLM')]
 final class AnalyzeCommand extends Command
 {
     use ProjectOptions;
+
+    // Rejected until M7 (plan decision 7).
+    private const LATER = ['output', 'baseline', 'generate-baseline', 'since'];
+
+    // CLI option => Config::with() key.
+    private const OVERRIDES = ['level' => 'level', 'min-confidence' => 'min_confidence', 'provider' => 'provider', 'model' => 'model', 'concurrency' => 'concurrency', 'budget' => 'budget_tokens'];
 
     public const DRY_RUN_DIR = '.semantic-sec/dry-run';
 
     // Sorts before every payload file, whose ids start at 001.
     public const SYSTEM_FILE = '000-system.txt';
+
+    /**
+     * @param  (\Closure(Config): ClientInterface)|null  $providerClient  test seam: replaces the provider client under ValidatingClient
+     * @param  (\Closure(Engine, list<Payload>, int): AnalysisResult)|null  $runEngine  test seam: replaces Engine::run
+     */
+    public function __construct(
+        private readonly ?\Closure $providerClient = null,
+        private readonly ?AnalysisPipeline $pipeline = null,
+        private readonly ?\Closure $runEngine = null,
+    ) {
+        parent::__construct();
+    }
 
     protected function configure(): void
     {
@@ -39,17 +70,54 @@ final class AnalyzeCommand extends Command
             ->addOption('framework', null, InputOption::VALUE_REQUIRED, 'Force the framework (laravel)')
             ->addOption('deep', null, InputOption::VALUE_NONE, 'Do not exclude routes that have an authorization check')
             ->addOption('dry-run', null, InputOption::VALUE_NONE, 'Write the system prompt and every payload to .semantic-sec/dry-run; no network, no API key')
-            ->addOption('format', null, InputOption::VALUE_REQUIRED, 'console or json (the summary)', 'console');
+            ->addOption('level', null, InputOption::VALUE_REQUIRED, 'Minimum severity to report and fail on: low, medium, high, critical (config: level, default high)')
+            ->addOption('min-confidence', null, InputOption::VALUE_REQUIRED, 'Below this confidence a finding is reported but never fails: low, medium, high (config: min_confidence, default medium)')
+            ->addOption('provider', null, InputOption::VALUE_REQUIRED, 'anthropic, openai or ollama (config: provider)')
+            ->addOption('model', null, InputOption::VALUE_REQUIRED, 'Model id (config: model)')
+            ->addOption('concurrency', null, InputOption::VALUE_REQUIRED, 'Parallel requests (config: concurrency, default 5)')
+            ->addOption('budget', null, InputOption::VALUE_REQUIRED, 'Hard cap on provider tokens; below one request\'s reservation (~35k at the default max_tokens) nothing is sent (config: budget_tokens)')
+            ->addOption('no-cache', null, InputOption::VALUE_NONE, 'Ignore cached answers (new answers are still cached)')
+            ->addOption('format', null, InputOption::VALUE_REQUIRED, 'console; with --dry-run also json', 'console')
+            ->addOption('output', null, InputOption::VALUE_REQUIRED, 'Write the report to a file (available in a later release)')
+            ->addOption('baseline', null, InputOption::VALUE_REQUIRED, 'Baseline file (available in a later release)')
+            ->addOption('generate-baseline', null, InputOption::VALUE_NONE, 'Write a baseline (available in a later release)')
+            ->addOption('since', null, InputOption::VALUE_REQUIRED, 'Only files changed since a git ref (available in a later release)')
+            ->setHelp(<<<'HELP'
+                Maps the project, selects candidate routes, builds their payloads and sends each one to the LLM.
+                Findings are grounded in the payload, fingerprinted, then filtered by suppressions, --level and --min-confidence.
+
+                Exit codes: 0 clean, 1 a failing finding, 2 tool error (config, no framework, missing API key,
+                every request failed), 3 token budget exceeded with no failing finding. 1 beats 3.
+
+                --budget is a hard cap: before each request the pool reserves twice the prompt plus max_tokens,
+                so a budget below one reservation (~35k tokens at the default max_tokens) sends nothing and exits 3.
+
+                --dry-run writes the system prompt and every payload to .semantic-sec/dry-run and needs no API key.
+                HELP);
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
+        $dryRun = $input->getOption('dry-run') === true;
         $format = (string) $input->getOption('format');
-        if (! in_array($format, ['console', 'json'], true)) {
-            return $this->fail($output, '--format must be console or json');
+        foreach (self::LATER as $name) {
+            $value = $input->getOption($name);
+            if ($value !== null && $value !== false) {
+                return $this->fail($output, "--{$name} is available in a later release");
+            }
         }
-        if ($input->getOption('dry-run') !== true) {
-            return $this->fail($output, 'analysis needs the engine (M6); use --dry-run');
+        if ($format === 'sarif' || ($format === 'json' && ! $dryRun)) {
+            return $this->fail($output, "--format {$format} is available in a later release");
+        }
+        if ($format !== 'console' && $format !== 'json') {
+            return $this->fail($output, $dryRun ? '--format must be console or json' : '--format must be console');
+        }
+        $overrides = [];
+        foreach (self::OVERRIDES as $option => $key) {
+            $value = $input->getOption($option);
+            if ($value !== null) {
+                $overrides[$key] = $value;
+            }
         }
 
         if ($input->getOption('project-root') === '') {
@@ -60,25 +128,40 @@ final class AnalyzeCommand extends Command
             return $this->fail($output, 'Project root does not exist: '.(string) $input->getOption('project-root'));
         }
         $paths = $this->paths($root, $input->getArgument('paths'));
+
+        // Flags, config and key are checked before the project is parsed, so a mistake fails fast.
+        try {
+            $config = (new ConfigLoader())->load($root, $this->stringOption($input, 'config'))->with($overrides, self::flagNames());
+            if (! $dryRun) {
+                $client = $this->providerClient === null ? ClientFactory::validated($config) : new ValidatingClient(($this->providerClient)($config));
+
+                return $this->analyze($input, $output, $root, $paths, $overrides, $config, $client);
+            }
+        } catch (ConfigException $e) {
+            return $this->fail($output, $e->getMessage());
+        }
         $dir = $root.'/'.self::DRY_RUN_DIR;
         $redactor = new Redactor();
         try {
-            self::guard($root, false);
+            OutputDir::check($root, self::DRY_RUN_DIR);
         } catch (\RuntimeException $e) {
             return $this->fail($output, $redactor->redact($e->getMessage()));
         }
 
         try {
-            [$results, $warnings, $system] = (new AnalysisPipeline())->run(
+            $run = ($this->pipeline ?? new AnalysisPipeline())->run(
                 $root,
                 $this->stringOption($input, 'config'),
                 $this->stringOption($input, 'framework'),
                 $input->getOption('deep') === true,
                 $paths,
+                $overrides,
+                $config,
             );
         } catch (ConfigException|FrameworkNotDetected $e) {
             return $this->fail($output, $e->getMessage());
         }
+        [$results, $warnings, $system] = [$run->results, $run->warnings, $run->system];
 
         try {
             $this->write($root, $results, $system);
@@ -108,6 +191,130 @@ final class AnalyzeCommand extends Command
         return ExitCode::OK;
     }
 
+    /**
+     * The engine run: one pipeline parse, the validated client, the cache, then findings and the exit code.
+     *
+     * @param  list<string>|null  $paths
+     * @param  array<string, mixed>  $overrides
+     */
+    private function analyze(InputInterface $input, OutputInterface $output, string $root, ?array $paths, array $overrides, Config $config, ClientInterface $client): int
+    {
+        $redactor = new Redactor();
+        try {
+            OutputDir::check($root, ResultCache::DIR);
+        } catch (\RuntimeException $e) {
+            return $this->fail($output, $redactor->redact($e->getMessage()));
+        }
+
+        try {
+            $run = ($this->pipeline ?? new AnalysisPipeline())->run(
+                $root,
+                $this->stringOption($input, 'config'),
+                $this->stringOption($input, 'framework'),
+                $input->getOption('deep') === true,
+                $paths,
+                $overrides,
+                $config,
+            );
+            $config = $run->project->config;
+        } catch (ConfigException|FrameworkNotDetected $e) {
+            return $this->fail($output, $e->getMessage());
+        }
+
+        try {
+            $cache = ResultCache::inProject($root, $config, $run->system, $input->getOption('no-cache') !== true);
+        } catch (\RuntimeException $e) {
+            return $this->fail($output, $redactor->redact($e->getMessage()));
+        }
+
+        $project = $run->project;
+        $engine = new Engine($client, $cache, new Fingerprinter($project->parsed, $project->symbols), new GroundingChecker($project->symbols), $project->parsed, $config, Baseline::empty());
+        try {
+            $result = $this->runEngine === null ? $engine->run($run->payloads(), count($run->results)) : ($this->runEngine)($engine, $run->payloads(), count($run->results));
+        } catch (\Throwable $e) {
+            return $this->fail($output, 'analysis failed: '.Terminal::clean($redactor->redact($e->getMessage())));
+        }
+
+        $this->renderResult($output, $result, array_map($redactor->redact(...), [...$run->warnings, ...$result->warnings]), $config);
+
+        return ExitCode::for($result);
+    }
+
+    /**
+     * Minimal M6 output: one line per reported finding, the summary, then warnings; M7 replaces it.
+     *
+     * @param  list<string>  $warnings
+     */
+    private function renderResult(OutputInterface $output, AnalysisResult $r, array $warnings, Config $config): void
+    {
+        $line = static fn (string $text) => $output->writeln(Terminal::safe($text));
+        $failing = 0;
+        foreach ($r->findings as $f) {
+            $v = $f['vulnerability'];
+            $failing += (int) $f['failing'];
+            $line(sprintf(
+                '[%s] %s %s:%d %s — %s (%s%s)',
+                strtoupper($v->severity->value),
+                $v->category->value,
+                $v->file,
+                $v->line,
+                $v->symbol,
+                $v->title,
+                $v->confidence->value,
+                $f['failing'] ? '' : ', not failing',
+            ));
+        }
+        if ($r->findings !== []) {
+            $line('');
+        }
+
+        $s = $r->stats;
+        $budget = $config->budgetTokens === null ? 'unlimited' : (string) $config->budgetTokens;
+        $rows = [
+            'candidates' => $s['candidates'],
+            'payloads' => $s['payloads'],
+            'skipped' => $s['skipped'].' (no source code)',
+            'unsent' => $s['unsent'].' (token budget)',
+            'cache hits' => $s['cacheHits'],
+            'sent' => $s['sent'],
+            'ok' => $s['ok'],
+            'refused' => $s['refused'],
+            'truncated' => $s['truncated'],
+            'invalid' => $s['invalid'],
+            'failed' => $s['failed'],
+            'dropped' => $s['dropped'].' (not grounded)',
+            'findings' => count($r->findings).' ('.$failing.' failing)',
+            'filtered' => $s['filtered'].' (below level '.$config->level->value.')',
+            'suppressed' => count($r->suppressed),
+            'baselined' => count($r->baselined),
+            'tokens' => $s['tokens'],
+            'budget' => $budget.($s['budgetExceeded'] ? ' (exceeded)' : ''),
+        ];
+        $line('Summary');
+        foreach ($rows as $label => $value) {
+            $line(sprintf('  %-11s %s', $label, $value));
+        }
+
+        if ($warnings !== []) {
+            $line('');
+            $line('Warnings');
+            foreach ($warnings as $warning) {
+                $line('  '.$warning);
+            }
+        }
+    }
+
+    /** @return array<string, string> Config::with() key => the CLI flag its errors name */
+    private static function flagNames(): array
+    {
+        $out = [];
+        foreach (self::OVERRIDES as $option => $key) {
+            $out[$key] = '--'.$option;
+        }
+
+        return $out;
+    }
+
     /** @return list<string>|null project-relative paths, or null when none were given */
     private function paths(string $root, mixed $argument): ?array
     {
@@ -134,7 +341,7 @@ final class AnalyzeCommand extends Command
     /** @param list<array{candidate: Candidate, payloads: list<Payload>}> $results */
     private function write(string $root, array $results, string $system): void
     {
-        $dir = self::guard($root, true);
+        $dir = self::recreate($root);
         self::put($dir.'/'.self::SYSTEM_FILE, $system);
         foreach ($results as $result) {
             foreach ($result['payloads'] as $payload) {
@@ -153,35 +360,15 @@ final class AnalyzeCommand extends Command
         fclose($handle);
     }
 
-    // Refuses a symlinked or escaping .semantic-sec or dry-run dir; with $create, empties dry-run (creating dirs one level at a time).
-    private static function guard(string $root, bool $create): string
+    // Empties dry-run by removing and recreating it, both behind the OutputDir guard.
+    private static function recreate(string $root): string
     {
-        $realRoot = realpath($root);
-        if ($realRoot === false) {
-            throw new \RuntimeException('Project root does not exist: '.$root);
-        }
-        $path = $root;
-        foreach (explode('/', self::DRY_RUN_DIR) as $i => $part) {
-            $path .= '/'.$part;
-            $last = $i === substr_count(self::DRY_RUN_DIR, '/');
-            if (is_link($path)) {
-                throw new \RuntimeException(sprintf('Refusing to write dry-run output: %s is a symlink', $path));
-            }
-            if (file_exists($path)) {
-                $real = realpath($path);
-                if (! is_dir($path) || $real === false || ! str_starts_with($real.'/', $realRoot.'/')) {
-                    throw new \RuntimeException(sprintf('Refusing to write dry-run output: %s is not a directory inside %s', $path, $realRoot));
-                }
-                if ($create && $last) {
-                    self::remove($path);
-                }
-            }
-            if ($create && ! is_dir($path) && ! @mkdir($path, 0777) && ! is_dir($path)) {
-                throw new \RuntimeException('Cannot create '.$path);
-            }
+        OutputDir::check($root, self::DRY_RUN_DIR);
+        if (file_exists($root.'/'.self::DRY_RUN_DIR)) {
+            self::remove($root.'/'.self::DRY_RUN_DIR);
         }
 
-        return $path;
+        return OutputDir::prepare($root, self::DRY_RUN_DIR);
     }
 
     // Deletes the dry-run directory; a symlink is unlinked, never followed.
@@ -242,19 +429,19 @@ final class AnalyzeCommand extends Command
         $table->setHeaders(['#', 'Route', 'Categories', 'Parts', 'Tokens']);
         $payloads = $tokens = 0;
         foreach ($rows as $row) {
-            $table->addRow([sprintf('%03d', $row['number']), $row['route'], implode(', ', $row['categories']), count($row['payloads']), $row['tokens']]);
+            $table->addRow([sprintf('%03d', $row['number']), Terminal::safe($row['route']), implode(', ', $row['categories']), count($row['payloads']), $row['tokens']]);
             $payloads += count($row['payloads']);
             $tokens += $row['tokens'];
         }
         $table->render();
 
-        $output->writeln(sprintf('%d candidates, %d payloads, ~%d tokens; written to %s', count($rows), $payloads, $tokens, $dir));
+        $output->writeln(sprintf('%d candidates, %d payloads, ~%d tokens; written to %s', count($rows), $payloads, $tokens, Terminal::safe($dir)));
 
         if ($warnings !== []) {
             $output->writeln('');
             $output->writeln('Warnings');
             foreach ($warnings as $warning) {
-                $output->writeln('  '.$warning);
+                $output->writeln('  '.Terminal::safe($warning));
             }
         }
     }

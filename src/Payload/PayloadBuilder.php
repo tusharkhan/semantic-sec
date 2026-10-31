@@ -837,7 +837,7 @@ final class PayloadBuilder
 
     private static function key(RouteEntry $route): string
     {
-        return implode('|', $route->methods).' '.$route->uri;
+        return $route->key();
     }
 
     private function id(int $number, RouteEntry $route, int $part): string

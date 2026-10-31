@@ -11,7 +11,7 @@ final class AuthCheckKindTest extends TestCase
 {
     public function testEveryValueRoundTripsThroughTryFrom(): void
     {
-        self::assertCount(7, AuthCheckKind::cases());
+        self::assertCount(8, AuthCheckKind::cases());
 
         foreach (AuthCheckKind::cases() as $kind) {
             self::assertSame($kind, AuthCheckKind::tryFrom($kind->value));

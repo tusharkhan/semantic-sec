@@ -224,4 +224,18 @@ YAML);
     {
         $this->assertLoadFails("auth_middleware: ['auth:web']\n", 'auth_middleware', '":"');
     }
+
+    public function testAuthorizationMiddlewareListValidated(): void
+    {
+        self::assertSame([], (new ConfigLoader())->load($this->dir)->authorizationMiddleware);
+
+        $this->write("authorization_middleware: [permission, App\\Http\\Middleware\\CheckPermission]\n");
+        self::assertSame(['permission', 'App\\Http\\Middleware\\CheckPermission'], (new ConfigLoader())->load($this->dir)->authorizationMiddleware);
+
+        $this->assertLoadFails("authorization_middleware: admin\n", 'authorization_middleware');
+        $this->assertLoadFails("authorization_middleware: ['']\n", 'authorization_middleware');
+        $this->assertLoadFails("authorization_middleware: [1]\n", 'authorization_middleware');
+        $this->assertLoadFails("authorization_middleware: [[a]]\n", 'authorization_middleware');
+        $this->assertLoadFails("authorization_middleware: ['permission:x']\n", 'authorization_middleware', '":"');
+    }
 }

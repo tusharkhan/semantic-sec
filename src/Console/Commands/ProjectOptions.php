@@ -8,6 +8,7 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use TusharKhan\SemanticSec\Console\ExitCode;
+use TusharKhan\SemanticSec\Console\Terminal;
 
 /** Option helpers shared by the commands that read a project. */
 trait ProjectOptions
@@ -15,7 +16,7 @@ trait ProjectOptions
     private function fail(OutputInterface $output, string $message): int
     {
         $err = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
-        $err->writeln('Error: '.$message);
+        $err->writeln('Error: '.Terminal::safe($message));
 
         return ExitCode::ERROR;
     }

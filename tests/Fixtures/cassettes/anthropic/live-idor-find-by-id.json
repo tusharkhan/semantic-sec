@@ -36,7 +36,7 @@
                     "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
                     "request-id": "<redacted>",
                     "traceresponse": "00-4b9b114c5e55e1668c986d046e5b2d32-5a49076d2494a63e-01",
-                    "anthropic-organization-id": "6f0f5261-5f0a-4c4f-996c-66d71aa58cf8",
+                    "anthropic-organization-id": "<scrubbed>",
                     "anthropic-workspace-id": "<redacted>",
                     "vary": "Accept-Encoding",
                     "Server": "cloudflare",

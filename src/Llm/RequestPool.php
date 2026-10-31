@@ -8,7 +8,7 @@ use GuzzleHttp\Promise\Each;
 use GuzzleHttp\Promise\PromiseInterface;
 use TusharKhan\SemanticSec\Payload\TokenEstimator;
 
-/** Runs requests with bounded concurrency and a token budget; never retries and never throws from run(). */
+/** Runs requests with bounded concurrency under a hard token budget; never retries and never throws from run(). */
 final class RequestPool
 {
     /** @var list<LlmResponse> */
@@ -18,6 +18,8 @@ final class RequestPool
     private array $failures = [];
 
     private int $usedTokens = 0;
+
+    private int $reservedTokens = 0;
 
     private bool $budgetExceeded = false;
 
@@ -37,6 +39,7 @@ final class RequestPool
         $this->responses = [];
         $this->failures = [];
         $this->usedTokens = 0;
+        $this->reservedTokens = 0;
         $this->budgetExceeded = false;
 
         Each::ofLimit($this->dispatch($requests), $this->concurrency)->wait();
@@ -48,7 +51,7 @@ final class RequestPool
         return new PoolResult($this->responses, $this->failures, $this->usedTokens, $this->budgetExceeded);
     }
 
-    // Lazy, so each budget check sees the tokens of every request finished so far.
+    // Lazy, so each budget check sees the tokens and reservations of every request so far.
     /**
      * @param iterable<LlmRequest> $requests
      * @return \Generator<int, PromiseInterface>
@@ -56,21 +59,24 @@ final class RequestPool
     private function dispatch(iterable $requests): \Generator
     {
         foreach ($requests as $request) {
-            $estimate = TokenEstimator::estimate($request->system.$request->user);
-            if ($this->budgetTokens !== null && $this->usedTokens + $estimate > $this->budgetTokens) {
+            $reservation = $this->budgetTokens === null ? 0 : self::reservation($request);
+            if ($this->budgetTokens !== null && $this->usedTokens + $this->reservedTokens + $reservation > $this->budgetTokens) {
                 $this->budgetExceeded = true;
 
                 return;
             }
+            $this->reservedTokens += $reservation;
             try {
                 $promise = $this->client->analyze($request);
             } catch (\Throwable $e) {
+                $this->reservedTokens -= $reservation;
                 $this->fail($request->payloadId, $e);
 
                 continue;
             }
             yield $promise->then(
-                function (mixed $response) use ($request): void {
+                function (mixed $response) use ($request, $reservation): void {
+                    $this->reservedTokens -= $reservation;
                     if (!$response instanceof LlmResponse) {
                         $this->failures[] = ['payloadId' => $request->payloadId, 'error' => 'client resolved without an LlmResponse', 'retryable' => false];
 
@@ -79,12 +85,21 @@ final class RequestPool
                     $this->responses[] = $response;
                     $this->usedTokens += $response->inputTokens + $response->outputTokens;
                 },
-                function (mixed $reason) use ($request): void {
+                function (mixed $reason) use ($request, $reservation): void {
+                    $this->reservedTokens -= $reservation;
                     $this->usedTokens += $reason instanceof LlmException ? $reason->spentTokens : 0;
                     $this->fail($request->payloadId, $reason);
                 },
             );
         }
+    }
+
+    // Worst case for one slot: two full calls (prompt, schema, maxTokens), plus the longest retry text on the second.
+    private static function reservation(LlmRequest $request): int
+    {
+        $input = TokenEstimator::estimate($request->system.$request->user.json_encode($request->schema));
+
+        return 2 * ($input + $request->maxTokens) + TokenEstimator::forBytes(ValidatingClient::MAX_RETRY_SUFFIX_BYTES);
     }
 
     // Only LlmException messages are known secret-safe, so anything else is named by class alone.

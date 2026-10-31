@@ -13,4 +13,5 @@ enum AuthCheckKind: string
     case AbortGuard = 'abort_guard';
     case QueryScope = 'query_scope';
     case CustomHelper = 'custom_helper';
+    case Middleware = 'middleware';
 }

@@ -15,7 +15,8 @@ use Psr\Http\Message\ResponseInterface;
 use TusharKhan\SemanticSec\Payload\Redactor;
 
 /**
- * Guzzle handler that replays a cassette in order, or records real traffic into one.
+ * Guzzle handler that replays a cassette in order or by request body, or records real traffic into one.
+ * Body mode replays a request carrying a key in its body only when the same secrets are passed at replay.
  *
  * @phpstan-import-type Interaction from Cassette
  */
@@ -23,7 +24,7 @@ final class CassetteHandler
 {
     private const MARK = '<scrubbed>';
 
-    private const SECRET_HEADER = '/key|token|auth|secret|cookie|session/i';
+    private const SECRET_HEADER = '/key|token|auth|secret|cookie|session|organization/i';
 
     private const SECRET_QUERY = '/key|token|auth|secret|sig|password/i';
 
@@ -34,17 +35,24 @@ final class CassetteHandler
 
     private int $position = 0;
 
+    /** @var array<int, true> interactions already replayed in body mode */
+    private array $used = [];
+
     /** @var list<string> every encoded form of every secret, longest first */
     private readonly array $needles;
 
     /**
      * @param (callable(RequestInterface, array<string, mixed>): PromiseInterface)|null $inner real handler for record mode; defaults to cURL
      * @param list<string> $secrets key values scrubbed from recordings (raw, URL, JSON and base64 forms) and from replayed URIs
+     * @param string $match 'order' replays in recorded order, 'body' matches method, URI and scrubbed body hash in any order
      */
-    public function __construct(private readonly Cassette $cassette, private readonly string $mode, ?callable $inner = null, #[\SensitiveParameter] array $secrets = [])
+    public function __construct(private readonly Cassette $cassette, private readonly string $mode, ?callable $inner = null, #[\SensitiveParameter] array $secrets = [], private readonly string $match = 'order')
     {
         if ($mode !== 'replay' && $mode !== 'record') {
             throw new \InvalidArgumentException("cassette mode must be replay or record, got {$mode}");
+        }
+        if ($match !== 'order' && $match !== 'body') {
+            throw new \InvalidArgumentException("cassette match must be order or body, got {$match}");
         }
         if ($mode === 'replay' && !is_file($cassette->path)) {
             throw new \LogicException("cassette not found: {$cassette->path}");
@@ -60,18 +68,22 @@ final class CassetteHandler
     /** @return array<string, mixed> */
     public function __debugInfo(): array
     {
-        return ['cassette' => $this->cassette->path, 'mode' => $this->mode, 'position' => $this->position, 'secrets' => '<hidden>'];
+        return ['cassette' => $this->cassette->path, 'mode' => $this->mode, 'match' => $this->match, 'position' => $this->position, 'secrets' => '<hidden>'];
     }
 
     /** @param array<string, mixed> $options */
     public function __invoke(RequestInterface $request, array $options): PromiseInterface
     {
-        return $this->mode === 'replay' ? $this->replay($request) : $this->record($request, $options);
+        return match (true) {
+            $this->mode === 'record' => $this->record($request, $options),
+            $this->match === 'body' => $this->replayByBody($request),
+            default => $this->replay($request),
+        };
     }
 
     public function assertExhausted(): void
     {
-        $unused = $this->mode === 'replay' ? count($this->cassette->interactions()) - $this->position : 0;
+        $unused = $this->mode === 'replay' ? count($this->cassette->interactions()) - ($this->match === 'body' ? count($this->used) : $this->position) : 0;
         if ($unused > 0) {
             throw new \LogicException("cassette {$this->cassette->path}: {$unused} unused interactions");
         }
@@ -94,6 +106,27 @@ final class CassetteHandler
         $response = $interaction['response'];
 
         return Create::promiseFor(new Response($response['status'], $response['headers'], $response['body']));
+    }
+
+    // The first unused interaction with the same method, URI and scrubbed body; a miss names only those and the hash.
+    private function replayByBody(RequestInterface $request): PromiseInterface
+    {
+        $uri = $this->normalizeUri((string) $request->getUri());
+        $hash = hash('sha256', self::redactBody(new Redactor(), $this->replaceSecrets(self::readBody($request))));
+        foreach ($this->cassette->interactions() as $i => $interaction) {
+            if (isset($this->used[$i])
+                || strcasecmp($interaction['request']['method'], $request->getMethod()) !== 0
+                || $this->normalizeUri($interaction['request']['uri']) !== $uri
+                || !hash_equals(hash('sha256', $interaction['request']['body']), $hash)) {
+                continue;
+            }
+            $this->used[$i] = true;
+            $response = $interaction['response'];
+
+            return Create::promiseFor(new Response($response['status'], $response['headers'], $response['body']));
+        }
+
+        throw new \LogicException("cassette {$this->cassette->path}: no unused interaction for {$request->getMethod()} {$uri} with body sha256 {$hash}");
     }
 
     /** @param array<string, mixed> $options */

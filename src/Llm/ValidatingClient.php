@@ -12,6 +12,9 @@ final class ValidatingClient implements ClientInterface
 {
     public const MAX_ERRORS = 1000;
 
+    // Upper bound on the retry text in bytes: MAX_ERRORS characters of up to 4 bytes, plus the fixed wording.
+    public const MAX_RETRY_SUFFIX_BYTES = 4 * self::MAX_ERRORS + 100;
+
     public function __construct(private readonly ClientInterface $inner)
     {
     }
