@@ -86,6 +86,12 @@ final class Redactor
         return $this->scan($text);
     }
 
+    // Known token formats only, with no entropy guessing; for our own paths and labels.
+    public function redactKnownTokens(string $text): string
+    {
+        return $this->redactTokens($this->redactPem($text));
+    }
+
     private function redactPem(string $text): string
     {
         $out = preg_replace_callback(

@@ -243,6 +243,22 @@ final class AnalyzeDryRunTest extends TestCase
         self::assertCount(self::dryRun('laravel11-app')['summary']['payloads'], self::files('laravel11-app'));
     }
 
+    public function testOutputDirWithHexLookingNameIsPrintedVerbatim(): void
+    {
+        $base = sys_get_temp_dir().'/'.bin2hex(random_bytes(20));
+        mkdir($base, 0777, true);
+        exec('cp -R '.escapeshellarg(BenchmarkCorpus::root().'/laravel10-app').' '.escapeshellarg($base.'/laravel10-app'), $out, $code);
+        self::assertSame(0, $code);
+        $root = $base.'/laravel10-app';
+
+        $t = self::tester();
+        self::assertSame(0, $t->execute(['--project-root' => $root, '--dry-run' => true]));
+
+        self::assertStringContainsString('written to '.$root.'/.semantic-sec/dry-run', $t->getDisplay());
+        self::assertStringNotContainsString('<redacted>', $t->getDisplay());
+        exec('rm -rf '.escapeshellarg($base));
+    }
+
     public function testConsoleSummary(): void
     {
         $t = self::tester();
