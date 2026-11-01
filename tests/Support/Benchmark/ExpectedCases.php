@@ -21,6 +21,7 @@ final class ExpectedCases
                 self::string($case, 'category'),
                 self::variant(self::map($case, 'vulnerable')),
                 self::variant(self::map($case, 'safe')),
+                ($case['tuned_on'] ?? false) === true,
             );
         }
         self::assertDistinctAccepts($cases);

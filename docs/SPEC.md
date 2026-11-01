@@ -220,6 +220,7 @@ A route action becomes a candidate for a category when:
   - "ignore style, performance, injection classes"
   - "flag only with concrete evidence from the tagged lines"
   - "authentication is not authorization"
+  - (v3) a check counts only if it compares the user with the attribute that represents ownership of, or permission over, this record for this action; a check on an unrelated attribute (creator instead of owner, a parent instead of the record, a role instead of ownership) is no protection
   - "assume authentication/authorization may be enforced outside what you see, *except* for what the context block states explicitly" (the context block is authoritative)
   - the confidence rubric: `high` = the flaw is fully visible in the payload; `medium` = it depends on an unresolved call (or truncated code); `low` = speculative
   - "report every supportable flaw, including low-confidence ones; filtering happens downstream" (§11 filters; the model must not self-censor)

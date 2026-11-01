@@ -18,7 +18,9 @@ final class CorpusValidator
 
     public const SETS = ['existing', 'blind'];
 
-    private const CASE_KEYS = ['id', 'app', 'set', 'category', 'description', 'vulnerable', 'safe'];
+    private const CASE_KEYS = ['id', 'app', 'set', 'category', 'description', 'vulnerable', 'safe', 'tuned_on'];
+
+    private const OPTIONAL_CASE_KEYS = ['tuned_on'];
 
     private const VARIANT_KEYS = ['route', 'symbol', 'line', 'map', 'map_note', 'suppressed', 'candidate', 'accept', 'posthoc'];
 
@@ -48,7 +50,7 @@ final class CorpusValidator
         $id = self::caseId($case);
         $errors = [];
 
-        foreach (self::CASE_KEYS as $key) {
+        foreach (array_diff(self::CASE_KEYS, self::OPTIONAL_CASE_KEYS) as $key) {
             if (! array_key_exists($key, $case)) {
                 $errors[] = "$id: missing key \"$key\"";
             }
@@ -66,6 +68,10 @@ final class CorpusValidator
 
         if (array_key_exists('set', $case) && ! in_array($case['set'], self::SETS, true)) {
             $errors[] = "$id: set must be existing or blind";
+        }
+
+        if (array_key_exists('tuned_on', $case) && ! is_bool($case['tuned_on'])) {
+            $errors[] = "$id: tuned_on must be a bool";
         }
 
         if (array_key_exists('category', $case) && Category::tryFrom(is_string($case['category']) ? $case['category'] : '') === null) {

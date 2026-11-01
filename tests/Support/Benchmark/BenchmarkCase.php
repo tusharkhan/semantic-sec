@@ -14,6 +14,7 @@ final class BenchmarkCase
         public readonly string $category,
         public readonly Variant $vulnerable,
         public readonly Variant $safe,
+        public readonly bool $tunedOn = false, // the prompt or selector was tuned knowing this case
     ) {
     }
 }

@@ -228,6 +228,7 @@ final class BaselineCommandTest extends TestCase
      */
     private function replay(array $args): array
     {
+        BenchmarkReplay::skipIfStale();
         $handler = new CassetteHandler(Cassette::load(BenchmarkReplay::CASSETTE), 'replay', match: 'body');
         $client = new AnthropicClient(HttpClientFactory::create($handler, [RetryMiddleware::create()]), 'replay-key');
         $result = $this->command($args, $client);

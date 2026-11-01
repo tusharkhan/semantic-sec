@@ -13,6 +13,7 @@ use TusharKhan\SemanticSec\Llm\ClientFactory;
 use TusharKhan\SemanticSec\Llm\ClientInterface;
 use TusharKhan\SemanticSec\Llm\Http\Cassette;
 use TusharKhan\SemanticSec\Llm\Http\CassetteHandler;
+use TusharKhan\SemanticSec\Llm\SecurityPrompt;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkCorpus;
 use TusharKhan\SemanticSec\Tests\Support\NetworkTrap;
 
@@ -89,7 +90,7 @@ final class Runner
         $summary = is_array($analyze['summary'] ?? null) ? $analyze['summary'] : [];
         $failed = is_int($summary['failed'] ?? null) ? $summary['failed'] : 0;
         $unsent = is_int($summary['unsent'] ?? null) ? $summary['unsent'] : 0;
-        $stale = $mode === 'replay' ? '; the cassette is stale, so the controller must re-record it with bin/benchmark --live' : '';
+        $stale = $mode === 'replay' ? sprintf('; the cassette is stale (a changed selection or prompt v%s changes request bodies), so the controller must re-record it with bin/benchmark --live', SecurityPrompt::VERSION) : '';
         if ($failed > 0 || $unsent > 0) {
             throw new \RuntimeException("analyze of {$app}: {$failed} requests failed and {$unsent} payloads went unsent{$stale}");
         }

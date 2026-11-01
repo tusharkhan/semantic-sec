@@ -324,6 +324,7 @@ cases:
   - id: idor-policy-wrong-attribute
     app: laravel12-app
     set: blind
+    tuned_on: true
     category: idor
     description: "TransferPolicy::approve compares created_by (whoever requested the transfer) instead of user_id (the account holder being debited), so a requester approves a transfer out of someone else's account; WithdrawalPolicy::approve compares user_id. Line is the state change the policy fails to protect."
     vulnerable:

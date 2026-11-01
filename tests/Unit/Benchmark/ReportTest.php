@@ -105,6 +105,18 @@ final class ReportTest extends TestCase
         self::assertSame($markdown, Report::markdown(self::score(), self::meta(), $competitor));
     }
 
+    public function testTunedOnCasesAreMarked(): void
+    {
+        $yaml = str_replace("  - id: policy-accept\n", "  - id: policy-accept\n    tuned_on: true\n", ScorerTest::YAML);
+        $cases = ExpectedCases::load($yaml);
+        self::assertSame(['policy-accept'], array_values(array_map(static fn ($c): string => $c->id, array_filter($cases, static fn ($c): bool => $c->tunedOn))));
+        $markdown = Report::markdown(Scorer::score($cases, ScorerTest::analyze(), ScorerTest::perfectMaps()), self::meta());
+
+        self::assertStringContainsString('| policy-accept | blind (tuned-on) |', $markdown);
+        self::assertStringContainsString('Tuned-on cases: policy-accept.', $markdown);
+        self::assertStringNotContainsString('tuned-on', Report::markdown(self::score(), self::meta()));
+    }
+
     public function testCost(): void
     {
         self::assertEqualsWithDelta(6.45, Report::cost(['input' => 1_000_000, 'output' => 100_000, 'cacheRead' => 1_000_000, 'cacheWrite' => 50_000]), 1e-9);

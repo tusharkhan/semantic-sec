@@ -46,6 +46,11 @@ final class Report
         }
         $out[] = 'Apps: '.implode(', ', $s->apps()).'. Scored at `--level low` with every confidence; "failing" means confidence medium or high.';
         $out[] = '';
+        $tuned = array_values(array_map(static fn (CaseVerdict $v): string => $v->case->id, array_filter($s->cases, static fn (CaseVerdict $v): bool => $v->case->tunedOn)));
+        if ($tuned !== []) {
+            $out[] = 'Tuned-on cases: '.implode(', ', $tuned).'. The scanner was tuned knowing these cases, so they are no longer blind for the pattern they show; they are marked `(tuned-on)` in the cases table.';
+            $out[] = '';
+        }
 
         $out[] = '## Gate';
         $out[] = '';
@@ -199,7 +204,7 @@ final class Report
             $out[] = sprintf(
                 '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |',
                 $v->case->id,
-                $v->case->set,
+                $v->case->set.($v->case->tunedOn ? ' (tuned-on)' : ''),
                 $v->case->app,
                 $v->case->category,
                 $vulnerable,

@@ -77,6 +77,16 @@ PHP;
         $this->assertSingleError('sample-case.safe: map_note must be a non-empty string', $case);
     }
 
+    public function testTunedOnMarksABlindCaseThePromptWasTunedOn(): void
+    {
+        $case = $this->validCase();
+        $case['tuned_on'] = true;
+        self::assertSame([], CorpusValidator::caseErrors($case, BenchmarkCorpus::root()));
+
+        $case['tuned_on'] = 'yes';
+        $this->assertSingleError('sample-case: tuned_on must be a bool', $case);
+    }
+
     public function testAppMustBeAnExistingAppDirectory(): void
     {
         $case = $this->validCase();
