@@ -27,13 +27,19 @@ final class Terminal
     // clean(), then `<tags>` escaped so the formatter prints them literally.
     public static function safe(string $text): string
     {
-        return OutputFormatter::escape(self::clean($text));
+        return OutputFormatter::escape(self::defuse(self::clean($text)));
+    }
+
+    // A line starting `::` (after whitespace) can be read as a GitHub Actions workflow command.
+    public static function defuse(string $line): string
+    {
+        return (string) preg_replace('/^(\s*)::/', '$1: :', $line);
     }
 
     // One line of code or diff: tabs become four spaces, indentation kept, otherwise like safe().
     public static function safeLine(string $line): string
     {
-        return OutputFormatter::escape(rtrim(self::controls(str_replace("\t", '    ', self::utf8($line)))));
+        return OutputFormatter::escape(self::defuse(rtrim(self::controls(str_replace("\t", '    ', self::utf8($line))))));
     }
 
     // Multi-line prose or a diff for a non-console encoding: clean per line, indentation and line breaks kept, nothing escaped.

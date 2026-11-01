@@ -11,7 +11,7 @@ use TusharKhan\SemanticSec\Engine\AnalysisResult;
 use TusharKhan\SemanticSec\Engine\Vulnerability;
 
 /**
- * SPEC §14 SARIF 2.1.0 log: one run, one rule per category, findings then suppressed then baselined as results.
+ * SPEC §14 SARIF 2.1.0 log: one run, one rule per category, reported findings only as results; suppressed and baselined ones are counts in run.properties.summary.
  *
  * @phpstan-import-type Meta from Formatter
  */
@@ -147,7 +147,8 @@ final class SarifFormatter implements Formatter
         $out = [
             'ruleId' => $v->category->cweId(),
             'ruleIndex' => (int) array_search($v->category, Category::cases(), true),
-            'level' => self::level($v->severity),
+            // A non-failing finding (below --min-confidence) never shows as an error or warning.
+            'level' => $failing ? self::level($v->severity) : 'note',
             'message' => ['text' => self::cap(trim($flaw) === '' ? $title : $title."\n\n".$flaw, self::MESSAGE_CAP)],
             'locations' => [['physicalLocation' => self::physical($v->file, $v->line)]],
             'partialFingerprints' => [self::FINGERPRINT_KEY => $v->fingerprint],

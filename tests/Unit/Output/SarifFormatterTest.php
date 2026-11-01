@@ -146,6 +146,17 @@ final class SarifFormatterTest extends TestCase
         self::assertSame(['critical', 'high', 'medium', 'low'], array_map(static fn (array $r): string => $r['properties']['severity'], $results));
     }
 
+    public function testNonFailingResultIsANote(): void
+    {
+        $findings = [[self::vuln(['severity' => 'critical', 'confidence' => 'low', 'line' => 1]), false], [self::vuln(['severity' => 'critical', 'line' => 2]), true]];
+        $run = self::decode((new SarifFormatter())->format(self::analysis($findings), self::META))['runs'][0];
+
+        self::assertSame(['note', 'error'], array_column($run['results'], 'level'));
+        self::assertSame(['critical', 'critical'], array_map(static fn (array $r): string => $r['properties']['severity'], $run['results']));
+        self::assertSame([false, true], array_map(static fn (array $r): bool => $r['properties']['failing'], $run['results']));
+        self::assertNotEmpty($run['tool']['driver']['rules'][0]['properties']['security-severity']);
+    }
+
     public function testPartialFingerprintStable(): void
     {
         $result = self::replay();

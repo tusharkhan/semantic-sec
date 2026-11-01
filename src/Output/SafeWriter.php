@@ -19,12 +19,15 @@ final class SafeWriter
         clearstatcache();
         $mode = is_file($path) ? fileperms($path) & 0777 : 0644 & ~umask();
 
-        $temp = @tempnam($parent, '.semantic-sec-');
-        if ($temp === false || realpath(dirname($temp)) !== realpath($parent)) {
+        // Created here, never in the system temp dir as tempnam() would fall back to.
+        $temp = $parent.'/.semantic-sec-'.bin2hex(random_bytes(8)).'.tmp';
+        $handle = @fopen($temp, 'x');
+        if ($handle === false) {
             throw new \RuntimeException('Cannot create a temporary file in '.$parent);
         }
         try {
-            if (@file_put_contents($temp, $contents) !== strlen($contents) || ! @chmod($temp, $mode)) {
+            $written = @fwrite($handle, $contents);
+            if (! @fclose($handle) || $written !== strlen($contents) || ! @chmod($temp, $mode)) {
                 throw new \RuntimeException('Cannot write '.$path);
             }
             // Re-checked just before the rename, which replaces a link itself and never follows it.

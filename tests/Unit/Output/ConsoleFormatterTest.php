@@ -99,6 +99,21 @@ final class ConsoleFormatterTest extends TestCase
         self::assertStringContainsString('app/ [31mEvil<info>.php', $plain);
     }
 
+    public function testWorkflowCommandsDefused(): void
+    {
+        $cmd = '::error file=app/x.php::pwned';
+        $v = self::vuln(['title' => $cmd, 'symbol' => $cmd, 'context' => "ok\n{$cmd}", 'flaw' => "ok\n  {$cmd}", 'fix' => "ok\n{$cmd}", 'patch' => " {$cmd}\n+ ok"]);
+        $s = new Suppression('app/S.php', Category::Idor, 1, 9, 1, $cmd);
+        $result = new AnalysisResult([['vulnerability' => $v, 'failing' => true]], [['vulnerability' => $v, 'suppression' => $s]], [$v], [$cmd, "{$cmd}\n::warning::two"], self::stats());
+
+        foreach ([false, true] as $decorated) {
+            $f = new ConsoleFormatter($decorated);
+            $out = $f->format($result, [...self::META, 'strictReason' => $cmd]).$f->summary($result, self::META);
+            self::assertDoesNotMatchRegularExpression('~^\s*(\e\[[0-9;]*m)*::~m', $out);
+            self::assertStringContainsString(': :error file=app/x.php::pwned', $out);
+        }
+    }
+
     public function testUtf8StaysIntact(): void
     {
         $text = 'Å Ӆ naïve অ';

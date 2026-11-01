@@ -112,8 +112,9 @@ class AnalyzeCommand extends Command
                 uncommitted changes are ignored. It cannot be combined with --generate-baseline.
 
                 --baseline reads fingerprints to accept (default semantic-sec-baseline.json in the project root, if present).
-                --generate-baseline writes every reported, non-failing and below-level finding's fingerprint there instead
-                and exits 0 unless every request failed (or --strict trips); `semantic-sec baseline` is the same.
+                --generate-baseline writes the fingerprint of every reported (failing or not), below-level and already
+                baselined finding there instead, and exits 0 unless every request failed (or --strict trips), in which
+                case nothing is written; `semantic-sec baseline` is the same.
                 HELP);
     }
 

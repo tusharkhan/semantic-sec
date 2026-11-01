@@ -23,6 +23,16 @@ final class TerminalTest extends TestCase
         self::assertSame('<error>x</error> [2J', (new OutputFormatter(false))->format($safe));
     }
 
+    public function testWorkflowCommandPrefixDefused(): void
+    {
+        self::assertSame(': :error file=x::boom', Terminal::safe('::error file=x::boom'));
+        self::assertSame(': :warning::w', Terminal::safe("  \t::warning::w"));
+        self::assertSame('    : :set-output name=a::b', Terminal::safeLine("\t::set-output name=a::b"));
+        self::assertSame("a\n: :error::x", Terminal::safeLines("a\n::error::x"));
+        self::assertSame('a ::error::x', Terminal::safe('a ::error::x'), 'only a line-leading :: is a command');
+        self::assertSame('Foo::bar()', Terminal::safe('Foo::bar()'));
+    }
+
     public function testSafeLinesKeepsLineBreaks(): void
     {
         self::assertSame("a\nb [1m", (new OutputFormatter(false))->format(Terminal::safeLines("a\nb\x1b[1m")));

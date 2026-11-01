@@ -32,6 +32,43 @@ final class SafeWriterTest extends TestCase
         self::assertSame(['report.txt'], array_values(array_diff(scandir($this->dir) ?: [], ['.', '..'])), 'no temp file left behind');
     }
 
+    public function testUnwritableParentLeavesNoTempFileAnywhere(): void
+    {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            self::markTestSkipped('root ignores directory permissions');
+        }
+        $locked = $this->dir.'/locked';
+        mkdir($locked, 0555);
+        $before = glob(sys_get_temp_dir().'/.semantic-sec-*') ?: [];
+        try {
+            SafeWriter::write($locked.'/report.txt', 'x');
+            self::fail('expected a RuntimeException');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString($locked, $e->getMessage());
+        } finally {
+            chmod($locked, 0755);
+        }
+
+        self::assertSame($before, glob(sys_get_temp_dir().'/.semantic-sec-*') ?: [], 'no temp file in the system temp dir');
+        self::assertSame([], array_values(array_diff(scandir($locked) ?: [], ['.', '..'])));
+    }
+
+    public function testFailedRenameRemovesTheTempFile(): void
+    {
+        $path = $this->dir.'/report.txt';
+        SafeWriter::write($path, 'ok');
+        // A directory where the target should be makes the final checks refuse after the temp file exists.
+        unlink($path);
+        mkdir($path);
+        try {
+            SafeWriter::write($path, 'x');
+            self::fail('expected a RuntimeException');
+        } catch (\RuntimeException) {
+        }
+
+        self::assertSame(['report.txt'], array_values(array_diff(scandir($this->dir) ?: [], ['.', '..'])));
+    }
+
     public function testCreatesMissingParent(): void
     {
         SafeWriter::write($this->dir.'/a/b/report.txt', 'x');
