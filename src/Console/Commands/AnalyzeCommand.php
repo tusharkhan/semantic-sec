@@ -241,7 +241,8 @@ class AnalyzeCommand extends Command
 
         $rows = $this->rows($results, $redactor);
         $warnings = array_map($redactor->redact(...), $warnings);
-        $dir = $redactor->redact($dir);
+        // Our own output path: hide known token formats, but never blank a hex-looking temp dir.
+        $dir = Terminal::clean($redactor->redactKnownTokens($dir));
         if ($format === 'json') {
             $output->writeln(json_encode([
                 'summary' => [

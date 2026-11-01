@@ -18,7 +18,7 @@ final class BenchmarkSymbolTableTest extends TestCase
     public function testBenchmarkAppsIndex(): void
     {
         $tables = [];
-        foreach (['laravel10-app', 'laravel11-app'] as $app) {
+        foreach (BenchmarkCorpus::APPS as $app) {
             $result = (new ProjectParser(new FileFinder(), new AstGenerator()))->parse(BenchmarkCorpus::root().'/'.$app);
             self::assertSame([], $result->failures, $app);
             $tables[$app] = (new SymbolTableBuilder())->build($result);
@@ -33,6 +33,10 @@ final class BenchmarkSymbolTableTest extends TestCase
                 [$class, $method] = explode('::', $symbol);
                 self::assertNotNull($tables[$app]->findMethod($class, $method), $case['id'].' '.$symbol);
                 $checked++;
+            }
+            foreach ((array) ($case['vulnerable']['accept'] ?? []) as $symbol) {
+                [$class, $method] = explode('::', (string) $symbol);
+                self::assertNotNull($tables[$app]->findMethod($class, $method), $case['id'].' accept '.$symbol);
             }
         }
         self::assertGreaterThan(0, $checked);

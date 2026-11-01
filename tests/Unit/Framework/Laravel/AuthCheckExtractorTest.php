@@ -1335,6 +1335,54 @@ final class AuthCheckExtractorTest extends TestCase
         }
     }
 
+    public function testRelationReadScopeThroughToOneHops(): void
+    {
+        $files = [
+            'app/Models/User.php' => '<?php namespace App\Models; class User extends \Illuminate\Foundation\Auth\User {
+                public function organization() { return $this->belongsTo(Organization::class); }
+                public function teams() { return $this->hasMany(Organization::class); }
+            }',
+            'app/Models/Organization.php' => '<?php namespace App\Models; class Organization extends \Illuminate\Database\Eloquent\Model {
+                public function tickets() { return $this->hasMany(Post::class); }
+                public function owner() { return $this->belongsTo(User::class); }
+            }',
+        ];
+        $out = $this->each('get', '{post}', [
+            'a' => 'public function a(Request $r, Post $post) { return $r->user()->organization->tickets()->latest()->get(); }',
+            'b' => 'public function b(Post $post) { return auth()->user()?->organization->tickets()->findOrFail(1); }',
+            'c' => 'public function c(Post $post) { $u = Auth::user(); return $u->organization->owner->organization->tickets()->first(); }',
+            'd' => 'public function d(Request $r, Post $post) { return $r->user()->teams->tickets()->get(); }',
+            'e' => 'public function e(Request $r, Post $post) { return $r->user()->organization->tickets()->orWhere(\'public\', 1)->get(); }',
+            'f' => 'public function f(Request $r, Post $post) { return $r->user()->company->tickets()->get(); }',
+            'g' => 'public function g(Request $r, Post $post) { return $r->user()->organization->tickets()->newQuery()->get(); }',
+            'h' => 'public function h(Request $r, Post $post) { return $r->user()->organization->tickets()->create([\'x\' => 1]); }',
+            'i' => 'public function i(Request $r, Post $post) { return $r->user()->organization->tickets; }',
+            'j' => 'public function j(Request $r, Post $post) { return $r->user()->organization->find(1); }',
+            'k' => 'public function k(Request $r, Post $post) { return $r->user()->organization->teams()->get(); }',
+        ], $files);
+        foreach (['a', 'b', 'c'] as $m) {
+            self::assertSame(['query_scope/authorization'], self::checks($out[$m]), $m);
+            self::assertSame('App\\Models\\Post', $out[$m]->checks[0]->model, $m);
+        }
+        // k: Organization has no teams(); the hops resolve, so it is a scope with an unknown model, as for one hop.
+        self::assertSame(['query_scope/authorization'], self::checks($out['k']));
+        self::assertNull($out['k']->checks[0]->model);
+        foreach (['d', 'e', 'f', 'g', 'h', 'i', 'j'] as $m) {
+            self::assertSame([], self::checks($out[$m]), $m);
+        }
+    }
+
+    public function testToOneHopsNeedAKnownAuthUserModel(): void
+    {
+        $user = '<?php namespace App\Models; class User extends \Illuminate\Foundation\Auth\User { public function organization() { return $this->belongsTo(Organization::class); } }';
+        $org = '<?php namespace App\Models; class Organization extends \Illuminate\Database\Eloquent\Model { public function tickets() { return $this->hasMany(Post::class); } }';
+        $config = "<?php return ['providers' => ['users' => ['model' => env('AUTH_MODEL')]]];";
+        $out = $this->each('get', '{post}', [
+            'a' => 'public function a(Request $r, Post $post) { return $r->user()->organization->tickets()->get(); }',
+        ], ['app/Models/User.php' => $user, 'app/Models/Organization.php' => $org, 'config/auth.php' => $config]);
+        self::assertSame([], self::checks($out['a']));
+    }
+
     public function testRelationReadScopeModelIsNullWhenTheAuthUserModelIsUnknown(): void
     {
         $user = '<?php namespace App\Models; class User extends \Illuminate\Foundation\Auth\User { public function posts() { return $this->hasMany(Post::class); } }';

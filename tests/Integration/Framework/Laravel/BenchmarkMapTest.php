@@ -12,19 +12,18 @@ use TusharKhan\SemanticSec\Tests\Support\BenchmarkMaps;
 
 final class BenchmarkMapTest extends TestCase
 {
-    private const APPS = ['laravel11-app', 'laravel10-app'];
-
     public function testContextName(): void
     {
         self::assertSame('laravel', (new LaravelContext())->name());
     }
 
+    // The blind set's map accuracy is a gate criterion measured by bin/benchmark, not pinned here.
     public function testEveryExpectedMapMatches(): void
     {
         $checked = 0;
-        foreach (self::APPS as $app) {
+        foreach (BenchmarkCorpus::APPS as $app) {
             $map = BenchmarkMaps::build($app);
-            foreach (BenchmarkCorpus::cases() as $case) {
+            foreach (BenchmarkCorpus::casesInSet('existing') as $case) {
                 if ($case['app'] !== $app) {
                     continue;
                 }
@@ -98,7 +97,7 @@ final class BenchmarkMapTest extends TestCase
 
     public function testNoUnexpectedWarningsOnBenchmark(): void
     {
-        foreach (self::APPS as $app) {
+        foreach (BenchmarkCorpus::APPS as $app) {
             self::assertSame([], BenchmarkMaps::build($app)->warnings, $app);
         }
     }

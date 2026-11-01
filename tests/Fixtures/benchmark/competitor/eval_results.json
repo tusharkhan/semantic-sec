@@ -1,0 +1,140 @@
+{
+  "repo_name": "tusharkhan/semantic-sec-bench",
+  "pr_number": 1,
+  "description": "Evaluation for tusharkhan/semantic-sec-bench#1",
+  "success": true,
+  "runtime_seconds": 412.7,
+  "findings_count": 6,
+  "detected_vulnerabilities": true,
+  "error_message": "",
+  "findings_summary": [
+    {
+      "file": "app-a/app/Http/Controllers/Beta/ItemController.php",
+      "line": 13,
+      "severity": "HIGH",
+      "title": "idor",
+      "description": "Item fetched by raw id with no ownership scope"
+    },
+    {
+      "file": "app-a/app/Http/Controllers/Alpha/TransferController.php",
+      "line": 13,
+      "severity": "HIGH",
+      "title": "authorization_bypass",
+      "description": "Any authenticated user can approve a transfer that belongs to another user because the policy always returns true"
+    },
+    {
+      "file": "app-a/routes/web.php",
+      "line": 19,
+      "severity": "MEDIUM",
+      "title": "business_logic",
+      "description": "Withdrawal approval can skip the review step"
+    },
+    {
+      "file": "app-a/app/Models/Item.php",
+      "line": 9,
+      "severity": "MEDIUM",
+      "title": "mass_assignment",
+      "description": "user_id is fillable"
+    },
+    {
+      "file": "README.md",
+      "line": 1,
+      "severity": "LOW",
+      "title": "documentation",
+      "description": "Readme mentions a password"
+    },
+    {
+      "file": "app-a/app/Http/Controllers/PostController.php",
+      "line": 9,
+      "severity": "LOW",
+      "title": "data_exposure",
+      "description": "Post content is returned to anonymous visitors"
+    }
+  ],
+  "full_findings": [
+    {
+      "file": "app-a/app/Http/Controllers/Beta/ItemController.php",
+      "line": 13,
+      "severity": "HIGH",
+      "category": "idor",
+      "description": "Item fetched by raw id with no ownership scope",
+      "exploit_scenario": "An attacker iterates ids to read every item",
+      "recommendation": "Scope the query to the user's items",
+      "confidence": 0.95,
+      "_filter_metadata": {
+        "confidence_score": 10.0,
+        "justification": "Claude filtering disabled"
+      }
+    },
+    {
+      "file": "app-a/app/Http/Controllers/Alpha/TransferController.php",
+      "line": 13,
+      "severity": "HIGH",
+      "category": "authorization_bypass",
+      "description": "Any authenticated user can approve a transfer that belongs to another user because the policy always returns true",
+      "exploit_scenario": "POST /alpha/transfers/5/approve as any user",
+      "recommendation": "Compare approver_id in TransferPolicy::approve",
+      "confidence": 0.9,
+      "_filter_metadata": {
+        "confidence_score": 10.0,
+        "justification": "Claude filtering disabled"
+      }
+    },
+    {
+      "file": "app-a/routes/web.php",
+      "line": 19,
+      "severity": "MEDIUM",
+      "category": "business_logic",
+      "description": "Withdrawal approval can skip the review step",
+      "exploit_scenario": "Approve a withdrawal directly",
+      "recommendation": "Check the state first",
+      "confidence": 0.75,
+      "_filter_metadata": {
+        "confidence_score": 10.0,
+        "justification": "Claude filtering disabled"
+      }
+    },
+    {
+      "file": "app-a/app/Models/Item.php",
+      "line": 9,
+      "severity": "MEDIUM",
+      "category": "mass_assignment",
+      "description": "user_id is fillable",
+      "exploit_scenario": "Send user_id in the body",
+      "recommendation": "Remove user_id from $fillable",
+      "confidence": 0.8,
+      "_filter_metadata": {
+        "confidence_score": 10.0,
+        "justification": "Claude filtering disabled"
+      }
+    },
+    {
+      "file": "README.md",
+      "line": 1,
+      "severity": "LOW",
+      "category": "documentation",
+      "description": "Readme mentions a password",
+      "exploit_scenario": "n/a",
+      "recommendation": "n/a",
+      "confidence": 0.7,
+      "_filter_metadata": {
+        "confidence_score": 10.0,
+        "justification": "Claude filtering disabled"
+      }
+    },
+    {
+      "file": "app-a/app/Http/Controllers/PostController.php",
+      "line": 9,
+      "severity": "LOW",
+      "category": "data_exposure",
+      "description": "Post content is returned to anonymous visitors",
+      "exploit_scenario": "Visit the post URL",
+      "recommendation": "Require login",
+      "confidence": 0.7,
+      "_filter_metadata": {
+        "confidence_score": 10.0,
+        "justification": "Claude filtering disabled"
+      }
+    }
+  ]
+}

@@ -10,6 +10,8 @@ kept here.
 
     docker compose run --rm php sh benchmark/verify/run.sh laravel11-app
 
+The app is one of `laravel12-app`, `laravel11-app`, `laravel10-app`.
+
 `build.sh <app> <target>` builds into an absolute path outside the repo (it refuses
 anything inside). Nothing from the Laravel install is committed.
 

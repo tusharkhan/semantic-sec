@@ -3,3 +3,6 @@ parameters:
     paths:
         - src
         - tests
+        - tools
+    excludePaths:
+        - tests/Fixtures/benchmark/competitor/bench

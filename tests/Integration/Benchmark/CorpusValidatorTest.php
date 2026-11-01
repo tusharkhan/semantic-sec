@@ -67,12 +67,92 @@ PHP;
         $this->assertSingleError('sample-case.safe: unknown key "lines"', $case);
     }
 
+    public function testMapNoteExplainsAMapByDecision(): void
+    {
+        $case = $this->validCase();
+        $case['safe']['map_note'] = 'scopeBindings counted as query_scope by maintainer decision 2026-11-01';
+        self::assertSame([], CorpusValidator::caseErrors($case, BenchmarkCorpus::root()));
+
+        $case['safe']['map_note'] = '';
+        $this->assertSingleError('sample-case.safe: map_note must be a non-empty string', $case);
+    }
+
+    public function testTunedOnMarksABlindCaseThePromptWasTunedOn(): void
+    {
+        $case = $this->validCase();
+        $case['tuned_on'] = true;
+        self::assertSame([], CorpusValidator::caseErrors($case, BenchmarkCorpus::root()));
+
+        $case['tuned_on'] = 'yes';
+        $this->assertSingleError('sample-case: tuned_on must be a bool', $case);
+    }
+
     public function testAppMustBeAnExistingAppDirectory(): void
     {
         $case = $this->validCase();
-        $case['app'] = 'laravel12-app';
+        $case['app'] = 'laravel99-app';
 
-        $this->assertSingleError('sample-case: app "laravel12-app" is not a benchmark app', $case);
+        $this->assertSingleError('sample-case: app "laravel99-app" is not a benchmark app', $case);
+    }
+
+    public function testSetIsRequiredAndMustBeExistingOrBlind(): void
+    {
+        $case = $this->validCase();
+        unset($case['set']);
+        $this->assertSingleError('sample-case: missing key "set"', $case);
+
+        $case['set'] = 'hidden';
+        $this->assertSingleError('sample-case: set must be existing, blind or holdout', $case);
+
+        $case['set'] = 'blind';
+        self::assertSame([], CorpusValidator::caseErrors($case, BenchmarkCorpus::root()));
+
+        $case['set'] = 'holdout';
+        self::assertSame([], CorpusValidator::caseErrors($case, BenchmarkCorpus::root()));
+    }
+
+    public function testAcceptIsAListOfSymbols(): void
+    {
+        $case = $this->validCase();
+        $case['vulnerable']['accept'] = ['App\Policies\SamplePolicy::view'];
+        self::assertSame([], CorpusValidator::caseErrors($case, BenchmarkCorpus::root()));
+
+        $case['vulnerable']['accept'] = 'App\Policies\SamplePolicy::view';
+        $this->assertSingleError('sample-case.vulnerable: accept must be a non-empty list of App\Class::method symbols', $case);
+
+        $case['vulnerable']['accept'] = ['SamplePolicy'];
+        $this->assertSingleError('sample-case.vulnerable: accept must be a non-empty list of App\Class::method symbols', $case);
+
+        $case['vulnerable']['accept'] = ['App\Http\Controllers\Vuln\SampleController::show'];
+        $this->assertSingleError('sample-case.vulnerable: accept repeats the case symbol', $case);
+
+        $case = $this->validCase();
+        $case['safe']['accept'] = ['App\Policies\SamplePolicy::view'];
+        self::assertSame([], CorpusValidator::caseErrors($case, BenchmarkCorpus::root()));
+    }
+
+    public function testPosthocMarksAnAcceptList(): void
+    {
+        $case = $this->validCase();
+        $case['vulnerable']['accept'] = ['App\Policies\SamplePolicy::view'];
+        $case['vulnerable']['posthoc'] = true;
+        self::assertSame([], CorpusValidator::caseErrors($case, BenchmarkCorpus::root()));
+
+        $case['vulnerable']['posthoc'] = 'yes';
+        $this->assertSingleError('sample-case.vulnerable: posthoc must be a bool', $case);
+
+        $case = $this->validCase();
+        $case['vulnerable']['posthoc'] = true;
+        $this->assertSingleError('sample-case.vulnerable: posthoc needs an accept list', $case);
+    }
+
+    public function testPublicRouteSetIsOptionalButChecked(): void
+    {
+        $route = ['app' => 'laravel11-app', 'route' => 'GET /posts/{post}', 'symbol' => 'App\Http\Controllers\PostController::show'];
+        self::assertSame([], CorpusValidator::publicRouteErrors('p', $route, BenchmarkCorpus::root()));
+        self::assertSame([], CorpusValidator::publicRouteErrors('p', [...$route, 'set' => 'blind'], BenchmarkCorpus::root()));
+        self::assertSame(['p: set must be existing, blind or holdout'], CorpusValidator::publicRouteErrors('p', [...$route, 'set' => 'x'], BenchmarkCorpus::root()));
+        self::assertSame(['p: unknown key "line"'], CorpusValidator::publicRouteErrors('p', [...$route, 'line' => 3], BenchmarkCorpus::root()));
     }
 
     public function testFlagsMustBeBooleans(): void
@@ -197,6 +277,7 @@ PHP;
         return [
             'id' => 'sample-case',
             'app' => 'laravel11-app',
+            'set' => 'existing',
             'category' => 'idor',
             'description' => 'Sample.',
             'vulnerable' => [

@@ -7,6 +7,7 @@ namespace TusharKhan\SemanticSec\Tests\Unit\Payload;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use TusharKhan\SemanticSec\Payload\Redactor;
+use TusharKhan\SemanticSec\Tests\Support\BenchmarkCorpus;
 
 final class RedactorTest extends TestCase
 {
@@ -322,7 +323,7 @@ final class RedactorTest extends TestCase
     {
         $base = dirname(__DIR__, 3) . '/benchmark/';
         $cases = [];
-        foreach (['laravel10-app', 'laravel11-app'] as $app) {
+        foreach (BenchmarkCorpus::APPS as $app) {
             foreach (['app', 'routes'] as $dir) {
                 $root = $base . $app . '/' . $dir;
                 if (! is_dir($root)) {

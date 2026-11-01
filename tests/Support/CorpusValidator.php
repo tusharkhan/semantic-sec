@@ -16,9 +16,17 @@ final class CorpusValidator
 {
     public const VARIANTS = ['vulnerable', 'safe'];
 
-    private const CASE_KEYS = ['id', 'app', 'category', 'description', 'vulnerable', 'safe'];
+    public const SETS = ['existing', 'blind', 'holdout'];
 
-    private const VARIANT_KEYS = ['route', 'symbol', 'line', 'map', 'suppressed', 'candidate'];
+    private const CASE_KEYS = ['id', 'app', 'set', 'category', 'description', 'vulnerable', 'safe', 'tuned_on'];
+
+    private const OPTIONAL_CASE_KEYS = ['tuned_on'];
+
+    private const VARIANT_KEYS = ['route', 'symbol', 'line', 'map', 'map_note', 'suppressed', 'candidate', 'accept', 'posthoc'];
+
+    private const PUBLIC_ROUTE_KEYS = ['app', 'set', 'route', 'symbol'];
+
+    private const SYMBOL_PATTERN = '/^App\\\\[\w\\\\]+::\w+$/';
 
     private const REQUIRED_VARIANT_KEYS = ['route', 'symbol', 'map'];
 
@@ -42,7 +50,7 @@ final class CorpusValidator
         $id = self::caseId($case);
         $errors = [];
 
-        foreach (self::CASE_KEYS as $key) {
+        foreach (array_diff(self::CASE_KEYS, self::OPTIONAL_CASE_KEYS) as $key) {
             if (! array_key_exists($key, $case)) {
                 $errors[] = "$id: missing key \"$key\"";
             }
@@ -58,6 +66,14 @@ final class CorpusValidator
             $errors[] = "$id: app " . json_encode($case['app']) . ' is not a benchmark app';
         }
 
+        if (array_key_exists('set', $case) && ! in_array($case['set'], self::SETS, true)) {
+            $errors[] = "$id: set must be existing, blind or holdout";
+        }
+
+        if (array_key_exists('tuned_on', $case) && ! is_bool($case['tuned_on'])) {
+            $errors[] = "$id: tuned_on must be a bool";
+        }
+
         if (array_key_exists('category', $case) && Category::tryFrom(is_string($case['category']) ? $case['category'] : '') === null) {
             $errors[] = "$id: bad category " . json_encode($case['category']);
         }
@@ -70,6 +86,34 @@ final class CorpusValidator
             if (array_key_exists($variant, $case)) {
                 $errors = [...$errors, ...self::variantErrors("$id.$variant", $variant, $case[$variant])];
             }
+        }
+
+        return $errors;
+    }
+
+    /**
+     * @param array<mixed> $route
+     *
+     * @return list<string>
+     */
+    public static function publicRouteErrors(string $label, array $route, string $root): array
+    {
+        $errors = [];
+        foreach (['app', 'route', 'symbol'] as $key) {
+            if (! is_string($route[$key] ?? null) || $route[$key] === '') {
+                $errors[] = "$label: $key must be a non-empty string";
+            }
+        }
+        foreach (array_keys($route) as $key) {
+            if (! in_array($key, self::PUBLIC_ROUTE_KEYS, true)) {
+                $errors[] = "$label: unknown key \"$key\"";
+            }
+        }
+        if (array_key_exists('set', $route) && ! in_array($route['set'], self::SETS, true)) {
+            $errors[] = "$label: set must be existing, blind or holdout";
+        }
+        if (is_string($route['app'] ?? null) && ! self::isApp($route['app'], $root)) {
+            $errors[] = "$label: app \"{$route['app']}\" is not a benchmark app";
         }
 
         return $errors;
@@ -167,11 +211,16 @@ final class CorpusValidator
             }
         }
 
-        if (is_string($data['symbol'] ?? null) && preg_match('/^App\\\\[\w\\\\]+::\w+$/', $data['symbol']) !== 1) {
+        // Why a map entry follows a maintainer decision rather than the scanner's own reading.
+        if (array_key_exists('map_note', $data) && (! is_string($data['map_note']) || $data['map_note'] === '')) {
+            $errors[] = "$label: map_note must be a non-empty string";
+        }
+
+        if (is_string($data['symbol'] ?? null) && preg_match(self::SYMBOL_PATTERN, $data['symbol']) !== 1) {
             $errors[] = "$label: symbol must look like App\\Class::method";
         }
 
-        foreach (['suppressed', 'candidate'] as $key) {
+        foreach (['suppressed', 'candidate', 'posthoc'] as $key) {
             if (array_key_exists($key, $data) && ! is_bool($data[$key])) {
                 $errors[] = "$label: $key must be a bool";
             }
@@ -185,11 +234,33 @@ final class CorpusValidator
             $errors[] = "$label: line is only allowed on vulnerable";
         }
 
+        if (array_key_exists('accept', $data)) {
+            $errors = [...$errors, ...self::acceptErrors($label, $data['accept'], $data['symbol'] ?? null)];
+        }
+
+        if (array_key_exists('posthoc', $data) && ! array_key_exists('accept', $data)) {
+            $errors[] = "$label: posthoc needs an accept list";
+        }
+
         if (array_key_exists('map', $data)) {
             $errors = [...$errors, ...self::mapErrors($label, $data['map'])];
         }
 
         return $errors;
+    }
+
+    /** @return list<string> */
+    private static function acceptErrors(string $label, mixed $accept, mixed $symbol): array
+    {
+        $valid = is_array($accept) && $accept !== [] && array_is_list($accept);
+        foreach ($valid ? $accept : [] as $item) {
+            $valid = $valid && is_string($item) && preg_match(self::SYMBOL_PATTERN, $item) === 1;
+        }
+        if (! $valid) {
+            return ["$label: accept must be a non-empty list of App\\Class::method symbols"];
+        }
+
+        return in_array($symbol, $accept, true) ? ["$label: accept repeats the case symbol"] : [];
     }
 
     /** @return list<string> */

@@ -564,7 +564,7 @@ final class AuthCheckExtractor
                 }
             }
             $where = $context->isWhereScope($node);
-            if (((! isset($inner[spl_object_id($node)]) && $context->isRelationRead($node)) || $where) && ! self::chainHasOrWhere($node, $inner)) {
+            if (((! isset($inner[spl_object_id($node)]) && $context->isRelationRead($node, $this->toOneHops(...))) || $where) && ! self::chainHasOrWhere($node, $inner)) {
                 $add(AuthCheckKind::QueryScope, AuthStrength::Authorization, $this->describe($node), null, $where ? self::scopedModel($node) : $this->relationModel($node, $context));
             }
             if ($this->isHelper($node, $class)) {
@@ -607,6 +607,28 @@ final class AuthCheckExtractor
         $root = $node instanceof Expr\StaticCall ? (AuthExpressions::name($node) ?? '') : '';
 
         return $node instanceof Expr\StaticCall && $node->class instanceof Node\Name && ($root === 'query' || str_starts_with($root, 'where')) ? self::modelName($node->class) : null;
+    }
+
+    /**
+     * True when every property hop from the auth user model is a known to-one relation; unknown means no.
+     *
+     * @param  list<string>  $hops
+     */
+    private function toOneHops(array $hops): bool
+    {
+        if ($this->relations === null || $this->authUserModel === null) {
+            return false;
+        }
+        $model = $this->authUserModel;
+        foreach ($hops as $hop) {
+            $next = $this->relations->relatedClass($model, $hop);
+            if ($next === null || $this->relations->isToOne($model, $hop) !== true) {
+                return false;
+            }
+            $model = $next;
+        }
+
+        return true;
     }
 
     // The related model of a relation read rooted at the auth user (`->team->projects()->find(..)`), hop by hop.

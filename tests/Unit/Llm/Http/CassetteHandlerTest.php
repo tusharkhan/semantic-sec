@@ -423,6 +423,28 @@ final class CassetteHandlerTest extends TestCase
         $handler->assertExhausted();
     }
 
+    public function testBodyReplayMatchesWhatWasRecordedDespiteRedaction(): void
+    {
+        $path = $this->dir . '/round-trip.json';
+        $entropy = 'Zx9qLm2vT8rB4nKw7YpC3sHd6FgJ1aUe';
+        $bodies = [
+            json_encode(['system' => [['type' => 'text', 'text' => 'review']], 'messages' => [['role' => 'user', 'content' => "L3| \$k = '{$entropy}'; // sk-proj-" . str_repeat('A1b2', 8) . "\nL4| key " . self::KEY]]], JSON_THROW_ON_ERROR),
+            '{"messages":[{"role":"user","content":"clean body, n=1.0"}],"n":1.0}',
+        ];
+        $inner = new MockHandler([new Response(200, [], '{"r":1}'), new Response(200, [], '{"r":2}')]);
+        $recorder = HttpClientFactory::create(new CassetteHandler(Cassette::load($path), 'record', $inner, [self::KEY], 'body'));
+        foreach ($bodies as $body) {
+            $recorder->post('https://api.example.test/v1/messages', ['body' => $body]);
+        }
+        self::assertStringNotContainsString($entropy, (string) file_get_contents($path));
+
+        $handler = new CassetteHandler(Cassette::load($path), 'replay', secrets: [self::KEY], match: 'body');
+        $replay = HttpClientFactory::create($handler);
+        self::assertSame('{"r":2}', (string) $replay->post('https://api.example.test/v1/messages', ['body' => $bodies[1]])->getBody());
+        self::assertSame('{"r":1}', (string) $replay->post('https://api.example.test/v1/messages', ['body' => $bodies[0]])->getBody());
+        $handler->assertExhausted();
+    }
+
     public function testReplayOfMissingFileFails(): void
     {
         $path = $this->dir . '/missing.json';

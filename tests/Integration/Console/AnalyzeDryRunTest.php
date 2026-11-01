@@ -18,8 +18,6 @@ use TusharKhan\SemanticSec\Tests\Support\NetworkTrap;
 
 final class AnalyzeDryRunTest extends TestCase
 {
-    private const APPS = ['laravel11-app', 'laravel10-app'];
-
     /** @var list<string> */
     private static array $httpClients = [
         'GuzzleHttp\Client',
@@ -122,7 +120,7 @@ final class AnalyzeDryRunTest extends TestCase
 
     public function testWritesOneFilePerCandidatePayload(): void
     {
-        foreach (self::APPS as $app) {
+        foreach (BenchmarkCorpus::APPS as $app) {
             $data = self::dryRun($app);
             $files = self::files($app);
             $ids = [];
@@ -154,7 +152,7 @@ final class AnalyzeDryRunTest extends TestCase
 
     public function testWritesTheSystemPromptExactlyAsSent(): void
     {
-        foreach (self::APPS as $app) {
+        foreach (BenchmarkCorpus::APPS as $app) {
             $data = self::dryRun($app);
             $path = self::copy($app).'/.semantic-sec/dry-run/000-system.txt';
             $rulesets = (new ConfigLoader())->load(self::copy($app))->rulesets;
@@ -167,7 +165,7 @@ final class AnalyzeDryRunTest extends TestCase
 
     public function testEveryFileIsOneFencedPayload(): void
     {
-        foreach (self::APPS as $app) {
+        foreach (BenchmarkCorpus::APPS as $app) {
             $files = self::files($app);
             self::assertNotSame([], $files);
             foreach ($files as $name => $text) {
@@ -181,7 +179,7 @@ final class AnalyzeDryRunTest extends TestCase
     public function testVulnerableSymbolsArePresent(): void
     {
         $checked = 0;
-        foreach (BenchmarkCorpus::cases() as $case) {
+        foreach (BenchmarkCorpus::casesInSet('existing') as $case) {
             $app = (string) $case['app'];
             self::dryRun($app);
             $route = (string) $case['vulnerable']['route'];
@@ -202,7 +200,7 @@ final class AnalyzeDryRunTest extends TestCase
     public function testNoFileForCandidateFalseSafeVariants(): void
     {
         $checked = 0;
-        foreach (BenchmarkCorpus::cases() as $case) {
+        foreach (BenchmarkCorpus::casesInSet('existing') as $case) {
             if (($case['safe']['candidate'] ?? true) !== false) {
                 continue;
             }
@@ -217,7 +215,7 @@ final class AnalyzeDryRunTest extends TestCase
 
     public function testDeepProducesAtLeastAsManyCandidates(): void
     {
-        foreach (self::APPS as $app) {
+        foreach (BenchmarkCorpus::APPS as $app) {
             $normal = self::dryRun($app);
             $normalRoutes = array_column($normal['candidates'], 'route');
             $deep = self::dryRun($app, true);
@@ -243,6 +241,22 @@ final class AnalyzeDryRunTest extends TestCase
         self::assertDirectoryDoesNotExist($dir.'/stale');
         self::assertFileExists($root.'/.semantic-sec/keep.txt');
         self::assertCount(self::dryRun('laravel11-app')['summary']['payloads'], self::files('laravel11-app'));
+    }
+
+    public function testOutputDirWithHexLookingNameIsPrintedVerbatim(): void
+    {
+        $base = sys_get_temp_dir().'/'.bin2hex(random_bytes(20));
+        mkdir($base, 0777, true);
+        exec('cp -R '.escapeshellarg(BenchmarkCorpus::root().'/laravel10-app').' '.escapeshellarg($base.'/laravel10-app'), $out, $code);
+        self::assertSame(0, $code);
+        $root = $base.'/laravel10-app';
+
+        $t = self::tester();
+        self::assertSame(0, $t->execute(['--project-root' => $root, '--dry-run' => true]));
+
+        self::assertStringContainsString('written to '.$root.'/.semantic-sec/dry-run', $t->getDisplay());
+        self::assertStringNotContainsString('<redacted>', $t->getDisplay());
+        exec('rm -rf '.escapeshellarg($base));
     }
 
     public function testConsoleSummary(): void

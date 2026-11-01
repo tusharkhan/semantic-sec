@@ -6,6 +6,7 @@ Fake Laravel apps (source files only, no `vendor/`) that the scanner is scored a
 ## Conventions
 
 - `laravel11-app/`: requires `laravel/framework ^11.0`, has a minimal `composer.lock` (v11.31.0), `bootstrap/app.php` with `withRouting` / `withMiddleware`.
+- `laravel12-app/`: requires `laravel/framework ^12.0`, minimal `composer.lock` (v12.20.0), `bootstrap/app.php` with `withRouting` / `withMiddleware` (custom middleware aliases `role` and `store.owner`), web routes only. Its cases are the **blind set**: written without reading the scanner's source, rules or tests, to measure accuracy on code not shaped by them.
 - `laravel10-app/`: requires `laravel/framework ^10.48`, **no lock file** (tests the fallback), `app/Http/Kernel.php`, `RouteServiceProvider::$namespace`, `AuthServiceProvider::$policies`.
 - Vulnerable controllers: `App\Http\Controllers\Vuln\`, routes under `/vuln`. Safe ones: `App\Http\Controllers\Safe\`, under `/safe`. Shared models and policies: `App\Models\`, `App\Policies\`.
 - Everything sits inside an `auth` middleware group unless the case says otherwise. Routes in `api.php` gain the `/api` prefix.
@@ -22,8 +23,10 @@ Fake Laravel apps (source files only, no `vendor/`) that the scanner is scored a
 ## Adding a case
 
 1. Write the vulnerable and safe variants and register their routes.
-2. Add an entry to `expected.yaml` (`id`, `app`, `category`, `description`, `vulnerable` with `route`/`symbol`/`line`/`map`, `safe` with `route`/`symbol`/`map`). Optional: `suppressed`, `candidate`.
+2. Add an entry to `expected.yaml` (`id`, `app`, `set`, `category`, `description`, `vulnerable` with `route`/`symbol`/`line`/`map`, `safe` with `route`/`symbol`/`map`). Optional: `suppressed`, `candidate`, and `accept` on `vulnerable` (other symbols where the flaw may legitimately be reported, e.g. a called service or policy method). Add `posthoc: true` next to an `accept` list written after a live run saw the finding; the report then also prints a strict found line that ignores it.
 3. Run `vendor/bin/phpunit tests/Integration/Benchmark`.
+
+`set` is `existing` for the original laravel10/11 cases and `blind` for laravel12-app, so accuracy can be reported per set.
 
 Public routes that must produce no findings go under `public_routes` (`app`, `route`, `symbol`).
 
