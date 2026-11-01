@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-11-02
+
+### Fixed
+
+- Installs alongside Symfony 8. `symfony/console`, `symfony/process` and `symfony/yaml` now accept `^8.0`, so `composer require --dev tusharkhan/semantic-sec` works in a fresh Laravel 12 project on PHP 8.4+, which locks `symfony/yaml` 8.
+- Commands are registered with `addCommand()` where it exists, because Symfony Console 8 removed `add()`.
+
+### Changed
+
+- CI also tests PHP 8.5.
+
 ## [0.1.0] - 2026-11-01
 
 First public release. semantic-sec finds authorization flaws in Laravel 8–13 applications with an LLM of your choice. It is pre-1.0, so options, output and fingerprints may still change.

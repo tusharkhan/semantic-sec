@@ -18,7 +18,7 @@ env:
   # composer: semantic-sec is a dev dependency (composer require --dev tusharkhan/semantic-sec:^0.1).
   # phar: download the release PHAR; use this when the project runs on PHP 7.4-8.1.
   SEMANTIC_SEC_INSTALL: composer
-  SEMANTIC_SEC_VERSION: v0.1.0
+  SEMANTIC_SEC_VERSION: v0.1.1
 
 jobs:
   semantic-sec:
