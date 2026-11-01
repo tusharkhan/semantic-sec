@@ -224,7 +224,7 @@ final class CorpusValidator
         }
 
         if (array_key_exists('accept', $data)) {
-            $errors = [...$errors, ...self::acceptErrors($label, $variant, $data['accept'], $data['symbol'] ?? null)];
+            $errors = [...$errors, ...self::acceptErrors($label, $data['accept'], $data['symbol'] ?? null)];
         }
 
         if (array_key_exists('map', $data)) {
@@ -235,11 +235,8 @@ final class CorpusValidator
     }
 
     /** @return list<string> */
-    private static function acceptErrors(string $label, string $variant, mixed $accept, mixed $symbol): array
+    private static function acceptErrors(string $label, mixed $accept, mixed $symbol): array
     {
-        if ($variant !== 'vulnerable') {
-            return ["$label: accept is only allowed on vulnerable"];
-        }
         $valid = is_array($accept) && $accept !== [] && array_is_list($accept);
         foreach ($valid ? $accept : [] as $item) {
             $valid = $valid && is_string($item) && preg_match(self::SYMBOL_PATTERN, $item) === 1;

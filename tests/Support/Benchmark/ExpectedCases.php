@@ -23,8 +23,25 @@ final class ExpectedCases
                 self::variant(self::map($case, 'safe')),
             );
         }
+        self::assertDistinctAccepts($cases);
 
         return $cases;
+    }
+
+    // One finding must never satisfy two cases: no two cases of a category may accept the same symbol.
+    /** @param list<BenchmarkCase> $cases */
+    public static function assertDistinctAccepts(array $cases): void
+    {
+        $claimed = [];
+        foreach ($cases as $case) {
+            foreach ([$case->vulnerable->symbol, ...$case->vulnerable->accept] as $symbol) {
+                $key = $case->category.' at '.self::canonical($symbol);
+                if (isset($claimed[$key]) && $claimed[$key] !== $case->id) {
+                    throw new \InvalidArgumentException("benchmark cases: {$case->id} and {$claimed[$key]} both accept {$key}");
+                }
+                $claimed[$key] = $case->id;
+            }
+        }
     }
 
     /** @return list<PublicRoute> */
@@ -46,9 +63,26 @@ final class ExpectedCases
         return 'app/'.str_replace('\\', '/', (string) preg_replace('/^App\\\\/', '', $class)).'.php';
     }
 
+    // Display form: no trailing (), no leading or doubled backslashes; case kept.
     public static function symbol(string $symbol): string
     {
-        return ltrim($symbol, '\\');
+        $symbol = (string) preg_replace('/\\(\\s*\\)$/', '', trim($symbol));
+
+        return ltrim((string) preg_replace('/\\\\+/', '\\', $symbol), '\\');
+    }
+
+    // Comparison form: PHP class and method names are case-insensitive; also used for $prop and closure ids.
+    public static function canonical(string $symbol): string
+    {
+        return strtolower(self::symbol($symbol));
+    }
+
+    // Comparison form of a project-relative path: forward slashes, no leading ./ or /.
+    public static function canonicalFile(string $file): string
+    {
+        $file = str_replace('\\', '/', trim($file));
+
+        return (string) preg_replace('#^(\\./|/)+#', '', $file);
     }
 
     /** @param array<mixed> $data */

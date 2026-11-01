@@ -12,12 +12,16 @@ namespace TusharKhan\SemanticSec\Tests\Support\Benchmark;
  */
 final class Scorer
 {
-    private const FAILING = ['medium', 'high'];
+    public const FAILING = ['medium', 'high'];
 
-    // Lists a finding can sit in; baselined never occurs because the benchmark runs with --no-baseline.
+    // Lists a finding can sit in; baselined never occurs with --no-baseline, but counts against precision if it does.
     private const REPORTED = ['findings', 'filtered'];
 
+    private const PRECISION = ['findings', 'filtered', 'baselined'];
+
     /**
+     * Every symbol is compared in canonical form (ExpectedCases::canonical) and every path via ExpectedCases::canonicalFile.
+     *
      * @param list<BenchmarkCase> $cases
      * @param array<string, array<mixed>> $analyzeJsonByApp decoded analyze JSON per app
      * @param array<string, array<mixed>> $mapJsonByApp decoded map JSON per app
@@ -26,21 +30,27 @@ final class Scorer
      */
     public static function score(array $cases, array $analyzeJsonByApp, array $mapJsonByApp, array $publicRoutes = [], array $dryRunJsonByApp = []): Score
     {
+        ExpectedCases::assertDistinctAccepts($cases);
         $verdicts = [];
+        $accounted = [];
         foreach ($cases as $case) {
             $analyze = $analyzeJsonByApp[$case->app] ?? throw new \InvalidArgumentException("no analyze output for {$case->app}");
             $reported = self::findings($analyze, self::REPORTED);
             $vulnerablePool = $case->vulnerable->suppressed ? [...self::findings($analyze, ['suppressed']), ...$reported] : $reported;
-            $targets = [[$case->vulnerable->file, $case->vulnerable->symbol]];
+            $targets = [self::key($case->vulnerable->file, $case->vulnerable->symbol)];
             foreach ($case->vulnerable->accept as $symbol) {
-                $targets[] = [ExpectedCases::fileOf($symbol), $symbol];
+                $targets[] = self::key(ExpectedCases::fileOf($symbol), $symbol);
             }
-            $found = self::first($vulnerablePool, static fn (array $f): bool => $f['category'] === $case->category && in_array([$f['file'], $f['symbol']], $targets, true));
-            $flagged = self::first($reported, static fn (array $f): bool => $f['symbol'] === $case->safe->symbol);
+            $safeSymbols = self::safeSymbols($case);
+            $found = self::first($vulnerablePool, static fn (array $f): bool => $f['category'] === $case->category && in_array(self::key($f['file'], $f['symbol']), $targets, true));
+            $flagged = self::first(self::findings($analyze, self::PRECISION), static fn (array $f): bool => in_array(ExpectedCases::canonical($f['symbol']), $safeSymbols, true));
             $map = $mapJsonByApp[$case->app] ?? [];
             $dryRun = $dryRunJsonByApp[$case->app] ?? null;
             $vulnerableCategories = $dryRun === null ? null : self::selectedFor($dryRun, $case->vulnerable->route);
             $safeCategories = $dryRun === null ? null : self::selectedFor($dryRun, $case->safe->route);
+            foreach ([$case->vulnerable->symbol, ...$case->vulnerable->accept, ...$safeSymbols] as $symbol) {
+                $accounted[$case->app][ExpectedCases::canonical($symbol)] = true;
+            }
 
             $verdicts[] = new CaseVerdict(
                 $case,
@@ -62,11 +72,66 @@ final class Scorer
         $publics = [];
         foreach ($publicRoutes as $route) {
             $analyze = $analyzeJsonByApp[$route->app] ?? throw new \InvalidArgumentException("no analyze output for {$route->app}");
-            [$by, $byFailing] = self::first(self::findings($analyze, self::REPORTED), static fn (array $f): bool => $f['symbol'] === $route->symbol);
+            $symbol = ExpectedCases::canonical($route->symbol);
+            [$by, $byFailing] = self::first(self::findings($analyze, self::PRECISION), static fn (array $f): bool => ExpectedCases::canonical($f['symbol']) === $symbol);
             $publics[] = new PublicVerdict($route, $by, $byFailing);
+            $accounted[$route->app][$symbol] = true;
         }
 
-        return new Score($verdicts, $publics);
+        return new Score($verdicts, $publics, self::unattributed($cases, $analyzeJsonByApp, $accounted));
+    }
+
+    /**
+     * Safe-side symbols: the safe symbol, its explicit accept list, and the \Safe\ counterpart of each \Vuln\ accepted symbol.
+     *
+     * @return list<string> canonical
+     */
+    private static function safeSymbols(BenchmarkCase $case): array
+    {
+        $symbols = [$case->safe->symbol, ...$case->safe->accept];
+        foreach ($case->vulnerable->accept as $symbol) {
+            $counterpart = (string) preg_replace('/\\\\Vuln\\\\/i', '\\\\Safe\\\\', ExpectedCases::symbol($symbol), 1, $replaced);
+            if ($replaced > 0) {
+                $symbols[] = $counterpart;
+            }
+        }
+
+        return array_values(array_unique(array_map(ExpectedCases::canonical(...), $symbols)));
+    }
+
+    /**
+     * Findings under a Safe/ path or a \Safe\ namespace that no case or public route accounts for.
+     *
+     * @param list<BenchmarkCase> $cases
+     * @param array<string, array<mixed>> $analyzeJsonByApp
+     * @param array<string, array<string, true>> $accounted canonical symbols per app
+     *
+     * @return list<array{app: string, set: string|null, finding: Finding}>
+     */
+    private static function unattributed(array $cases, array $analyzeJsonByApp, array $accounted): array
+    {
+        $setsByApp = [];
+        foreach ($cases as $case) {
+            $setsByApp[$case->app][$case->set] = true;
+        }
+        $out = [];
+        foreach (array_keys($accounted) as $app) {
+            $sets = array_keys($setsByApp[$app] ?? []);
+            foreach (self::findings($analyzeJsonByApp[$app] ?? [], self::PRECISION) as $f) {
+                $symbol = ExpectedCases::canonical($f['symbol']);
+                $safeCode = preg_match('#(^|/)safe/#i', $f['file']) === 1 || str_contains('\\'.$symbol, '\\safe\\');
+                if ($safeCode && ! isset($accounted[$app][$symbol])) {
+                    $out[] = ['app' => $app, 'set' => count($sets) === 1 ? $sets[0] : null, 'finding' => $f];
+                }
+            }
+        }
+
+        return $out;
+    }
+
+    private static function key(string $file, string $symbol): string
+    {
+        return ExpectedCases::canonicalFile($file).'|'.ExpectedCases::canonical($symbol);
     }
 
     /**
@@ -111,7 +176,7 @@ final class Scorer
                     'list' => $list,
                     'category' => self::str($f, 'category'),
                     'confidence' => self::str($f, 'confidence'),
-                    'file' => (string) preg_replace('#^\./#', '', self::str($f, 'file')),
+                    'file' => ExpectedCases::canonicalFile(self::str($f, 'file')),
                     'line' => is_int($f['line'] ?? null) ? $f['line'] : 0,
                     'symbol' => ExpectedCases::symbol(self::str($f, 'symbol')),
                     'title' => self::str($f, 'title'),

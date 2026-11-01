@@ -31,7 +31,7 @@ final class ReportTest extends TestCase
     {
         $markdown = Report::markdown(self::score(), self::meta());
 
-        foreach (['## Gate', '## Gate, failing findings only', '## Selection stage', '## Per app', '### app-a', '## Cases', '## Public routes', '## Run cost', '## Competitive check'] as $heading) {
+        foreach (['## Gate', '## Gate, failing findings only', '## Selection stage', '## Per app', '### app-a', '## Cases', '## Unattributed safe-code findings', '## Public routes', '## Run cost', '## Competitive check'] as $heading) {
             self::assertStringContainsString("\n$heading\n", $markdown);
         }
         self::assertStringContainsString('claude-opus-5-5', $markdown);
@@ -39,6 +39,8 @@ final class ReportTest extends TestCase
         self::assertStringContainsString('$6.45', $markdown);
         self::assertStringContainsString('App\Policies\TransferPolicy::approve', $markdown);
         self::assertStringContainsString('never sent to the LLM', $markdown);
+        self::assertStringContainsString('66.7% (2/3) FAIL', $markdown);
+        self::assertStringContainsString('app/Http/Controllers/Safe/StrayController.php', $markdown);
     }
 
     public function testPipesInModelTextCannotBreakTables(): void
@@ -52,6 +54,13 @@ final class ReportTest extends TestCase
         $markdown = Report::markdown($score, self::meta());
 
         self::assertStringContainsString('Bad \| title with newline', $markdown);
+    }
+
+    public function testEmptySetColumnShowsNotApplicable(): void
+    {
+        $score = Scorer::score([], ['app-a' => ScorerTest::analyze()['app-a']], [], [new \TusharKhan\SemanticSec\Tests\Support\Benchmark\PublicRoute('app-a', 'blind', 'GET /p', 'App\Http\Controllers\P::i')]);
+
+        self::assertStringContainsString('| **Gate** | | **n/a** | **n/a** |', Report::markdown($score, self::meta()));
     }
 
     public function testCost(): void
@@ -69,6 +78,7 @@ final class ReportTest extends TestCase
             ScorerTest::finding('App\Http\Controllers\Safe\WithdrawalController::approve', 'workflow_bypass', 'medium'),
             ScorerTest::finding('App\Http\Controllers\PostController::show', 'idor', 'low'),
         ];
+        $analyze['app-b']['findings'] = [ScorerTest::finding('App\Http\Controllers\Safe\StrayController::index')];
         $analyze['app-b']['suppressed'] = [ScorerTest::finding('App\Http\Controllers\Vuln\SharedController::show')];
         $maps = ScorerTest::perfectMaps();
         $maps['app-a']['routes'][1]['checks'] = [['kind' => 'authentication', 'strength' => 'authentication']];

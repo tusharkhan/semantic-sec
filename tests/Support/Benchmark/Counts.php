@@ -15,6 +15,7 @@ final class Counts
         public readonly int $publicViolations = 0,
         public readonly int $mapVariants = 0,
         public readonly int $mapMismatches = 0,
+        public readonly int $unattributed = 0,
     ) {
     }
 

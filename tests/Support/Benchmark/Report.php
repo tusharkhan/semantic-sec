@@ -56,20 +56,21 @@ final class Report
         foreach ($s->apps() as $app) {
             $out[] = "### {$app}";
             $out[] = '';
-            $out[] = '| Set | Cases | Found | Found (failing) | Safe flagged | Safe flagged (failing) | Public violations | Map mismatches |';
-            $out[] = '|---|---|---|---|---|---|---|---|';
+            $out[] = '| Set | Cases | Found | Found (failing) | Safe flagged | Safe flagged (failing) | Unattributed safe-code findings | Public violations | Map mismatches |';
+            $out[] = '|---|---|---|---|---|---|---|---|---|';
             foreach ($columns as $set) {
                 $c = $s->counts($set === 'all' ? null : $set, $app);
                 if ($c->cases === 0 && $c->publicRoutes === 0) {
                     continue;
                 }
                 $f = $s->counts($set === 'all' ? null : $set, $app, true);
-                $out[] = sprintf('| %s | %d | %d | %d | %d | %d | %d/%d | %d/%d |', $set, $c->cases, $c->found, $f->found, $c->flagged, $f->flagged, $c->publicViolations, $c->publicRoutes, $c->mapMismatches, $c->mapVariants);
+                $out[] = sprintf('| %s | %d | %d | %d | %d | %d | %d | %d/%d | %d/%d |', $set, $c->cases, $c->found, $f->found, $c->flagged, $f->flagged, $c->unattributed, $c->publicViolations, $c->publicRoutes, $c->mapMismatches, $c->mapVariants);
             }
             $out[] = '';
         }
 
         array_push($out, ...self::cases($s));
+        array_push($out, ...self::unattributed($s));
         array_push($out, ...self::publics($s));
         array_push($out, ...self::costSection($meta));
 
@@ -103,7 +104,7 @@ final class Report
             $cells = array_map(static fn (string $set): string => self::criterion($byColumn[$set][$i]), $columns);
             $rows[] = "| {$first['label']} | {$first['threshold']} | ".implode(' | ', $cells).' |';
         }
-        $rows[] = '| **Gate** | | '.implode(' | ', array_map(static fn (string $set): string => Gate::passes($byColumn[$set]) ? '**PASS**' : '**FAIL**', $columns)).' |';
+        $rows[] = '| **Gate** | | '.implode(' | ', array_map(static fn (string $set): string => '**'.self::verdict(Gate::verdict($byColumn[$set])).'**', $columns)).' |';
         $rows[] = '';
 
         return $rows;
@@ -112,11 +113,10 @@ final class Report
     /** @param Criterion $c */
     private static function criterion(array $c): string
     {
-        $verdict = match ($c['pass']) {
-            true => 'PASS',
-            false => 'FAIL',
-            null => 'n/a',
-        };
+        $verdict = self::verdict($c['pass']);
+        if ($c['criterion'] === 'unattributed') {
+            return sprintf('%d %s', $c['numerator'], $verdict);
+        }
         if ($c['criterion'] === 'public') {
             return sprintf('%d/%d routes hit %s', $c['numerator'], $c['denominator'], $verdict);
         }
@@ -183,6 +183,23 @@ final class Report
                 self::map($v->mapVulnerable, $v->mapSafe),
                 $selected,
             );
+        }
+        $out[] = '';
+
+        return $out;
+    }
+
+    /** @return list<string> */
+    private static function unattributed(Score $s): array
+    {
+        $out = ['## Unattributed safe-code findings', '', 'Findings under a `Safe/` path or a `\\Safe\\` namespace that no case or public route accounts for. Each one is a false positive and fails the gate. An app whose cases span both sets counts them under "all" only.', ''];
+        if ($s->unattributed === []) {
+            return [...$out, 'None.', ''];
+        }
+        $out[] = '| App | Set | Finding |';
+        $out[] = '|---|---|---|';
+        foreach ($s->unattributed as $u) {
+            $out[] = sprintf('| %s | %s | %s |', $u['app'], $u['set'] ?? 'all only', self::finding($u['finding']));
         }
         $out[] = '';
 
@@ -269,7 +286,16 @@ final class Report
 
     private static function percent(float $rate): string
     {
-        return sprintf('%.0f%%', round($rate * 100));
+        return sprintf('%.1f%%', $rate * 100);
+    }
+
+    public static function verdict(?bool $pass): string
+    {
+        return match ($pass) {
+            true => 'PASS',
+            false => 'FAIL',
+            null => 'n/a',
+        };
     }
 
     // Model text and paths go into table cells: no pipes, no newlines, no backticks.

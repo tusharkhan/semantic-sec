@@ -18,7 +18,15 @@ final class BenchmarkCommand extends Command
 {
     public const REPLAY_KEY = 'replay-key';
 
+    public const LIVE_BUDGET = '300000';
+
     private const SETS = ['all', 'existing', 'blind'];
+
+    // A live run always has a token cap per app: --budget, or LIVE_BUDGET.
+    public static function budget(?string $option, bool $live): ?string
+    {
+        return $option ?? ($live ? self::LIVE_BUDGET : null);
+    }
 
     protected function configure(): void
     {
@@ -28,7 +36,7 @@ final class BenchmarkCommand extends Command
             ->addOption('set', null, InputOption::VALUE_REQUIRED, 'all, existing or blind', 'all')
             ->addOption('competitor', null, InputOption::VALUE_REQUIRED, 'Competitor eval_results.json to score as well (M8 Task 5)')
             ->addOption('out', null, InputOption::VALUE_REQUIRED, 'Report path, relative to the repository root', 'docs/benchmark-results.md')
-            ->addOption('budget', null, InputOption::VALUE_REQUIRED, 'Passed to analyze --budget for each app')
+            ->addOption('budget', null, InputOption::VALUE_REQUIRED, 'Passed to analyze --budget for each app (with --live, default '.self::LIVE_BUDGET.')')
             ->addOption('cassettes', null, InputOption::VALUE_REQUIRED, 'Cassette directory', 'tests/Fixtures/cassettes/anthropic');
     }
 
@@ -80,12 +88,16 @@ final class BenchmarkCommand extends Command
             putenv(Runner::KEY_ENV.'='.$key);
         }
 
+        $option = $input->getOption('budget');
+        $budget = self::budget(is_string($option) ? $option : null, $live);
+        if ($live) {
+            $output->writeln(sprintf('live run: token budget cap %s per app (analyze --budget)', $budget));
+        }
         $runs = [];
         try {
             foreach ($apps as $app) {
                 $output->writeln(sprintf('<info>%s</info> %s', $live ? 'recording' : 'replaying', $app), OutputInterface::VERBOSITY_VERBOSE);
-                $budget = $input->getOption('budget');
-                $runs[$app] = $runner->run($app, $live ? 'record' : 'replay', null, trim($key), is_string($budget) ? $budget : null);
+                $runs[$app] = $runner->run($app, $live ? 'record' : 'replay', null, trim($key), $budget);
             }
         } catch (\RuntimeException $e) {
             return $this->fail($output, $e->getMessage());
@@ -128,11 +140,12 @@ final class BenchmarkCommand extends Command
             return $this->fail($output, "cannot write {$path}");
         }
 
-        $pass = true;
+        // Exit 0 needs at least one measured slice and no failing one; n/a never counts as a pass.
+        $verdicts = [];
         foreach ([...$score->sets(), 'all'] as $column) {
             $criteria = Gate::evaluate($score->counts($column === 'all' ? null : $column));
-            $pass = $pass && Gate::passes($criteria);
-            $output->writeln(sprintf('%-8s %s  %s', $column, Gate::passes($criteria) ? 'PASS' : 'FAIL', implode('  ', array_map(
+            $verdicts[] = Gate::verdict($criteria);
+            $output->writeln(sprintf('%-8s %s  %s', $column, Report::verdict(Gate::verdict($criteria)), implode('  ', array_map(
                 static fn (array $c): string => $c['criterion'].' '.$c['numerator'].'/'.$c['denominator'].' '.match ($c['pass']) {
                     true => 'ok',
                     false => 'FAIL',
@@ -143,7 +156,7 @@ final class BenchmarkCommand extends Command
         }
         $output->writeln(sprintf('%d requests, $%.2f estimated; report written to %s', $requests, Report::cost($usage), $out));
 
-        return $pass ? Command::SUCCESS : Command::FAILURE;
+        return in_array(true, $verdicts, true) && ! in_array(false, $verdicts, true) ? Command::SUCCESS : Command::FAILURE;
     }
 
     private function fail(OutputInterface $output, string $message): int

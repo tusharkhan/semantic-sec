@@ -4,7 +4,13 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Tests\Support\Benchmark;
 
-/** Every verdict, sliced by set, app and confidence on demand. */
+/**
+ * Every verdict, sliced by set, app and confidence on demand.
+ *
+ * @phpstan-import-type Finding from CaseVerdict
+ *
+ * @phpstan-type Unattributed array{app: string, set: string|null, finding: Finding}
+ */
 final class Score
 {
     public const SETS = ['existing', 'blind'];
@@ -12,8 +18,9 @@ final class Score
     /**
      * @param list<CaseVerdict> $cases
      * @param list<PublicVerdict> $publics
+     * @param list<Unattributed> $unattributed safe-code findings no case or public route accounts for; set is null when the app mixes sets
      */
-    public function __construct(public readonly array $cases, public readonly array $publics)
+    public function __construct(public readonly array $cases, public readonly array $publics, public readonly array $unattributed = [])
     {
     }
 
@@ -33,6 +40,8 @@ final class Score
     {
         $cases = array_filter($this->cases, static fn (CaseVerdict $v): bool => ($set === null || $v->case->set === $set) && ($app === null || $v->case->app === $app));
         $publics = array_filter($this->publics, static fn (PublicVerdict $p): bool => ($set === null || $p->route->set === $set) && ($app === null || $p->route->app === $app));
+        $unattributed = array_filter($this->unattributed, static fn (array $u): bool => ($set === null || $u['set'] === $set) && ($app === null || $u['app'] === $app)
+            && (! $failingOnly || in_array($u['finding']['confidence'], Scorer::FAILING, true)));
         $mismatches = 0;
         foreach ($cases as $v) {
             $mismatches += ($v->mapVulnerable['ok'] ? 0 : 1) + ($v->mapSafe['ok'] ? 0 : 1);
@@ -46,6 +55,7 @@ final class Score
             publicViolations: count(array_filter($publics, static fn (PublicVerdict $p): bool => ($failingOnly ? $p->byFailing : $p->by) !== null)),
             mapVariants: 2 * count($cases),
             mapMismatches: $mismatches,
+            unattributed: count($unattributed),
         );
     }
 

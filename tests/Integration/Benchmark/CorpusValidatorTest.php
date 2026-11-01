@@ -88,7 +88,7 @@ PHP;
         self::assertSame([], CorpusValidator::caseErrors($case, BenchmarkCorpus::root()));
     }
 
-    public function testAcceptIsAListOfSymbolsOnVulnerableOnly(): void
+    public function testAcceptIsAListOfSymbols(): void
     {
         $case = $this->validCase();
         $case['vulnerable']['accept'] = ['App\Policies\SamplePolicy::view'];
@@ -105,7 +105,7 @@ PHP;
 
         $case = $this->validCase();
         $case['safe']['accept'] = ['App\Policies\SamplePolicy::view'];
-        $this->assertSingleError('sample-case.safe: accept is only allowed on vulnerable', $case);
+        self::assertSame([], CorpusValidator::caseErrors($case, BenchmarkCorpus::root()));
     }
 
     public function testPublicRouteSetIsOptionalButChecked(): void

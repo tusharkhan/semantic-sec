@@ -12,6 +12,7 @@ use TusharKhan\SemanticSec\Tests\Support\Benchmark\Gate;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\PublicRoute;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\Score;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\Scorer;
+use TusharKhan\SemanticSec\Tests\Support\Benchmark\Variant;
 
 final class ScorerTest extends TestCase
 {
@@ -271,17 +272,140 @@ YAML;
     public function testGateThresholds(): void
     {
         $pass = Gate::evaluate(new Counts(cases: 10, found: 7, flagged: 1, publicRoutes: 2, publicViolations: 0, mapVariants: 20, mapMismatches: 0));
-        self::assertSame([true, true, true, true], array_column($pass, 'pass'));
-        self::assertSame(['found', 'flagged', 'public', 'map'], array_column($pass, 'criterion'));
-        self::assertTrue(Gate::passes($pass));
+        self::assertSame([true, true, true, true, true], array_column($pass, 'pass'));
+        self::assertSame(['found', 'flagged', 'unattributed', 'public', 'map'], array_column($pass, 'criterion'));
+        self::assertTrue(Gate::verdict($pass));
 
-        $fail = Gate::evaluate(new Counts(cases: 10, found: 6, flagged: 2, publicRoutes: 2, publicViolations: 1, mapVariants: 20, mapMismatches: 1));
-        self::assertSame([false, false, false, false], array_column($fail, 'pass'));
-        self::assertFalse(Gate::passes($fail));
+        $fail = Gate::evaluate(new Counts(cases: 10, found: 6, flagged: 2, publicRoutes: 2, publicViolations: 1, mapVariants: 20, mapMismatches: 1, unattributed: 1));
+        self::assertSame([false, false, false, false, false], array_column($fail, 'pass'));
+        self::assertFalse(Gate::verdict($fail));
+    }
 
+    public function testEmptySliceIsNotAPass(): void
+    {
         $empty = Gate::evaluate(new Counts());
-        self::assertSame([null, null, true, null], array_column($empty, 'pass'));
-        self::assertTrue(Gate::passes($empty));
+        self::assertSame([null, null, null, null, null], array_column($empty, 'pass'));
+        self::assertNull(Gate::verdict($empty));
+
+        self::assertFalse(Gate::verdict(Gate::evaluate(new Counts(publicRoutes: 1, publicViolations: 1))));
+        self::assertNull(Gate::verdict(Gate::evaluate(new Counts(publicRoutes: 1))));
+    }
+
+    public function testSafeFlaggedBySymbolWithParens(): void
+    {
+        $score = $this->score(['app-a' => [self::finding('App\Http\Controllers\Safe\ItemController::show()')]]);
+
+        self::assertTrue($score->verdict('plain-idor')->flagged);
+    }
+
+    public function testSafeFlaggedByOtherCaseAndDoubledBackslashes(): void
+    {
+        $score = $this->score(['app-a' => [self::finding('\\app\\http\\controllers\\safe\\itemcontroller::SHOW')]]);
+
+        self::assertTrue($score->verdict('plain-idor')->flagged);
+    }
+
+    public function testPublicRouteViolatedByDifferentCase(): void
+    {
+        $score = $this->score(['app-a' => [self::finding('app\http\controllers\postcontroller::SHOW', file: 'app/Http/Controllers/PostController.php')]]);
+
+        self::assertSame(1, $score->counts('existing')->publicViolations);
+    }
+
+    public function testLowerCasedVulnerableSymbolIsFound(): void
+    {
+        $score = $this->score(['app-a' => [self::finding(strtolower('App\Http\Controllers\Vuln\ItemController::show'), file: 'app/Http/Controllers/Vuln/ItemController.php')]]);
+
+        self::assertTrue($score->verdict('plain-idor')->found);
+    }
+
+    public function testPathFormsAreNormalised(): void
+    {
+        foreach (['app\Http\Controllers\Vuln\ItemController.php', '/app/Http/Controllers/Vuln/ItemController.php', './app/Http/Controllers/Vuln/ItemController.php'] as $file) {
+            $score = $this->score(['app-a' => [self::finding('App\Http\Controllers\Vuln\ItemController::show', file: $file)]]);
+            self::assertTrue($score->verdict('plain-idor')->found, $file);
+        }
+    }
+
+    public function testSafeFlaggedByCounterpartOfVulnerableAcceptAndBySafeAccept(): void
+    {
+        $case = new BenchmarkCase(
+            'svc',
+            'app-b',
+            'existing',
+            'workflow_bypass',
+            new Variant('POST /v', 'App\Http\Controllers\Vuln\OrderController::cancel', 'app/Http/Controllers/Vuln/OrderController.php', [], 5, false, ['App\Services\Vuln\OrderService::cancel', 'App\Services\OrderService::cancel']),
+            new Variant('POST /s', 'App\Http\Controllers\Safe\OrderController::cancel', 'app/Http/Controllers/Safe/OrderController.php', [], null, false, ['App\Services\OrderWorkflow::cancel']),
+        );
+        $flag = static fn (string $symbol): bool => Scorer::score([$case], ['app-b' => ['findings' => [self::finding($symbol)]]], ['app-b' => []])->verdict('svc')->flagged;
+
+        self::assertTrue($flag('App\Services\Safe\OrderService::cancel'));
+        self::assertTrue($flag('App\Services\OrderWorkflow::cancel'));
+        self::assertFalse($flag('App\Services\OrderService::cancel'));
+    }
+
+    public function testUnattributedSafeFindingsAreCounted(): void
+    {
+        $score = $this->score([
+            'app-a' => [self::finding('App\Http\Controllers\Safe\ItemController::show')],
+            'app-b' => [
+                self::finding('App\Http\Controllers\Safe\OtherController::index', confidence: 'low'),
+                self::finding('App\Models\Thing::scope', file: 'app/Http/Controllers/Safe/Helpers.php'),
+                self::finding('App\Http\Controllers\Vuln\OtherController::index'),
+            ],
+        ]);
+
+        self::assertSame(['app/Http/Controllers/Safe/OtherController.php', 'app/Http/Controllers/Safe/Helpers.php'], array_map(static fn (array $u): string => $u['finding']['file'], $score->unattributed));
+        self::assertSame(2, $score->counts('existing')->unattributed);
+        self::assertSame(1, $score->counts('existing', failingOnly: true)->unattributed);
+        self::assertSame(0, $score->counts('blind')->unattributed);
+        self::assertSame(2, $score->counts()->unattributed);
+        self::assertFalse(Gate::verdict(Gate::evaluate($score->counts('existing'))));
+    }
+
+    public function testSafeBaselinedFindingFlags(): void
+    {
+        $analyze = self::analyze();
+        $analyze['app-a']['baselined'][] = self::finding('App\Http\Controllers\Safe\ItemController::show');
+        $score = Scorer::score(ExpectedCases::load(self::YAML), $analyze, self::perfectMaps(), ExpectedCases::publicRoutes(self::YAML));
+
+        self::assertTrue($score->verdict('plain-idor')->flagged);
+        self::assertFalse($score->verdict('plain-idor')->found);
+    }
+
+    public function testCasesSharingAnAcceptedSymbolAreRejected(): void
+    {
+        $yaml = str_replace('      suppressed: true', "      suppressed: true\n      accept: ['\\App\\Policies\\transferpolicy::approve()']", self::YAML);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('suppressed-idor and policy-accept both accept idor at app\policies\transferpolicy::approve');
+
+        ExpectedCases::load($yaml);
+    }
+
+    public function testScorerRejectsHandBuiltCasesSharingAnAcceptedSymbol(): void
+    {
+        $make = static fn (string $id, string $symbol): BenchmarkCase => new BenchmarkCase(
+            $id,
+            'app-a',
+            'existing',
+            'idor',
+            new Variant('GET /v/'.$id, $symbol, ExpectedCases::fileOf($symbol), [], 3, false, ['App\\Svc::x']),
+            new Variant('GET /s/'.$id, 'App\\Http\\Controllers\\Safe\\A::m', 'app/Http/Controllers/Safe/A.php', []),
+        );
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('c2 and c1 both accept idor at app\\svc::x');
+
+        Scorer::score([$make('c1', 'App\\Http\\Controllers\\Vuln\\A::m'), $make('c2', 'App\\Http\\Controllers\\Vuln\\B::m')], self::analyze(), []);
+    }
+
+    public function testSharedAcceptAcrossCategoriesIsAllowed(): void
+    {
+        $yaml = str_replace('category: idor'."\n".'    description: "Suppressed', 'category: mass_assignment'."\n".'    description: "Suppressed', self::YAML);
+        $yaml = str_replace('      suppressed: true', "      suppressed: true\n      accept: [App\\Policies\\TransferPolicy::approve]", $yaml);
+
+        self::assertCount(3, ExpectedCases::load($yaml));
     }
 
     /**

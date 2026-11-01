@@ -116,6 +116,13 @@ final class BenchmarkRunnerTest extends TestCase
         self::assertStringContainsString('M8 Task 5', $tester->getDisplay());
     }
 
+    public function testLiveRunsDefaultToABudgetCap(): void
+    {
+        self::assertSame('300000', BenchmarkCommand::budget(null, true));
+        self::assertSame('5000', BenchmarkCommand::budget('5000', true));
+        self::assertNull(BenchmarkCommand::budget(null, false));
+    }
+
     /** @return list<\TusharKhan\SemanticSec\Tests\Support\Benchmark\BenchmarkCase> */
     private static function cases(): array
     {

@@ -8,20 +8,22 @@ Apps: app-a, app-b. Scored at `--level low` with every confidence; "failing" mea
 
 | Criterion | Threshold | existing | blind | all |
 |---|---|---|---|---|
-| Vulnerable variants found at the right symbol | ≥ 70% | 100% (2/2) PASS | 100% (1/1) PASS | 100% (3/3) PASS |
-| Safe variants flagged | ≤ 10% | 0% (0/2) PASS | 100% (1/1) FAIL | 33% (1/3) FAIL |
+| Vulnerable variants found at the right symbol | ≥ 70% | 100.0% (2/2) PASS | 100.0% (1/1) PASS | 100.0% (3/3) PASS |
+| Safe variants flagged | ≤ 10% | 0.0% (0/2) PASS | 100.0% (1/1) FAIL | 33.3% (1/3) FAIL |
+| Findings in safe code that no case accounts for | 0 | 1 FAIL | 0 PASS | 1 FAIL |
 | Findings on public-by-design routes | 0 | 1/1 routes hit FAIL | 0/1 routes hit PASS | 1/2 routes hit FAIL |
-| Expected authorization checks in the map | 100% | 75% (3/4) FAIL | 100% (2/2) PASS | 83% (5/6) FAIL |
+| Expected authorization checks in the map | 100% | 75.0% (3/4) FAIL | 100.0% (2/2) PASS | 83.3% (5/6) FAIL |
 | **Gate** | | **FAIL** | **FAIL** | **FAIL** |
 
 ## Gate, failing findings only
 
 | Criterion | Threshold | existing | blind | all |
 |---|---|---|---|---|
-| Vulnerable variants found at the right symbol | ≥ 70% | 100% (2/2) PASS | 0% (0/1) FAIL | 67% (2/3) FAIL |
-| Safe variants flagged | ≤ 10% | 0% (0/2) PASS | 100% (1/1) FAIL | 33% (1/3) FAIL |
+| Vulnerable variants found at the right symbol | ≥ 70% | 100.0% (2/2) PASS | 0.0% (0/1) FAIL | 66.7% (2/3) FAIL |
+| Safe variants flagged | ≤ 10% | 0.0% (0/2) PASS | 100.0% (1/1) FAIL | 33.3% (1/3) FAIL |
+| Findings in safe code that no case accounts for | 0 | 1 FAIL | 0 PASS | 1 FAIL |
 | Findings on public-by-design routes | 0 | 0/1 routes hit PASS | 0/1 routes hit PASS | 0/2 routes hit PASS |
-| Expected authorization checks in the map | 100% | 75% (3/4) FAIL | 100% (2/2) PASS | 83% (5/6) FAIL |
+| Expected authorization checks in the map | 100% | 75.0% (3/4) FAIL | 100.0% (2/2) PASS | 83.3% (5/6) FAIL |
 | **Gate** | | **FAIL** | **FAIL** | **FAIL** |
 
 ## Selection stage
@@ -37,19 +39,19 @@ Whether each route reached the LLM for the case's category. A missed vulnerable 
 
 ### app-a
 
-| Set | Cases | Found | Found (failing) | Safe flagged | Safe flagged (failing) | Public violations | Map mismatches |
-|---|---|---|---|---|---|---|---|
-| existing | 1 | 1 | 1 | 0 | 0 | 1/1 | 1/2 |
-| blind | 1 | 1 | 0 | 1 | 1 | 0/0 | 0/2 |
-| all | 2 | 2 | 1 | 1 | 1 | 1/1 | 1/4 |
+| Set | Cases | Found | Found (failing) | Safe flagged | Safe flagged (failing) | Unattributed safe-code findings | Public violations | Map mismatches |
+|---|---|---|---|---|---|---|---|---|
+| existing | 1 | 1 | 1 | 0 | 0 | 0 | 1/1 | 1/2 |
+| blind | 1 | 1 | 0 | 1 | 1 | 0 | 0/0 | 0/2 |
+| all | 2 | 2 | 1 | 1 | 1 | 0 | 1/1 | 1/4 |
 
 ### app-b
 
-| Set | Cases | Found | Found (failing) | Safe flagged | Safe flagged (failing) | Public violations | Map mismatches |
-|---|---|---|---|---|---|---|---|
-| existing | 1 | 1 | 1 | 0 | 0 | 0/0 | 0/2 |
-| blind | 0 | 0 | 0 | 0 | 0 | 0/1 | 0/0 |
-| all | 1 | 1 | 1 | 0 | 0 | 0/1 | 0/2 |
+| Set | Cases | Found | Found (failing) | Safe flagged | Safe flagged (failing) | Unattributed safe-code findings | Public violations | Map mismatches |
+|---|---|---|---|---|---|---|---|---|
+| existing | 1 | 1 | 1 | 0 | 0 | 1 | 0/0 | 0/2 |
+| blind | 0 | 0 | 0 | 0 | 0 | 0 | 0/1 | 0/0 |
+| all | 1 | 1 | 1 | 0 | 0 | 1 | 0/1 | 0/2 |
 
 ## Cases
 
@@ -58,6 +60,14 @@ Whether each route reached the LLM for the case's category. A missed vulnerable 
 | plain-idor | existing | app-a | idor | found | idor high · `app/Http/Controllers/Vuln/ItemController.php:10` · `App\Http\Controllers\Vuln\ItemController::show` · Finding on App\Http\Controllers\Vuln\ItemController::show | clean |  | safe: expected [authentication, query_scope], got [authentication] | vulnerable: selected for idor; safe: not selected |
 | policy-accept | blind | app-a | idor | found (low confidence) | idor low · `app/Policies/TransferPolicy.php:10` · `App\Policies\TransferPolicy::approve` · Finding on App\Policies\TransferPolicy::approve | flagged | workflow_bypass medium · `app/Http/Controllers/Safe/WithdrawalController.php:10` · `App\Http\Controllers\Safe\WithdrawalController::approve` · Finding on App\Http\Controllers\Safe\WithdrawalController::approve | ok | vulnerable: not selected; safe: selected for idor, workflow_bypass |
 | suppressed-idor | existing | app-b | idor | found (suppressed) | idor high · `app/Http/Controllers/Vuln/SharedController.php:10` · `App\Http\Controllers\Vuln\SharedController::show` · Finding on App\Http\Controllers\Vuln\SharedController::show (suppressed) | clean |  | ok | vulnerable: selected for idor; safe: not selected |
+
+## Unattributed safe-code findings
+
+Findings under a `Safe/` path or a `\Safe\` namespace that no case or public route accounts for. Each one is a false positive and fails the gate. An app whose cases span both sets counts them under "all" only.
+
+| App | Set | Finding |
+|---|---|---|
+| app-b | existing | idor high · `app/Http/Controllers/Safe/StrayController.php:10` · `App\Http\Controllers\Safe\StrayController::index` · Finding on App\Http\Controllers\Safe\StrayController::index |
 
 ## Public routes
 
