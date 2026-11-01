@@ -1,0 +1,21 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use Symfony\Component\Console\Application;
+use TusharKhan\SemanticSec\Tests\Support\Benchmark\BenchmarkCommand;
+
+// Dev only: needs the autoload-dev classes, so it never ships (see .gitattributes).
+require __DIR__ . '/../vendor/autoload.php';
+
+if (! class_exists(BenchmarkCommand::class)) {
+    fwrite(STDERR, "bin/benchmark needs the dev autoloader; run 'composer install' without --no-dev.\n");
+    exit(2);
+}
+
+$application = new Application('semantic-sec benchmark');
+$application->add(new BenchmarkCommand());
+$application->setDefaultCommand('benchmark', true);
+
+exit($application->run());

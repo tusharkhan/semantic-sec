@@ -1,3 +1,4 @@
+/bin/benchmark export-ignore
 /tests export-ignore
 /docs export-ignore
 /benchmark export-ignore
