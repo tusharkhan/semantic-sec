@@ -16,6 +16,21 @@ use Symfony\Component\Yaml\Yaml;
 
 final class BenchmarkCorpus
 {
+    public const APPS = ['laravel10-app', 'laravel11-app', 'laravel12-app'];
+
+    // Missing set means existing: the original public route predates the blind corpus.
+    /** @param array<mixed> $item */
+    public static function set(array $item): string
+    {
+        return is_string($item['set'] ?? null) ? $item['set'] : 'existing';
+    }
+
+    /** @return list<array<string, mixed>> */
+    public static function casesInSet(string $set): array
+    {
+        return array_values(array_filter(self::cases(), static fn (array $case): bool => self::set($case) === $set));
+    }
+
     public static function root(): string
     {
         return dirname(__DIR__, 2) . '/benchmark';

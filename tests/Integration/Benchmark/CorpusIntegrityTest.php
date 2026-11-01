@@ -16,8 +16,12 @@ final class CorpusIntegrityTest extends TestCase
 {
     public function testSkeletonAppsExist(): void
     {
-        self::assertDirectoryExists(BenchmarkCorpus::root() . '/laravel11-app');
-        self::assertDirectoryExists(BenchmarkCorpus::root() . '/laravel10-app');
+        foreach (BenchmarkCorpus::APPS as $app) {
+            self::assertDirectoryExists(BenchmarkCorpus::root() . '/' . $app);
+        }
+        $apps = array_values(array_unique(array_map(static fn (array $case): mixed => $case['app'] ?? null, BenchmarkCorpus::cases())));
+        sort($apps);
+        self::assertSame(BenchmarkCorpus::APPS, $apps);
     }
 
     public function testCaseIdsAreUnique(): void
@@ -46,7 +50,7 @@ final class CorpusIntegrityTest extends TestCase
     {
         $errors = [];
         foreach (BenchmarkCorpus::publicRoutes() as $index => $route) {
-            $errors = [...$errors, ...$this->publicRouteErrors("public_routes[$index]", $route)];
+            $errors = [...$errors, ...CorpusValidator::publicRouteErrors("public_routes[$index]", $route, BenchmarkCorpus::root())];
         }
 
         self::assertSame([], $errors, implode("\n", $errors));
@@ -114,6 +118,9 @@ final class CorpusIntegrityTest extends TestCase
     {
         foreach ($this->variants() as $label => $variant) {
             $this->findMethod($label, $variant['app'], $variant['symbol']);
+            foreach ($variant['accept'] as $symbol) {
+                $this->findMethod("$label.accept", $variant['app'], $symbol);
+            }
         }
 
         foreach ($this->publicRoutes() as $label => $route) {
@@ -157,7 +164,7 @@ PHP;
     }
 
     // Fails on a malformed corpus first, so later tests can index variants safely.
-    /** @return array<string, array{app: string, route: string, symbol: string, line: int|null, suppressed: bool}> */
+    /** @return array<string, array{app: string, route: string, symbol: string, line: int|null, suppressed: bool, accept: list<string>}> */
     private function variants(): array
     {
         $variants = [];
@@ -166,7 +173,7 @@ PHP;
             self::assertSame([], $errors, implode("\n", $errors));
 
             foreach (CorpusValidator::VARIANTS as $name) {
-                /** @var array{route: string, symbol: string, line?: int, suppressed?: bool} $variant */
+                /** @var array{route: string, symbol: string, line?: int, suppressed?: bool, accept?: list<string>} $variant */
                 $variant = $case[$name];
                 /** @var string $app */
                 $app = $case['app'];
@@ -176,6 +183,7 @@ PHP;
                     'symbol' => $variant['symbol'],
                     'line' => $variant['line'] ?? null,
                     'suppressed' => $variant['suppressed'] ?? false,
+                    'accept' => $variant['accept'] ?? [],
                 ];
             }
         }
@@ -189,7 +197,7 @@ PHP;
         $routes = [];
         foreach (BenchmarkCorpus::publicRoutes() as $index => $route) {
             $label = "public_routes[$index]";
-            $errors = $this->publicRouteErrors($label, $route);
+            $errors = CorpusValidator::publicRouteErrors($label, $route, BenchmarkCorpus::root());
             self::assertSame([], $errors, implode("\n", $errors));
 
             /** @var array{app: string, route: string, symbol: string} $route */
@@ -197,31 +205,6 @@ PHP;
         }
 
         return $routes;
-    }
-
-    /**
-     * @param array<mixed> $route
-     *
-     * @return list<string>
-     */
-    private function publicRouteErrors(string $label, array $route): array
-    {
-        $errors = [];
-        foreach (['app', 'route', 'symbol'] as $key) {
-            if (! is_string($route[$key] ?? null) || $route[$key] === '') {
-                $errors[] = "$label: $key must be a non-empty string";
-            }
-        }
-        foreach (array_keys($route) as $key) {
-            if (! in_array($key, ['app', 'route', 'symbol'], true)) {
-                $errors[] = "$label: unknown key \"$key\"";
-            }
-        }
-        if (is_string($route['app'] ?? null) && ! CorpusValidator::isApp($route['app'], BenchmarkCorpus::root())) {
-            $errors[] = "$label: app \"{$route['app']}\" is not a benchmark app";
-        }
-
-        return $errors;
     }
 
     private function findMethod(string $label, string $app, string $symbol): ClassMethod

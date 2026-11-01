@@ -12,18 +12,16 @@ use TusharKhan\SemanticSec\Candidates\Exclusion;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkCorpus;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkMaps;
 
-/** The M4 gate: every vulnerable variant is selected for its category; every candidate:false safe variant is not selected. */
+/** The M4 gate on the set it was built for (existing); the blind set's selection is measured by bin/benchmark. */
 final class BenchmarkCandidateTest extends TestCase
 {
-    private const APPS = ['laravel11-app', 'laravel10-app'];
-
     /** @var array<string, array{0: array<string, Candidate>, 1: list<Exclusion>}> */
     private static array $runs = [];
 
     public function testEveryVulnerableVariantIsACandidateForItsCategory(): void
     {
         $checked = 0;
-        foreach (BenchmarkCorpus::cases() as $case) {
+        foreach (BenchmarkCorpus::casesInSet('existing') as $case) {
             $key = (string) $case['vulnerable']['route'];
             $candidate = self::selected((string) $case['app'])[0][$key] ?? null;
             self::assertNotNull($candidate, sprintf('%s vulnerable %s not selected; exclusions: %s', $case['id'], $key, self::excluded((string) $case['app'], $key)));
@@ -37,7 +35,7 @@ final class BenchmarkCandidateTest extends TestCase
     public function testEveryCandidateFalseSafeVariantIsNotSelected(): void
     {
         $checked = 0;
-        foreach (BenchmarkCorpus::cases() as $case) {
+        foreach (BenchmarkCorpus::casesInSet('existing') as $case) {
             if (($case['safe']['candidate'] ?? true) !== false) {
                 continue;
             }
@@ -52,7 +50,7 @@ final class BenchmarkCandidateTest extends TestCase
 
     public function testEveryExclusionHasAJustification(): void
     {
-        foreach (self::APPS as $app) {
+        foreach (BenchmarkCorpus::APPS as $app) {
             foreach ([false, true] as $deep) {
                 [, $exclusions] = self::selected($app, $deep);
                 self::assertNotSame([], $exclusions);
@@ -68,7 +66,7 @@ final class BenchmarkCandidateTest extends TestCase
 
     public function testDeepSelectsAtLeastAsMuch(): void
     {
-        foreach (self::APPS as $app) {
+        foreach (BenchmarkCorpus::APPS as $app) {
             $normal = self::selected($app)[0];
             $deep = self::selected($app, true)[0];
             foreach ($normal as $key => $candidate) {
@@ -82,7 +80,7 @@ final class BenchmarkCandidateTest extends TestCase
 
     public function testDeepReasonsKeepTheNormalDetail(): void
     {
-        foreach (self::APPS as $app) {
+        foreach (BenchmarkCorpus::APPS as $app) {
             $deep = self::selected($app, true)[0];
             foreach (self::selected($app)[0] as $key => $candidate) {
                 foreach ($candidate->reasons as $category => $reason) {

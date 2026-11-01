@@ -16,9 +16,15 @@ final class CorpusValidator
 {
     public const VARIANTS = ['vulnerable', 'safe'];
 
-    private const CASE_KEYS = ['id', 'app', 'category', 'description', 'vulnerable', 'safe'];
+    public const SETS = ['existing', 'blind'];
 
-    private const VARIANT_KEYS = ['route', 'symbol', 'line', 'map', 'suppressed', 'candidate'];
+    private const CASE_KEYS = ['id', 'app', 'set', 'category', 'description', 'vulnerable', 'safe'];
+
+    private const VARIANT_KEYS = ['route', 'symbol', 'line', 'map', 'suppressed', 'candidate', 'accept'];
+
+    private const PUBLIC_ROUTE_KEYS = ['app', 'set', 'route', 'symbol'];
+
+    private const SYMBOL_PATTERN = '/^App\\\\[\w\\\\]+::\w+$/';
 
     private const REQUIRED_VARIANT_KEYS = ['route', 'symbol', 'map'];
 
@@ -58,6 +64,10 @@ final class CorpusValidator
             $errors[] = "$id: app " . json_encode($case['app']) . ' is not a benchmark app';
         }
 
+        if (array_key_exists('set', $case) && ! in_array($case['set'], self::SETS, true)) {
+            $errors[] = "$id: set must be existing or blind";
+        }
+
         if (array_key_exists('category', $case) && Category::tryFrom(is_string($case['category']) ? $case['category'] : '') === null) {
             $errors[] = "$id: bad category " . json_encode($case['category']);
         }
@@ -70,6 +80,34 @@ final class CorpusValidator
             if (array_key_exists($variant, $case)) {
                 $errors = [...$errors, ...self::variantErrors("$id.$variant", $variant, $case[$variant])];
             }
+        }
+
+        return $errors;
+    }
+
+    /**
+     * @param array<mixed> $route
+     *
+     * @return list<string>
+     */
+    public static function publicRouteErrors(string $label, array $route, string $root): array
+    {
+        $errors = [];
+        foreach (['app', 'route', 'symbol'] as $key) {
+            if (! is_string($route[$key] ?? null) || $route[$key] === '') {
+                $errors[] = "$label: $key must be a non-empty string";
+            }
+        }
+        foreach (array_keys($route) as $key) {
+            if (! in_array($key, self::PUBLIC_ROUTE_KEYS, true)) {
+                $errors[] = "$label: unknown key \"$key\"";
+            }
+        }
+        if (array_key_exists('set', $route) && ! in_array($route['set'], self::SETS, true)) {
+            $errors[] = "$label: set must be existing or blind";
+        }
+        if (is_string($route['app'] ?? null) && ! self::isApp($route['app'], $root)) {
+            $errors[] = "$label: app \"{$route['app']}\" is not a benchmark app";
         }
 
         return $errors;
@@ -167,7 +205,7 @@ final class CorpusValidator
             }
         }
 
-        if (is_string($data['symbol'] ?? null) && preg_match('/^App\\\\[\w\\\\]+::\w+$/', $data['symbol']) !== 1) {
+        if (is_string($data['symbol'] ?? null) && preg_match(self::SYMBOL_PATTERN, $data['symbol']) !== 1) {
             $errors[] = "$label: symbol must look like App\\Class::method";
         }
 
@@ -185,11 +223,32 @@ final class CorpusValidator
             $errors[] = "$label: line is only allowed on vulnerable";
         }
 
+        if (array_key_exists('accept', $data)) {
+            $errors = [...$errors, ...self::acceptErrors($label, $variant, $data['accept'], $data['symbol'] ?? null)];
+        }
+
         if (array_key_exists('map', $data)) {
             $errors = [...$errors, ...self::mapErrors($label, $data['map'])];
         }
 
         return $errors;
+    }
+
+    /** @return list<string> */
+    private static function acceptErrors(string $label, string $variant, mixed $accept, mixed $symbol): array
+    {
+        if ($variant !== 'vulnerable') {
+            return ["$label: accept is only allowed on vulnerable"];
+        }
+        $valid = is_array($accept) && $accept !== [] && array_is_list($accept);
+        foreach ($valid ? $accept : [] as $item) {
+            $valid = $valid && is_string($item) && preg_match(self::SYMBOL_PATTERN, $item) === 1;
+        }
+        if (! $valid) {
+            return ["$label: accept must be a non-empty list of App\\Class::method symbols"];
+        }
+
+        return in_array($symbol, $accept, true) ? ["$label: accept repeats the case symbol"] : [];
     }
 
     /** @return list<string> */
