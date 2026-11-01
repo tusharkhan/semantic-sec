@@ -32,7 +32,7 @@ vendor/bin/semantic-sec analyze --level=medium --min-confidence=high --budget=20
 
 ```yaml
 authorization_middleware:
-  - permission
+  - permission   # covers routes using permission:manage
 ```
 
 **Trust boundary.** `semantic-sec.yaml`, `@semantic-sec-ignore` suppression comments, the baseline file and `.semantic-sec/cache/` are all trusted input. Anyone who can change them can hide a finding. Add `.semantic-sec/` to your `.gitignore`. In CI on pull requests you don't trust, run with `--no-cache`, because a committed cache entry can hide a finding, and use only a baseline you control (an explicit `--baseline` path the PR cannot edit) or `--no-baseline`, because the PR can edit `semantic-sec-baseline.json`.
