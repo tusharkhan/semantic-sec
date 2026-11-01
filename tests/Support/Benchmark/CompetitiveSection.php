@@ -33,6 +33,14 @@ final class CompetitiveSection
             $run->meta['runtime'],
         );
         $out[] = '';
+        if ($c->mapUsed !== null || $c->notRun !== []) {
+            $scope = $c->mapUsed === null ? [] : [sprintf('Their findings were mapped back with `%s`, the map of the copy they reviewed.', Report::cell($c->mapUsed))];
+            if ($c->notRun !== []) {
+                $scope[] = sprintf('%d %s not in the copy they reviewed (%s) and %s shown as not run, not as misses.', count($c->notRun), count($c->notRun) === 1 ? 'case was' : 'cases were', implode(', ', $c->notRun), count($c->notRun) === 1 ? 'is' : 'are');
+            }
+            $out[] = implode(' ', $scope);
+            $out[] = '';
+        }
         array_push($out, ...self::cost($c->meta));
         $out[] = 'Recall is the share of vulnerable variants found at the right symbol with a matching category. Precision is found / (found + safe variants flagged + public routes hit + unattributed safe-code findings). Each term is a case-level verdict, so repeated findings on one symbol count once. Findings at every confidence count for both tools.';
         $out[] = '';
@@ -56,6 +64,11 @@ final class CompetitiveSection
         foreach ($theirs->cases as $v) {
             $mine = $ours->verdict($v->case->id);
             $out[] = sprintf('| %s | %s | %s | %s | %s | %s |', $v->case->id, $v->case->set, $v->case->category, self::verdict($mine), self::verdict($v), Report::finding($v->foundBy ?? $v->flaggedBy));
+        }
+        foreach ($ours->cases as $mine) {
+            if (in_array($mine->case->id, $c->notRun, true)) {
+                $out[] = sprintf('| %s | %s | %s | %s | not run | |', $mine->case->id, $mine->case->set, $mine->case->category, self::verdict($mine));
+            }
         }
         $out[] = '';
 

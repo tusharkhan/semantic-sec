@@ -7,8 +7,12 @@ namespace TusharKhan\SemanticSec\Tests\Support\Benchmark;
 /** The competitor's score from the same Scorer, its converted run, and its run metadata (sha, model, pr, limits, usage, cost, turns, capped). */
 final class CompetitorResult
 {
-    /** @param array<string, mixed> $meta */
-    public function __construct(public readonly Score $score, public readonly CompetitorRun $run, public readonly array $meta)
+    /**
+     * @param array<string, mixed> $meta
+     * @param list<string> $notRun case ids whose files were not in the copy they reviewed
+     * @param ?string $mapUsed the disguise map their findings were mapped back with
+     */
+    public function __construct(public readonly Score $score, public readonly CompetitorRun $run, public readonly array $meta, public readonly array $notRun = [], public readonly ?string $mapUsed = null)
     {
     }
 

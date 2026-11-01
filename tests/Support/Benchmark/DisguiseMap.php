@@ -90,6 +90,11 @@ final class DisguiseMap
         return implode('::', $parts);
     }
 
+    public function hasOriginalFile(string $app, string $file): bool
+    {
+        return in_array(ExpectedCases::canonicalFile($file), $this->byApp[$app]['files'] ?? [], true);
+    }
+
     public function originalFile(string $app, string $file): string
     {
         $file = ExpectedCases::canonicalFile($file);

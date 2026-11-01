@@ -10,41 +10,41 @@ Tuned-on cases: idor-policy-wrong-attribute. The scanner was tuned knowing these
 
 ## Gate
 
-| Criterion | Threshold | existing | blind | all |
-|---|---|---|---|---|
-| Vulnerable variants found at the right symbol | ≥ 70% | 100.0% (15/15) PASS | 90.0% (9/10) PASS | 96.0% (24/25) PASS |
-| Found, strict (no post-hoc accepts) | ≥ 70% | 86.7% (13/15) | 90.0% (9/10) | 88.0% (22/25) |
-| Safe variants flagged | ≤ 10% | 0.0% (0/15) PASS | 10.0% (1/10) PASS | 4.0% (1/25) PASS |
-| Findings in safe code that no case accounts for | 0 | 0 PASS | 0 PASS | 0 PASS |
-| Findings on public-by-design routes | 0 | 0/1 routes hit PASS | 0/1 routes hit PASS | 0/2 routes hit PASS |
-| Expected authorization checks in the map | 100% | 100.0% (30/30) PASS | 100.0% (20/20) PASS | 100.0% (50/50) PASS |
-| **Gate** | | **PASS** | **PASS** | **PASS** |
+| Criterion | Threshold | existing | blind | holdout | all |
+|---|---|---|---|---|---|
+| Vulnerable variants found at the right symbol | ≥ 70% | 100.0% (15/15) PASS | 90.0% (9/10) PASS | 83.3% (5/6) PASS | 93.5% (29/31) PASS |
+| Found, strict (no post-hoc accepts) | ≥ 70% | 86.7% (13/15) | 90.0% (9/10) | 83.3% (5/6) | 87.1% (27/31) |
+| Safe variants flagged | ≤ 10% | 0.0% (0/15) PASS | 10.0% (1/10) PASS | 33.3% (2/6) FAIL | 9.7% (3/31) PASS |
+| Findings in safe code that no case accounts for | 0 | 0 PASS | 0 PASS | 0 PASS | 0 PASS |
+| Findings on public-by-design routes | 0 | 0/1 routes hit PASS | 0/1 routes hit PASS | 0/0 routes hit n/a | 0/2 routes hit PASS |
+| Expected authorization checks in the map | 100% | 100.0% (30/30) PASS | 100.0% (20/20) PASS | 83.3% (10/12) FAIL | 96.8% (60/62) FAIL |
+| **Gate** | | **PASS** | **PASS** | **FAIL** | **FAIL** |
 
 ## Gate, failing findings only
 
-| Criterion | Threshold | existing | blind | all |
-|---|---|---|---|---|
-| Vulnerable variants found at the right symbol | ≥ 70% | 100.0% (15/15) PASS | 90.0% (9/10) PASS | 96.0% (24/25) PASS |
-| Found, strict (no post-hoc accepts) | ≥ 70% | 86.7% (13/15) | 90.0% (9/10) | 88.0% (22/25) |
-| Safe variants flagged | ≤ 10% | 0.0% (0/15) PASS | 0.0% (0/10) PASS | 0.0% (0/25) PASS |
-| Findings in safe code that no case accounts for | 0 | 0 PASS | 0 PASS | 0 PASS |
-| Findings on public-by-design routes | 0 | 0/1 routes hit PASS | 0/1 routes hit PASS | 0/2 routes hit PASS |
-| Expected authorization checks in the map | 100% | 100.0% (30/30) PASS | 100.0% (20/20) PASS | 100.0% (50/50) PASS |
-| **Gate** | | **PASS** | **PASS** | **PASS** |
+| Criterion | Threshold | existing | blind | holdout | all |
+|---|---|---|---|---|---|
+| Vulnerable variants found at the right symbol | ≥ 70% | 100.0% (15/15) PASS | 90.0% (9/10) PASS | 66.7% (4/6) FAIL | 90.3% (28/31) PASS |
+| Found, strict (no post-hoc accepts) | ≥ 70% | 86.7% (13/15) | 90.0% (9/10) | 66.7% (4/6) | 83.9% (26/31) |
+| Safe variants flagged | ≤ 10% | 0.0% (0/15) PASS | 0.0% (0/10) PASS | 0.0% (0/6) PASS | 0.0% (0/31) PASS |
+| Findings in safe code that no case accounts for | 0 | 0 PASS | 0 PASS | 0 PASS | 0 PASS |
+| Findings on public-by-design routes | 0 | 0/1 routes hit PASS | 0/1 routes hit PASS | 0/0 routes hit n/a | 0/2 routes hit PASS |
+| Expected authorization checks in the map | 100% | 100.0% (30/30) PASS | 100.0% (20/20) PASS | 83.3% (10/12) FAIL | 96.8% (60/62) FAIL |
+| **Gate** | | **PASS** | **PASS** | **FAIL** | **FAIL** |
 
 ## Gate, undisguised (names visible)
 
 Secondary only: the same scorer on the recorded run over `benchmark/`, where `Vuln`/`Safe` show in paths, namespaces and routes.
 
-| Criterion | Threshold | existing | blind | all |
-|---|---|---|---|---|
-| Vulnerable variants found at the right symbol | ≥ 70% | 100.0% (15/15) PASS | 90.0% (9/10) PASS | 96.0% (24/25) PASS |
-| Found, strict (no post-hoc accepts) | ≥ 70% | 86.7% (13/15) | 90.0% (9/10) | 88.0% (22/25) |
-| Safe variants flagged | ≤ 10% | 0.0% (0/15) PASS | 10.0% (1/10) PASS | 4.0% (1/25) PASS |
-| Findings in safe code that no case accounts for | 0 | 0 PASS | 0 PASS | 0 PASS |
-| Findings on public-by-design routes | 0 | 0/1 routes hit PASS | 0/1 routes hit PASS | 0/2 routes hit PASS |
-| Expected authorization checks in the map | 100% | 100.0% (30/30) PASS | 100.0% (20/20) PASS | 100.0% (50/50) PASS |
-| **Gate** | | **PASS** | **PASS** | **PASS** |
+| Criterion | Threshold | existing | blind | holdout | all |
+|---|---|---|---|---|---|
+| Vulnerable variants found at the right symbol | ≥ 70% | 100.0% (15/15) PASS | 90.0% (9/10) PASS | 83.3% (5/6) PASS | 93.5% (29/31) PASS |
+| Found, strict (no post-hoc accepts) | ≥ 70% | 86.7% (13/15) | 90.0% (9/10) | 83.3% (5/6) | 87.1% (27/31) |
+| Safe variants flagged | ≤ 10% | 0.0% (0/15) PASS | 10.0% (1/10) PASS | 0.0% (0/6) PASS | 3.2% (1/31) PASS |
+| Findings in safe code that no case accounts for | 0 | 0 PASS | 0 PASS | 0 PASS | 0 PASS |
+| Findings on public-by-design routes | 0 | 0/1 routes hit PASS | 0/1 routes hit PASS | 0/0 routes hit n/a | 0/2 routes hit PASS |
+| Expected authorization checks in the map | 100% | 100.0% (30/30) PASS | 100.0% (20/20) PASS | 83.3% (10/12) FAIL | 96.8% (60/62) FAIL |
+| **Gate** | | **PASS** | **PASS** | **FAIL** | **FAIL** |
 
 ## Selection stage
 
@@ -53,6 +53,11 @@ Whether each route reached the LLM for the case's category. A missed vulnerable 
 | Case | Set | Variant | Route | Expected | Actual |
 |---|---|---|---|---|---|
 | idor-policy-wrong-attribute | blind | safe | `POST /safe/withdrawals/{withdrawal}/approve` | not selected (candidate: false) | selected for idor, workflow_bypass |
+| idor-bulk-ids-unscoped | holdout | vulnerable | `PATCH /vuln/messages/archive` | selected for idor | selected for missing_authorization |
+| idor-bulk-ids-unscoped | holdout | safe | `PATCH /safe/messages/archive` | not selected (candidate: false) | selected for missing_authorization |
+| idor-gate-closure-ignores-model | holdout | safe | `POST /safe/subscriptions/{subscription}/pause` | not selected (candidate: false) | selected for idor, workflow_bypass |
+| mass-assign-validated-sensitive-rule | holdout | vulnerable | `PATCH /vuln/listings/{listing}` | selected for mass_assignment | not selected |
+| workflow-publish-skips-approval | holdout | safe | `POST /safe/articles/{article}/publish` | not selected (candidate: false) | selected for idor, workflow_bypass |
 
 ## Per app
 
@@ -75,7 +80,8 @@ Whether each route reached the LLM for the case's category. A missed vulnerable 
 | Set | Cases | Found | Found (failing) | Safe flagged | Safe flagged (failing) | Unattributed safe-code findings | Public violations | Map mismatches |
 |---|---|---|---|---|---|---|---|---|
 | blind | 10 | 9 | 9 | 1 | 0 | 0 | 0/1 | 0/20 |
-| all | 10 | 9 | 9 | 1 | 0 | 0 | 0/1 | 0/20 |
+| holdout | 6 | 5 | 4 | 2 | 0 | 0 | 0/0 | 2/12 |
+| all | 16 | 14 | 13 | 3 | 0 | 0 | 0/1 | 2/32 |
 
 ## Cases
 
@@ -96,16 +102,22 @@ Whether each route reached the LLM for the case's category. A missed vulnerable 
 | suppressed-idor | existing | laravel11-app | idor | found (suppressed) | idor high · `app/Http/Controllers/Vuln/SharedInvoiceController.php:15` · `App\Http\Controllers\Vuln\SharedInvoiceController::show` · IDOR: any authenticated user can read any invoice by id via unscoped findOrFail (suppressed) | clean |  | ok | vulnerable: selected for idor; safe: not selected |
 | idor-l10-ctor-middleware | existing | laravel10-app | idor | found | idor high · `app/Http/Controllers/Vuln/ReportController.php:18` · `App\Http\Controllers\Vuln\ReportController::show` · Report returned via route model binding without ownership/policy check (IDOR) | clean |  | ok | vulnerable: selected for idor; safe: not selected |
 | idor-l10-resource | existing | laravel10-app | idor | found | idor high · `app/Http/Controllers/Vuln/NoteController.php:29` · `App\Http\Controllers\Vuln\NoteController::show` · IDOR: any authenticated user can read any note by id via Note::find | clean |  | ok | vulnerable: selected for idor; safe: not selected |
-| idor-role-only-middleware | blind | laravel12-app | idor | found | idor high · `app/Http/Controllers/Vuln/PayoutController.php:13` · `App\Http\Controllers\Vuln\PayoutController::index` · Any merchant can list payouts (amounts, IBANs) of any store via {store} route binding | clean |  | ok | vulnerable: selected for idor; safe: selected for idor |
-| idor-nested-unscoped-binding | blind | laravel12-app | idor | found | idor high · `app/Http/Controllers/Vuln/TeamProjectController.php:17` · `App\Http\Controllers\Vuln\TeamProjectController::show` · Project returned without verifying it belongs to the authorized team (IDOR via {project}) | clean |  | ok | vulnerable: selected for idor; safe: not selected |
-| idor-tenant-list-unscoped | blind | laravel12-app | idor | found | idor medium · `app/Http/Controllers/Vuln/TicketController.php:14` · `App\Http\Controllers\Vuln\TicketController::index` · Ticket index returns all users' tickets without scoping to the current user | clean |  | ok | vulnerable: selected for idor; safe: not selected |
-| idor-with-trashed-restore | blind | laravel12-app | idor | found | idor high · `app/Http/Controllers/Vuln/ContactController.php:14` · `App\Http\Controllers\Vuln\ContactController::restore` · Any authenticated user can restore any soft-deleted Contact by id | clean |  | ok | vulnerable: selected for idor, missing_authorization; safe: not selected |
-| idor-polymorphic-parent-check | blind | laravel12-app | idor | found | idor medium · `app/Http/Controllers/Vuln/ReviewController.php:17` · `App\Http\Controllers\Vuln\ReviewController::update` · Review update authorizes the parent reviewable instead of the review, so non-authors can edit others' reviews | clean |  | ok | vulnerable: selected for idor; safe: not selected |
-| idor-update-unscoped-relation | blind | laravel12-app | idor | found | idor high · `app/Http/Controllers/Vuln/AddressController.php:20` · `App\Http\Controllers\Vuln\AddressController::update` · IDOR: any authenticated user can update any Address by id | clean |  | ok | vulnerable: selected for idor, missing_authorization; safe: not selected |
-| idor-policy-wrong-attribute | blind (tuned-on) | laravel12-app | idor | missed: LLM missed it |  | flagged (low confidence) | workflow_bypass low · `app/Http/Controllers/Safe/WithdrawalController.php:16` · `App\Http\Controllers\Safe\WithdrawalController::approve` · Withdrawal approved without checking its current status (rejected or already-approved withdrawals can be approved) | ok | vulnerable: selected for idor, workflow_bypass; safe: selected for idor, workflow_bypass |
-| mass-assign-force-fill | blind | laravel12-app | mass_assignment | found | mass_assignment high · `app/Http/Controllers/Vuln/ProfileController.php:18` · `App\Http\Controllers\Vuln\ProfileController::update` · forceFill with $request->except('password') lets users set any column on their own User record | clean |  | ok | vulnerable: selected for missing_authorization, mass_assignment; safe: not selected |
-| workflow-cancel-shipped-service | blind | laravel12-app | workflow_bypass | found | workflow_bypass high · `app/Services/OrderService.php:11` · `App\Services\OrderService::cancel` · Order cancellation has no status guard, so shipped or already-cancelled orders can be cancelled | clean |  | ok | vulnerable: selected for workflow_bypass; safe: selected for workflow_bypass |
-| idor-query-string-user-id | blind | laravel12-app | idor | found | idor high · `app/Http/Controllers/Vuln/StatementController.php:16` · `App\Http\Controllers\Vuln\StatementController::index` · Statements of any user readable via user_id query parameter | clean |  | ok | vulnerable: selected for idor; safe: not selected |
+| idor-role-only-middleware | blind | laravel12-app | idor | found | idor high · `app/Http/Controllers/Vuln/PayoutController.php:13` · `App\Http\Controllers\Vuln\PayoutController::index` · Any merchant can list payouts (amounts, IBANs) of any store via {store} binding | clean |  | ok | vulnerable: selected for idor; safe: selected for idor |
+| idor-nested-unscoped-binding | blind | laravel12-app | idor | found | idor high · `app/Http/Controllers/Vuln/TeamProjectController.php:17` · `App\Http\Controllers\Vuln\TeamProjectController::show` · Project read via team route without checking the project belongs to the authorized team | clean |  | ok | vulnerable: selected for idor; safe: not selected |
+| idor-tenant-list-unscoped | blind | laravel12-app | idor | found | idor high · `app/Http/Controllers/Vuln/TicketController.php:14` · `App\Http\Controllers\Vuln\TicketController::index` · Ticket index returns all users' tickets without scoping to current user | clean |  | ok | vulnerable: selected for idor; safe: not selected |
+| idor-with-trashed-restore | blind | laravel12-app | idor | found | idor high · `app/Http/Controllers/Vuln/ContactController.php:14` · `App\Http\Controllers\Vuln\ContactController::restore` · Unscoped soft-deleted Contact lookup lets any logged-in user restore another user's contact | clean |  | ok | vulnerable: selected for idor, missing_authorization; safe: not selected |
+| idor-polymorphic-parent-check | blind | laravel12-app | idor | found | idor medium · `app/Http/Controllers/Vuln/ReviewController.php:17` · `App\Http\Controllers\Vuln\ReviewController::update` · Review update authorizes the parent reviewable instead of the review, allowing edits of other users' reviews | clean |  | ok | vulnerable: selected for idor; safe: not selected |
+| idor-update-unscoped-relation | blind | laravel12-app | idor | found | idor high · `app/Http/Controllers/Vuln/AddressController.php:20` · `App\Http\Controllers\Vuln\AddressController::update` · Any authenticated user can update any address by ID (unscoped findOrFail) | clean |  | ok | vulnerable: selected for idor, missing_authorization; safe: not selected |
+| idor-policy-wrong-attribute | blind (tuned-on) | laravel12-app | idor | missed: LLM missed it |  | flagged (low confidence) | workflow_bypass low · `app/Http/Controllers/Safe/WithdrawalController.php:16` · `App\Http\Controllers\Safe\WithdrawalController::approve` · Withdrawal approval sets status to 'approved' without checking the current status | ok | vulnerable: selected for idor, workflow_bypass; safe: selected for idor, workflow_bypass |
+| mass-assign-force-fill | blind | laravel12-app | mass_assignment | found | mass_assignment high · `app/Http/Controllers/Vuln/ProfileController.php:18` · `App\Http\Controllers\Vuln\ProfileController::update` · Profile update forceFills all request input onto the User, allowing self-escalation (role/admin flags) | clean |  | ok | vulnerable: selected for missing_authorization, mass_assignment; safe: not selected |
+| workflow-cancel-shipped-service | blind | laravel12-app | workflow_bypass | found | workflow_bypass high · `app/Services/OrderService.php:11` · `App\Services\OrderService::cancel` · Order cancellation sets status to 'cancelled' without checking the order's current state | clean |  | ok | vulnerable: selected for workflow_bypass; safe: selected for workflow_bypass |
+| idor-query-string-user-id | blind | laravel12-app | idor | found | idor high · `app/Http/Controllers/Vuln/StatementController.php:16` · `App\Http\Controllers\Vuln\StatementController::index` · Statements of any user listed via client-supplied user_id query parameter | clean |  | ok | vulnerable: selected for idor; safe: not selected |
+| idor-bulk-ids-unscoped | holdout | laravel12-app | idor | found | idor high · `app/Http/Controllers/Vuln/MessageController.php:19` · `App\Http\Controllers\Vuln\MessageController::archive` · Bulk archive updates arbitrary messages by user-supplied IDs without ownership scoping | clean |  | ok | vulnerable: selected for missing_authorization; safe: selected for missing_authorization |
+| missing-authz-admin-suspend | holdout | laravel12-app | missing_authorization | found | missing_authorization high · `app/Http/Controllers/Vuln/UserController.php:13` · `App\Http\Controllers\Vuln\UserController::suspend` · Any logged-in user can suspend any account: no authorization on POST /beta/users/{user}/suspend | clean |  | ok | vulnerable: selected for idor, missing_authorization; safe: not selected |
+| idor-gate-closure-ignores-model | holdout | laravel12-app | idor | found | idor high · `app/Http/Controllers/Vuln/SubscriptionController.php:19` · `App\Http\Controllers\Vuln\SubscriptionController::pause` · pause-subscription gate never checks ownership, so any user can pause another user's subscription | flagged (low confidence) | workflow_bypass low · `app/Http/Controllers/Safe/SubscriptionController.php:19` · `App\Http\Controllers\Safe\SubscriptionController::pause` · Subscription can be paused from any status (cancelled, expired, already paused) with no state guard | ok | vulnerable: selected for idor, workflow_bypass; safe: selected for idor, workflow_bypass |
+| mass-assign-validated-sensitive-rule | holdout | laravel12-app | mass_assignment | missed: never sent to the LLM |  | clean |  | ok | vulnerable: not selected; safe: not selected |
+| workflow-publish-skips-approval | holdout | laravel12-app | workflow_bypass | found (low confidence) | workflow_bypass low · `app/Http/Controllers/Vuln/ArticleController.php:16` · `App\Http\Controllers\Vuln\ArticleController::publish` · Article published from any state: no status guard before status transition | flagged (low confidence) | workflow_bypass low · `app/Http/Controllers/Safe/ArticleController.php:16` · `App\Http\Controllers\Safe\ArticleController::publish` · Article publish transition has no status guard; any state (archived, already published) can be re-published | ok | vulnerable: selected for idor, workflow_bypass; safe: selected for idor, workflow_bypass |
+| insecure-deserialization-request-checkpoint | holdout | laravel12-app | insecure_deserialization | found | insecure_deserialization high · `app/Http/Controllers/Vuln/ImportController.php:15` · `App\Http\Controllers\Vuln\ImportController::resume` · unserialize() on client-supplied checkpoint enables PHP object injection | clean |  | vulnerable: expected [authentication], got [authentication, query_scope]; safe: expected [authentication], got [authentication, query_scope] | vulnerable: selected for insecure_deserialization; safe: selected for insecure_deserialization |
 
 ## Unattributed safe-code findings
 
@@ -126,13 +138,15 @@ Tokens as the provider reported them in the recorded responses. A replay re-read
 
 | Requests | Input | Cache write | Cache read | Output | Estimated $ |
 |---|---|---|---|---|---|
-| 32 | 18,918 | 11,160 | 78,120 | 23,298 | $0.61 |
+| 41 | 26,090 | 25,110 | 89,280 | 31,938 | $0.89 |
 
 Priced as claude-opus-5-5: $4.00/M input, $20.00/M output, $0.20/M cache read, $5.00/M cache write (1.25x input).
 
 ## Competitive check
 
 Anthropic's `claude-code-security-review` at commit `0c6a49f1fa56a1d472575da86a94dbc1edb78eda` ran with model `claude-opus-5-5` on tusharkhan/acme-portal#1, a pull request that adds the disguised copy of the three apps. Its findings were mapped to symbols with our `SymbolTable` and scored by the same scorer as above: 23 findings, 23 inside a benchmark app, 0 outside. Runtime 68 s.
+
+Their findings were mapped back with `disguise-map.v1.json`, the map of the copy they reviewed. 6 cases were not in the copy they reviewed (idor-bulk-ids-unscoped, missing-authz-admin-suspend, idor-gate-closure-ignores-model, mass-assign-validated-sensitive-rule, workflow-publish-skips-approval, insecure-deserialization-request-checkpoint) and are shown as not run, not as misses.
 
 Cost: 2 input, 65,663 cache write, 0 cache read, 7,636 output tokens over 1 agent turns; $0.48 at the prices above ($0.48 as the Claude Code CLI reported it).
 
@@ -150,9 +164,14 @@ Recall is the share of vulnerable variants found at the right symbol with a matc
 | blind | Safe variants flagged | 10.0% (1/10) | 0.0% (0/10) |
 | blind | Public routes hit | 0/1 | 0/1 |
 | blind | Unattributed safe-code findings | 0 | 0 |
-| all | Recall (found) | 96.0% (24/25) | 84.0% (21/25) |
-| all | Precision | 96.0% (24/25) | 100.0% (21/21) |
-| all | Safe variants flagged | 4.0% (1/25) | 0.0% (0/25) |
+| holdout | Recall (found) | 83.3% (5/6) | n/a |
+| holdout | Precision | 71.4% (5/7) | n/a |
+| holdout | Safe variants flagged | 33.3% (2/6) | n/a |
+| holdout | Public routes hit | 0/0 | 0/0 |
+| holdout | Unattributed safe-code findings | 0 | 0 |
+| all | Recall (found) | 93.5% (29/31) | 84.0% (21/25) |
+| all | Precision | 90.6% (29/32) | 100.0% (21/21) |
+| all | Safe variants flagged | 9.7% (3/31) | 0.0% (0/25) |
 | all | Public routes hit | 0/2 | 0/2 |
 | all | Unattributed safe-code findings | 0 | 0 |
 
@@ -185,6 +204,12 @@ Recall is the share of vulnerable variants found at the right symbol with a matc
 | mass-assign-force-fill | blind | mass_assignment | found; safe clean | found; safe clean | mass_assignment high · `app/Http/Controllers/Vuln/ProfileController.php:18` · `App\Http\Controllers\Vuln\ProfileController::update` · mass_assignment_privilege_escalation: forceFill($request->except('password')) skips $fillable and writes every request attribute except password onto the Use... |
 | workflow-cancel-shipped-service | blind | workflow_bypass | found; safe clean | missed; safe clean |  |
 | idor-query-string-user-id | blind | idor | found; safe clean | found; safe clean | idor high · `app/Http/Controllers/Vuln/StatementController.php:14` · `App\Http\Controllers\Vuln\StatementController::index` · idor: The user_id request parameter decides which user's statements are returned, and nothing checks that it matches the logged-in user. |
+| idor-bulk-ids-unscoped | holdout | idor | found; safe clean | not run | |
+| missing-authz-admin-suspend | holdout | missing_authorization | found; safe clean | not run | |
+| idor-gate-closure-ignores-model | holdout | idor | found; safe flagged | not run | |
+| mass-assign-validated-sensitive-rule | holdout | mass_assignment | missed; safe clean | not run | |
+| workflow-publish-skips-approval | holdout | workflow_bypass | found; safe flagged | not run | |
+| insecure-deserialization-request-checkpoint | holdout | insecure_deserialization | found; safe clean | not run | |
 
 ### Their findings and how each was mapped
 

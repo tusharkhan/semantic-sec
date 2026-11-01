@@ -36,7 +36,9 @@ final class BenchmarkCommand extends Command
             ->addOption('set', null, InputOption::VALUE_REQUIRED, 'all, existing, blind or holdout', 'all')
             ->addOption('competitor', null, InputOption::VALUE_REQUIRED, 'claude-code-security-review eval_results.json to score as well (M8 Task 5)')
             ->addOption('source', null, InputOption::VALUE_REQUIRED, 'Run on the disguised copy in this directory (needs --disguise-map); cassettes benchmark-disguised-<app>.json')
-            ->addOption('disguise-map', null, InputOption::VALUE_REQUIRED, 'disguise-map.json from tools/benchmark-disguise.php; its copy is where the competitor ran')
+            ->addOption('disguise-map', null, InputOption::VALUE_REQUIRED, 'disguise-map.json from tools/benchmark-disguise.php for --source')
+            ->addOption('competitor-disguise-map', null, InputOption::VALUE_REQUIRED, 'Map of the copy the competitor reviewed, used only for their findings (default: --disguise-map)')
+            ->addOption('competitor-source', null, InputOption::VALUE_REQUIRED, 'The copy the competitor reviewed; cases whose files are not in it are not run (default: the map\'s file list)')
             ->addOption('out', null, InputOption::VALUE_REQUIRED, 'Report path, relative to the repository root', 'docs/benchmark-results.md')
             ->addOption('budget', null, InputOption::VALUE_REQUIRED, 'Passed to analyze --budget for each app (with --live, default '.self::LIVE_BUDGET.')')
             ->addOption('cassettes', null, InputOption::VALUE_REQUIRED, 'Cassette directory', 'tests/Fixtures/cassettes/anthropic');
@@ -162,8 +164,10 @@ final class BenchmarkCommand extends Command
         );
         $competitor = null;
         if (is_string($competitorPath) && is_string($disguisePath)) {
+            $competitorMap = $input->getOption('competitor-disguise-map');
+            $competitorSource = $input->getOption('competitor-source');
             try {
-                $competitor = self::competitor($competitorPath, $disguisePath, $cases, $publics, $runs);
+                $competitor = self::competitor($competitorPath, is_string($competitorMap) ? $competitorMap : $disguisePath, is_string($competitorSource) ? $competitorSource : null, $cases, $publics, $runs);
             } catch (\RuntimeException $e) {
                 return $this->fail($output, $e->getMessage());
             }
@@ -242,7 +246,7 @@ final class BenchmarkCommand extends Command
      * @param list<PublicRoute> $publics
      * @param array<string, AppRun> $runs
      */
-    private static function competitor(string $resultsPath, string $mapPath, array $cases, array $publics, array $runs): CompetitorResult
+    private static function competitor(string $resultsPath, string $mapPath, ?string $source, array $cases, array $publics, array $runs): CompetitorResult
     {
         $text = is_file($resultsPath) ? file_get_contents($resultsPath) : false;
         $results = $text === false ? null : json_decode($text, true);
@@ -259,9 +263,15 @@ final class BenchmarkCommand extends Command
         foreach (array_keys($runs) as $app) {
             $analyze[$app] = $run->analyze[$app] ?? ['findings' => []];
         }
-        $score = Scorer::score($cases, $analyze, array_map(static fn (AppRun $r): array => $r->map, $runs), $publics);
+        if ($source !== null && ! is_dir($source)) {
+            throw new \RuntimeException("competitor source not found: {$source}");
+        }
+        $scope = new CompetitorScope($map, $source);
+        $ran = array_values(array_filter($cases, $scope->ran(...)));
+        $notRun = array_values(array_map(static fn (BenchmarkCase $c): string => $c->id, array_filter($cases, static fn (BenchmarkCase $c): bool => ! $scope->ran($c))));
+        $score = Scorer::score($ran, $analyze, array_map(static fn (AppRun $r): array => $r->map, $runs), array_values(array_filter($publics, $scope->ranRoute(...))));
 
-        return new CompetitorResult($score, $run, CompetitorResult::readMeta(dirname($resultsPath)));
+        return new CompetitorResult($score, $run, CompetitorResult::readMeta(dirname($resultsPath)), $notRun, basename($mapPath));
     }
 
     private function fail(OutputInterface $output, string $message): int

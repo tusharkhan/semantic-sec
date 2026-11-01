@@ -129,6 +129,24 @@ final class ReportTest extends TestCase
         self::assertMatchesRegularExpression('/\| Criterion \| Threshold \|( [a-z]+ \|)* holdout \| all \|/', $markdown);
     }
 
+    public function testCasesOutsideTheCompetitorInputAreNotRun(): void
+    {
+        $yaml = str_replace("  - id: suppressed-idor\n    app: app-b\n    set: existing\n", "  - id: suppressed-idor\n    app: app-b\n    set: holdout\n", ScorerTest::YAML);
+        $cases = ExpectedCases::load($yaml);
+        $ours = Scorer::score($cases, ScorerTest::analyze(), ScorerTest::perfectMaps(), ExpectedCases::publicRoutes($yaml));
+        $ran = array_values(array_filter($cases, static fn ($c): bool => $c->id !== 'suppressed-idor'));
+        $theirs = Scorer::score($ran, ScorerTest::analyze(), ScorerTest::perfectMaps());
+        $run = CompetitorConverter::fromMap(DisguiseMap::load(__DIR__.'/../../Fixtures/benchmark/competitor/disguise-map.json'))->convert(['full_findings' => []]);
+        $competitor = new CompetitorResult($theirs, $run, [], ['suppressed-idor'], 'disguise-map.v1.json');
+
+        $markdown = Report::markdown($ours, self::meta(), $competitor);
+
+        self::assertStringContainsString('| holdout | Recall (found) | 0.0% (0/1) | n/a |', $markdown);
+        self::assertStringContainsString('| suppressed-idor | holdout | idor | missed; safe clean | not run |', $markdown);
+        self::assertStringContainsString('mapped back with `disguise-map.v1.json`', $markdown);
+        self::assertStringContainsString('1 case was not in the copy they reviewed (suppressed-idor) and is shown as not run', $markdown);
+    }
+
     public function testCost(): void
     {
         self::assertEqualsWithDelta(6.45, Report::cost(['input' => 1_000_000, 'output' => 100_000, 'cacheRead' => 1_000_000, 'cacheWrite' => 50_000]), 1e-9);
