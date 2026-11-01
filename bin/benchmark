@@ -15,7 +15,7 @@ if (! class_exists(BenchmarkCommand::class)) {
 }
 
 $application = new Application('semantic-sec benchmark');
-$application->add(new BenchmarkCommand());
+\TusharKhan\SemanticSec\Console\Application::attach($application, new BenchmarkCommand());
 $application->setDefaultCommand('benchmark', true);
 
 exit($application->run());
