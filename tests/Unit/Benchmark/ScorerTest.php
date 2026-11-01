@@ -182,6 +182,24 @@ YAML;
         self::assertSame(0, $score->counts('existing', failingOnly: true)->flagged);
     }
 
+    public function testAnyCategoryFindingIsFound(): void
+    {
+        $score = $this->score(['app-a' => [self::finding('App\Http\Controllers\Vuln\ItemController::show', Scorer::ANY_CATEGORY)]]);
+
+        self::assertTrue($score->verdict('plain-idor')->found);
+    }
+
+    public function testCategoryAlternativesMatchEither(): void
+    {
+        $either = $this->score(['app-a' => [self::finding('App\Http\Controllers\Vuln\ItemController::show', 'missing_authorization|idor')]]);
+        $neither = $this->score(['app-a' => [self::finding('App\Http\Controllers\Vuln\ItemController::show', 'mass_assignment|workflow_bypass')]]);
+
+        self::assertTrue($either->verdict('plain-idor')->found);
+        self::assertFalse($neither->verdict('plain-idor')->found);
+        self::assertTrue(Scorer::categoryMatches('IDOR', 'idor'));
+        self::assertFalse(Scorer::categoryMatches('', 'idor'));
+    }
+
     public function testSuppressedCase(): void
     {
         $suppressedVuln = self::finding('App\Http\Controllers\Vuln\SharedController::show');

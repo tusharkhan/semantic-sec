@@ -14,6 +14,9 @@ final class Scorer
 {
     public const FAILING = ['medium', 'high'];
 
+    // A converted competitor finding whose category could not be inferred; it matches every case category.
+    public const ANY_CATEGORY = '*';
+
     // Lists a finding can sit in; baselined never occurs with --no-baseline, but counts against precision if it does.
     private const REPORTED = ['findings', 'filtered'];
 
@@ -44,8 +47,8 @@ final class Scorer
             }
             $strictTargets = $case->vulnerable->posthoc ? $strictTargets : $targets;
             $safeSymbols = self::safeSymbols($case);
-            $found = self::first($vulnerablePool, static fn (array $f): bool => $f['category'] === $case->category && in_array(self::key($f['file'], $f['symbol']), $targets, true));
-            $strict = self::first($vulnerablePool, static fn (array $f): bool => $f['category'] === $case->category && in_array(self::key($f['file'], $f['symbol']), $strictTargets, true));
+            $found = self::first($vulnerablePool, static fn (array $f): bool => self::categoryMatches($f['category'], $case->category) && in_array(self::key($f['file'], $f['symbol']), $targets, true));
+            $strict = self::first($vulnerablePool, static fn (array $f): bool => self::categoryMatches($f['category'], $case->category) && in_array(self::key($f['file'], $f['symbol']), $strictTargets, true));
             $flagged = self::first(self::findings($analyze, self::PRECISION), static fn (array $f): bool => in_array(ExpectedCases::canonical($f['symbol']), $safeSymbols, true));
             $map = $mapJsonByApp[$case->app] ?? [];
             $dryRun = $dryRunJsonByApp[$case->app] ?? null;
@@ -84,6 +87,14 @@ final class Scorer
         }
 
         return new Score($verdicts, $publics, self::unattributed($cases, $analyzeJsonByApp, $accounted));
+    }
+
+    // Exact for our findings; a converted competitor finding may carry ANY_CATEGORY or alternatives joined by |.
+    public static function categoryMatches(string $finding, string $case): bool
+    {
+        $finding = strtolower(trim($finding));
+
+        return $finding === self::ANY_CATEGORY || in_array(strtolower($case), explode('|', $finding), true);
     }
 
     /**

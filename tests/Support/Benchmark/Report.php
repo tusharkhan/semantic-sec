@@ -27,7 +27,7 @@ final class Report
     /**
      * @param array<string, mixed> $meta mode, date, models (list), promptVersion, requests, usage (Usage)
      */
-    public static function markdown(Score $s, array $meta): string
+    public static function markdown(Score $s, array $meta, ?CompetitorResult $competitor = null): string
     {
         $columns = [...$s->sets(), 'all'];
         $out = ['# Benchmark results', ''];
@@ -74,9 +74,13 @@ final class Report
         array_push($out, ...self::publics($s));
         array_push($out, ...self::costSection($meta));
 
-        $out[] = '## Competitive check';
-        $out[] = '';
-        $out[] = '_Not run yet._ M8 Task 5 scores Anthropic\'s `claude-code-security-review` on the same code with this scorer and records its numbers and every asymmetry here.';
+        if ($competitor === null) {
+            $out[] = '## Competitive check';
+            $out[] = '';
+            $out[] = '_Not run yet._ M8 Task 5 scores Anthropic\'s `claude-code-security-review` on the same code with this scorer and records its numbers and every asymmetry here.';
+        } else {
+            array_push($out, ...CompetitiveSection::lines($s, $competitor, self::models($meta)));
+        }
 
         return implode("\n", $out)."\n";
     }
@@ -267,7 +271,7 @@ final class Report
     }
 
     /** @param Finding|null $f */
-    private static function finding(?array $f): string
+    public static function finding(?array $f): string
     {
         if ($f === null) {
             return '';
@@ -294,7 +298,7 @@ final class Report
         return $parts === [] ? 'ok' : implode('; ', $parts);
     }
 
-    private static function percent(float $rate): string
+    public static function percent(float $rate): string
     {
         return sprintf('%.1f%%', $rate * 100);
     }
@@ -309,7 +313,7 @@ final class Report
     }
 
     // Model text and paths go into table cells: no pipes, no newlines, no backticks.
-    private static function cell(string $text): string
+    public static function cell(string $text): string
     {
         $flat = (string) preg_replace('/\s+/', ' ', trim($text));
 

@@ -34,7 +34,8 @@ final class BenchmarkCommand extends Command
             ->addOption('live', null, InputOption::VALUE_NONE, 'Call Anthropic with the key from .env.live and record the cassettes (controller only; costs money)')
             ->addOption('app', null, InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY, 'Benchmark app to run (repeatable; default: every app with cases in --set)')
             ->addOption('set', null, InputOption::VALUE_REQUIRED, 'all, existing or blind', 'all')
-            ->addOption('competitor', null, InputOption::VALUE_REQUIRED, 'Competitor eval_results.json to score as well (M8 Task 5)')
+            ->addOption('competitor', null, InputOption::VALUE_REQUIRED, 'claude-code-security-review eval_results.json to score as well (M8 Task 5)')
+            ->addOption('disguise-map', null, InputOption::VALUE_REQUIRED, 'disguise-map.json from tools/benchmark-disguise.php; its copy is where the competitor ran')
             ->addOption('out', null, InputOption::VALUE_REQUIRED, 'Report path, relative to the repository root', 'docs/benchmark-results.md')
             ->addOption('budget', null, InputOption::VALUE_REQUIRED, 'Passed to analyze --budget for each app (with --live, default '.self::LIVE_BUDGET.')')
             ->addOption('cassettes', null, InputOption::VALUE_REQUIRED, 'Cassette directory', 'tests/Fixtures/cassettes/anthropic');
@@ -47,8 +48,10 @@ final class BenchmarkCommand extends Command
         if (! in_array($set, self::SETS, true)) {
             return $this->fail($output, '--set must be all, existing or blind');
         }
-        if ($input->getOption('competitor') !== null) {
-            return $this->fail($output, '--competitor is not wired yet; M8 Task 5 adds the converter');
+        $competitorPath = $input->getOption('competitor');
+        $disguisePath = $input->getOption('disguise-map');
+        if (is_string($competitorPath) && ! is_string($disguisePath)) {
+            return $this->fail($output, '--competitor needs --disguise-map to map their files back to ours');
         }
         $yaml = (string) file_get_contents(BenchmarkCorpus::root().'/expected.yaml');
         $cases = array_values(array_filter(ExpectedCases::load($yaml), static fn (BenchmarkCase $c): bool => $set === 'all' || $c->set === $set));
@@ -114,6 +117,14 @@ final class BenchmarkCommand extends Command
             $publics,
             array_map(static fn (AppRun $r): array => $r->dryRun, $runs),
         );
+        $competitor = null;
+        if (is_string($competitorPath) && is_string($disguisePath)) {
+            try {
+                $competitor = self::competitor($competitorPath, $disguisePath, $cases, $publics, $runs);
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, $e->getMessage());
+            }
+        }
         $usage = ['input' => 0, 'output' => 0, 'cacheRead' => 0, 'cacheWrite' => 0];
         $models = [];
         $requests = 0;
@@ -133,7 +144,7 @@ final class BenchmarkCommand extends Command
             'promptVersion' => SecurityPrompt::VERSION,
             'requests' => $requests,
             'usage' => $usage,
-        ]);
+        ], $competitor);
         $out = (string) $input->getOption('out');
         $path = str_starts_with($out, '/') ? $out : $repo.'/'.$out;
         if (! is_dir(dirname($path)) || file_put_contents($path, $markdown) === false) {
@@ -156,9 +167,44 @@ final class BenchmarkCommand extends Command
                 $criteria,
             )), $strict));
         }
+        if ($competitor !== null) {
+            foreach ([...$competitor->score->sets(), 'all'] as $column) {
+                $c = $competitor->score->counts($column === 'all' ? null : $column);
+                $output->writeln(sprintf('competitor %-8s  recall %d/%d  safe flagged %d/%d  public %d/%d  unattributed %d', $column, $c->found, $c->cases, $c->flagged, $c->cases, $c->publicViolations, $c->publicRoutes, $c->unattributed));
+            }
+        }
         $output->writeln(sprintf('%d requests, $%.2f estimated; report written to %s', $requests, Report::cost($usage), $out));
 
         return in_array(true, $verdicts, true) && ! in_array(false, $verdicts, true) ? Command::SUCCESS : Command::FAILURE;
+    }
+
+    /**
+     * Converts and scores their results with the same cases, public routes and Scorer as ours.
+     *
+     * @param list<BenchmarkCase> $cases
+     * @param list<PublicRoute> $publics
+     * @param array<string, AppRun> $runs
+     */
+    private static function competitor(string $resultsPath, string $mapPath, array $cases, array $publics, array $runs): CompetitorResult
+    {
+        $text = is_file($resultsPath) ? file_get_contents($resultsPath) : false;
+        $results = $text === false ? null : json_decode($text, true);
+        if (! is_array($results)) {
+            throw new \RuntimeException("cannot read competitor results {$resultsPath}");
+        }
+        $map = DisguiseMap::load($mapPath);
+        $missing = array_diff(array_keys($runs), $map->apps());
+        if ($missing !== []) {
+            throw new \RuntimeException('the disguise map has no entry for '.implode(', ', $missing));
+        }
+        $run = CompetitorConverter::fromMap($map)->convert($results);
+        $analyze = [];
+        foreach (array_keys($runs) as $app) {
+            $analyze[$app] = $run->analyze[$app] ?? ['findings' => []];
+        }
+        $score = Scorer::score($cases, $analyze, array_map(static fn (AppRun $r): array => $r->map, $runs), $publics);
+
+        return new CompetitorResult($score, $run, CompetitorResult::readMeta(dirname($resultsPath)));
     }
 
     private function fail(OutputInterface $output, string $message): int

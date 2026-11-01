@@ -8,6 +8,7 @@ use PHPUnit\Framework\Attributes\Depends;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Tester\CommandTester;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\BenchmarkCommand;
+use TusharKhan\SemanticSec\Tests\Support\Benchmark\Disguise;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\ExpectedCases;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\FakeAnthropicHandler;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\Runner;
@@ -101,6 +102,32 @@ final class BenchmarkRunnerTest extends TestCase
         self::assertSame('fake-key', getenv(Runner::KEY_ENV));
     }
 
+    #[Depends('testFakeRecordThenReplayScores')]
+    public function testCommandScoresTheCompetitorOnTheDisguisedCopy(): void
+    {
+        $map = Disguise::run(BenchmarkCorpus::root(), self::$dir.'/m8comp/bench', apps: [self::APP]);
+        Disguise::writeMap($map, self::$dir.'/m8comp/disguise-map.json');
+        $vulnerable = (string) array_search('app/Http/Controllers/Vuln/ReportController.php', $map['apps'][self::APP]['files'], true);
+        $safe = (string) array_search('app/Http/Controllers/Safe/NoteController.php', $map['apps'][self::APP]['files'], true);
+        $findings = [
+            ['file' => self::APP.'/'.$vulnerable, 'line' => 18, 'severity' => 'HIGH', 'category' => 'authorization_bypass', 'description' => "Any user can read another user's report", 'confidence' => 0.9],
+            ['file' => self::APP.'/'.$safe, 'line' => 34, 'severity' => 'MEDIUM', 'category' => 'idor', 'description' => 'Note read by id', 'confidence' => 0.8],
+        ];
+        file_put_contents(self::$dir.'/m8comp/eval_results.json', json_encode(['repo_name' => 'o/r', 'pr_number' => 1, 'success' => true, 'runtime_seconds' => 1.0, 'findings_count' => 2, 'detected_vulnerabilities' => true, 'error_message' => '', 'findings_summary' => [], 'full_findings' => $findings]));
+        file_put_contents(self::$dir.'/m8comp/run-meta.json', json_encode(['sha' => 'abc123', 'model' => 'claude-opus-5-5', 'pr' => 'o/r#1']));
+
+        $out = self::$dir.'/competitive.md';
+        $tester = new CommandTester(new BenchmarkCommand());
+        $exit = $tester->execute(['--app' => [self::APP], '--cassettes' => self::$dir, '--out' => $out, '--competitor' => self::$dir.'/m8comp/eval_results.json', '--disguise-map' => self::$dir.'/m8comp/disguise-map.json']);
+        $report = (string) file_get_contents($out);
+
+        self::assertSame(0, $exit, $tester->getDisplay());
+        self::assertStringContainsString('competitor existing  recall 1/2  safe flagged 1/2', $tester->getDisplay());
+        self::assertStringContainsString('| existing | Recall (found) | 100.0% (2/2) | 50.0% (1/2) |', $report);
+        self::assertStringContainsString('`abc123`', $report);
+        self::assertStringContainsString('`App\Http\Controllers\Vuln\ReportController::show`', $report);
+    }
+
     public function testCommandRefusesMissingCassettesAndBadOptions(): void
     {
         $tester = new CommandTester(new BenchmarkCommand());
@@ -113,7 +140,9 @@ final class BenchmarkRunnerTest extends TestCase
         self::assertSame(2, $tester->execute(['--set' => 'secret']));
         self::assertSame(2, $tester->execute(['--app' => ['laravel9-app']]));
         self::assertSame(2, $tester->execute(['--competitor' => 'eval_results.json']));
-        self::assertStringContainsString('M8 Task 5', $tester->getDisplay());
+        self::assertStringContainsString('--competitor needs --disguise-map', $tester->getDisplay());
+        self::assertSame(2, $tester->execute(['--competitor' => self::$dir.'/none.json', '--disguise-map' => self::$dir.'/none-map.json', '--app' => [self::APP], '--cassettes' => self::$dir]));
+        self::assertStringContainsString('cannot read', $tester->getDisplay());
     }
 
     public function testLiveRunsDefaultToABudgetCap(): void

@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace TusharKhan\SemanticSec\Tests\Unit\Benchmark;
 
 use PHPUnit\Framework\TestCase;
+use TusharKhan\SemanticSec\Tests\Support\Benchmark\CompetitorConverter;
+use TusharKhan\SemanticSec\Tests\Support\Benchmark\CompetitorResult;
+use TusharKhan\SemanticSec\Tests\Support\Benchmark\DisguiseMap;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\ExpectedCases;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\Report;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\Score;
@@ -73,6 +76,33 @@ final class ReportTest extends TestCase
         self::assertStringContainsString('| Found, strict (no post-hoc accepts) | ≥ 70% | 50.0% (1/2) | 0.0% (0/1) | 33.3% (1/3) |', $markdown);
         self::assertStringContainsString('found (post-hoc accept)', $markdown);
         self::assertStringNotContainsString('strict (no post-hoc accepts)', Report::markdown(self::score(), self::meta()));
+    }
+
+    public function testCompetitiveCheckComparesBothToolsWithTheSameScorer(): void
+    {
+        $fixture = __DIR__.'/../../Fixtures/benchmark/competitor';
+        $run = CompetitorConverter::fromMap(DisguiseMap::load($fixture.'/disguise-map.json'))
+            ->convert((array) json_decode((string) file_get_contents($fixture.'/eval_results.json'), true));
+        $analyze = ScorerTest::analyze();
+        $analyze['app-a'] = $run->analyze['app-a'];
+        $theirs = Scorer::score(ExpectedCases::load(ScorerTest::YAML), $analyze, [], ExpectedCases::publicRoutes(ScorerTest::YAML));
+        $competitor = new CompetitorResult($theirs, $run, ['sha' => '0c6a49f1fa56a1d472575da86a94dbc1edb78eda', 'model' => 'claude-opus-5-5', 'pr' => 'tusharkhan/semantic-sec-bench#1', 'usage' => ['input' => 10, 'output' => 5, 'cacheRead' => 0, 'cacheWrite' => 0], 'cost' => 1.25, 'turns' => 12, 'capped' => false]);
+
+        $markdown = Report::markdown(self::score(), self::meta(), $competitor);
+
+        self::assertStringNotContainsString('_Not run yet._', $markdown);
+        self::assertStringContainsString('`0c6a49f1fa56a1d472575da86a94dbc1edb78eda`', $markdown);
+        self::assertStringContainsString('| all | Recall (found) | 100.0% (3/3) | 66.7% (2/3) |', $markdown);
+        self::assertStringContainsString('| all | Precision | 50.0% (3/6) | 50.0% (2/4) |', $markdown);
+        self::assertStringContainsString('| blind | Safe variants flagged | 100.0% (1/1) | 100.0% (1/1) |', $markdown);
+        self::assertStringContainsString('| keyword:workflow_bypass | 1 |', $markdown);
+        self::assertStringContainsString('| none | 1 |', $markdown);
+        self::assertStringContainsString('outside the benchmark apps', $markdown);
+        self::assertStringContainsString('`App\Http\Controllers\Safe\WithdrawalController::approve`', $markdown);
+        foreach (['### Asymmetries', 'PR diff', 'whole project', '@semantic-sec-ignore', 'any category', 'disguised'] as $text) {
+            self::assertStringContainsString($text, $markdown);
+        }
+        self::assertSame($markdown, Report::markdown(self::score(), self::meta(), $competitor));
     }
 
     public function testCost(): void

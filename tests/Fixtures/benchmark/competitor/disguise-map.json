@@ -1,0 +1,27 @@
+{
+    "version": 1,
+    "seed": 1,
+    "root": "bench",
+    "apps": {
+        "app-a": {
+            "classes": {
+                "App\\Http\\Controllers\\Alpha\\ItemController": "App\\Http\\Controllers\\Safe\\ItemController",
+                "App\\Http\\Controllers\\Beta\\ItemController": "App\\Http\\Controllers\\Vuln\\ItemController",
+                "App\\Http\\Controllers\\Alpha\\TransferController": "App\\Http\\Controllers\\Vuln\\TransferController",
+                "App\\Http\\Controllers\\Beta\\WithdrawalController": "App\\Http\\Controllers\\Safe\\WithdrawalController"
+            },
+            "files": {
+                "app/Http/Controllers/Alpha/ItemController.php": "app/Http/Controllers/Safe/ItemController.php",
+                "app/Http/Controllers/Beta/ItemController.php": "app/Http/Controllers/Vuln/ItemController.php",
+                "app/Http/Controllers/Alpha/TransferController.php": "app/Http/Controllers/Vuln/TransferController.php",
+                "app/Http/Controllers/Beta/WithdrawalController.php": "app/Http/Controllers/Safe/WithdrawalController.php"
+            },
+            "routes": {
+                "GET /alpha/items/{id}": "GET /safe/items/{id}",
+                "POST /alpha/transfers/{transfer}/approve": "POST /vuln/transfers/{transfer}/approve",
+                "GET /beta/items/{id}": "GET /vuln/items/{id}",
+                "POST /beta/withdrawals/{withdrawal}/approve": "POST /safe/withdrawals/{withdrawal}/approve"
+            }
+        }
+    }
+}
