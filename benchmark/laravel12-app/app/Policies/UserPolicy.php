@@ -1,0 +1,13 @@
+<?php
+
+namespace App\Policies;
+
+use App\Models\User;
+
+class UserPolicy
+{
+    public function suspend(User $user, User $target): bool
+    {
+        return $user->role === 'admin' && ! $user->is($target);
+    }
+}

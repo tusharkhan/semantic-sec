@@ -20,6 +20,12 @@ Route::middleware('auth')->group(function () {
         Route::patch('profile', [Vuln\ProfileController::class, 'update']);
         Route::post('orders/{order}/cancel', [Vuln\OrderController::class, 'cancel']);
         Route::get('statements', [Vuln\StatementController::class, 'index']);
+        Route::patch('messages/archive', [Vuln\MessageController::class, 'archive']);
+        Route::post('users/{user}/suspend', [Vuln\UserController::class, 'suspend']);
+        Route::post('subscriptions/{subscription}/pause', [Vuln\SubscriptionController::class, 'pause']);
+        Route::patch('listings/{listing}', [Vuln\ListingController::class, 'update']);
+        Route::post('articles/{article}/publish', [Vuln\ArticleController::class, 'publish']);
+        Route::post('imports/resume', [Vuln\ImportController::class, 'resume']);
     });
 
     Route::prefix('safe')->group(function () {
@@ -35,5 +41,11 @@ Route::middleware('auth')->group(function () {
         Route::patch('profile', [Safe\ProfileController::class, 'update']);
         Route::post('orders/{order}/cancel', [Safe\OrderController::class, 'cancel']);
         Route::get('statements', [Safe\StatementController::class, 'index']);
+        Route::patch('messages/archive', [Safe\MessageController::class, 'archive']);
+        Route::post('users/{user}/suspend', [Safe\UserController::class, 'suspend']);
+        Route::post('subscriptions/{subscription}/pause', [Safe\SubscriptionController::class, 'pause']);
+        Route::patch('listings/{listing}', [Safe\ListingController::class, 'update']);
+        Route::post('articles/{article}/publish', [Safe\ArticleController::class, 'publish']);
+        Route::post('imports/resume', [Safe\ImportController::class, 'resume']);
     });
 });

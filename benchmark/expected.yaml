@@ -384,6 +384,98 @@ cases:
       symbol: App\Http\Controllers\Safe\StatementController::index
       map: [authentication, query_scope]
       candidate: false
+  - id: idor-bulk-ids-unscoped
+    app: laravel12-app
+    set: holdout
+    category: idor
+    description: "Bulk archive takes an ids[] array and runs Message::whereIn('id', ...)->update() with no owner scope, so any user can archive anyone's messages; the safe variant runs the same whereIn through $request->user()->messages()."
+    vulnerable:
+      route: PATCH /vuln/messages/archive
+      symbol: App\Http\Controllers\Vuln\MessageController::archive
+      line: 19
+      map: [authentication]
+    safe:
+      route: PATCH /safe/messages/archive
+      symbol: App\Http\Controllers\Safe\MessageController::archive
+      map: [authentication, query_scope]
+      candidate: false
+  - id: missing-authz-admin-suspend
+    app: laravel12-app
+    set: holdout
+    category: missing_authorization
+    description: "Admin-only account suspension sets suspended_at on the bound user with no check beyond auth, so any logged-in user can suspend any account; the safe variant calls Gate::authorize('suspend', $user), backed by UserPolicy::suspend requiring role admin and a different target."
+    vulnerable:
+      route: POST /vuln/users/{user}/suspend
+      symbol: App\Http\Controllers\Vuln\UserController::suspend
+      line: 13
+      map: [authentication]
+    safe:
+      route: POST /safe/users/{user}/suspend
+      symbol: App\Http\Controllers\Safe\UserController::suspend
+      map: [authentication, controller_ability]
+      candidate: false
+  - id: idor-gate-closure-ignores-model
+    app: laravel12-app
+    set: holdout
+    category: idor
+    description: "Subscription paused after Gate::authorize('pause-subscription'), but the Gate::define closure in AppServiceProvider only checks that the caller has some active subscription and never looks at the one passed in, so any subscriber pauses another customer's subscription; the safe 'manage-subscription' closure compares user_id. Line is the state change the ability fails to protect."
+    vulnerable:
+      route: POST /vuln/subscriptions/{subscription}/pause
+      symbol: App\Http\Controllers\Vuln\SubscriptionController::pause
+      line: 19
+      map: [authentication, controller_ability]
+      accept: [App\Providers\AppServiceProvider::boot]
+    safe:
+      route: POST /safe/subscriptions/{subscription}/pause
+      symbol: App\Http\Controllers\Safe\SubscriptionController::pause
+      map: [authentication, controller_ability]
+      candidate: false
+  - id: mass-assign-validated-sensitive-rule
+    app: laravel12-app
+    set: holdout
+    category: mass_assignment
+    description: "Seller updates their own listing with update($request->validated()), but the FormRequest rules validate commission_rate (fillable for the admin panel), so a seller sets the platform's commission to 0; the safe FormRequest has the same owner authorize() and validates only title and price. Line is the update."
+    vulnerable:
+      route: PATCH /vuln/listings/{listing}
+      symbol: App\Http\Controllers\Vuln\ListingController::update
+      line: 14
+      map: [authentication, form_request]
+      accept: [App\Http\Requests\Vuln\UpdateListingRequest::rules]
+    safe:
+      route: PATCH /safe/listings/{listing}
+      symbol: App\Http\Controllers\Safe\ListingController::update
+      map: [authentication, form_request]
+      candidate: false
+  - id: workflow-publish-skips-approval
+    app: laravel12-app
+    set: holdout
+    category: workflow_bypass
+    description: "Publish endpoint authorizes 'update' (author only), so an author publishes a draft directly and skips editorial approval; the safe variant authorizes ArticlePolicy::publish, which also requires status approved and an approver. Line is the status change."
+    vulnerable:
+      route: POST /vuln/articles/{article}/publish
+      symbol: App\Http\Controllers\Vuln\ArticleController::publish
+      line: 16
+      map: [authentication, controller_ability]
+    safe:
+      route: POST /safe/articles/{article}/publish
+      symbol: App\Http\Controllers\Safe\ArticleController::publish
+      map: [authentication, controller_ability]
+      candidate: false
+  - id: insecure-deserialization-request-checkpoint
+    app: laravel12-app
+    set: holdout
+    category: insecure_deserialization
+    description: "Import resume unserialize()s a base64 checkpoint from the request body, so __wakeup/__destruct gadgets run before the shape check; the safe variant passes ['allowed_classes' => false], so objects come back incomplete and the request fails the is_array check with 422."
+    vulnerable:
+      route: POST /vuln/imports/resume
+      symbol: App\Http\Controllers\Vuln\ImportController::resume
+      line: 15
+      map: [authentication]
+    safe:
+      route: POST /safe/imports/resume
+      symbol: App\Http\Controllers\Safe\ImportController::resume
+      map: [authentication]
+      candidate: true
 public_routes:
   - app: laravel11-app
     route: GET /posts/{post:slug}
