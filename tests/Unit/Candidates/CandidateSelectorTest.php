@@ -257,7 +257,8 @@ final class CandidateSelectorTest extends TestCase
     {
         self::assertSame(['idor'], self::categories('GET /input-id'));
         self::assertStringContainsString('post_id', self::reason('GET /input-id', Category::Idor));
-        self::assertNull(self::candidate('GET /input-name'));
+        // A non-id input is no identifier; the unscoped Post list makes it an idor candidate on its own (M8 list rule).
+        self::assertSame('unscoped read of owned Post collection', self::reason('GET /input-name', Category::Idor));
     }
 
     public function testUnconditionalCalleeChecksCount(): void

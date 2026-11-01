@@ -118,6 +118,15 @@ final class CandidateSelector
 
     private const MAX_SOURCE = 120;
 
+    // Reads that return a collection or a model picked without an identifier (SPEC §7 list endpoints), besides first*.
+    private const COLLECTION_READS = ['get', 'all', 'pluck'];
+
+    // Reads only a query builder offers, besides chunk*: on an unresolved receiver they still read some model.
+    private const BUILDER_ONLY_READS = ['paginate', 'simplepaginate', 'cursorpaginate', 'cursor', 'lazy'];
+
+    // A column with one of these names ties a row to a user or tenant.
+    private const OWNER_KEYS = ['user_id', 'owner_id', 'team_id', 'tenant_id', 'organization_id', 'account_id'];
+
     private readonly Standard $printer;
 
     /** @var list<Exclusion> */
@@ -158,6 +167,9 @@ final class CandidateSelector
     /** @var array<string, true> per route: categories with a recorded exclusion */
     private array $decided = [];
 
+    /** @var array<string, array{0: ?bool, 1: string}> per select(): model => [owned (null when unknown), why] */
+    private array $ownership = [];
+
     public function __construct(
         private readonly SymbolTable $symbols,
         private readonly CallGraphBuilder $graphs,
@@ -173,7 +185,7 @@ final class CandidateSelector
     public function select(AuthorizationMap $map, bool $deep): array
     {
         $this->exclusions = [];
-        $this->bodyCache = $this->mentionCache = [];
+        $this->bodyCache = $this->mentionCache = $this->ownership = [];
         $candidates = [];
         $warnings = [];
         foreach ($map->routes as $route) {
@@ -221,6 +233,7 @@ final class CandidateSelector
         if ($identifiers !== []) {
             $this->idor($key, $identifiers, $checks, $deep, $reasons);
         }
+        $listed = $identifiers === [] && in_array('GET', $route->methods, true) && $this->listIdor($key, $path, $checks, $deep, $reasons);
         $writes = $this->writes($path);
         $verbs = array_values(array_intersect($route->methods, self::STATE_VERBS));
         $destroy = $route->action->closure === null && $route->action->method !== null && preg_match(self::DESTROY_STYLE, $route->action->method) === 1 ? $route->action->method : null;
@@ -245,7 +258,7 @@ final class CandidateSelector
         }
         $this->decided = [];
         if ($reasons === []) {
-            if ($identifiers === [] && $verbs === [] && $writes === [] && $destroy === null) {
+            if ($identifiers === [] && $verbs === [] && $writes === [] && $destroy === null && ! $listed) {
                 $this->exclude($key, null, self::NO_TRIGGER, '');
             }
 
@@ -555,6 +568,357 @@ final class CandidateSelector
         }
 
         return array_keys($out);
+    }
+
+    // ---- idor on list endpoints ---------------------------------------------------------------------------------
+
+    /**
+     * A GET with no identifier that reads an owned collection without a user scope or an authorization check (SPEC §7).
+     * Returns whether an owned collection read was found.
+     *
+     * @param  list<AuthCheck>  $checks
+     * @param  array<string, string>  $reasons
+     */
+    private function listIdor(string $key, ExecutionPath $path, array $checks, bool $deep, array &$reasons): bool
+    {
+        $owned = [];
+        $unowned = [];
+        foreach ($this->collectionReads($path) as $read) {
+            [$isOwned, $why] = $read['model'] === null ? [null, 'unknown model'] : $this->ownership($read['model']);
+            if ($isOwned === false) {
+                $unowned[self::short((string) $read['model'])] = $why;
+            } else {
+                $owned[] = $read + ['owned' => $isOwned];
+            }
+        }
+        if ($owned === []) {
+            if ($unowned !== []) {
+                $this->exclude($key, Category::Idor, self::NO_TRIGGER_PREFIX.': collection read of '.implode(', ', array_keys($unowned)).' with no owner key', implode('; ', $unowned));
+            }
+
+            return false;
+        }
+        $unscoped = array_filter($owned, static fn (array $r): bool => $r['scope'] === null);
+        $labels = array_values(array_unique(array_map(static fn (array $r): string => sprintf('unscoped read of owned %s collection%s', $r['model'] === null ? 'unknown-model' : self::short($r['model']), $r['owned'] === null ? ' (ownership unknown)' : ''), $unscoped)));
+        if (count($labels) > 3) {
+            $labels = [...array_slice($labels, 0, 3), sprintf('%d more', count($labels) - 3)];
+        }
+        $gate = null;
+        foreach ($checks as $c) {
+            $gate ??= $c->kind === AuthCheckKind::QueryScope ? null : $c;
+        }
+        if ($unscoped !== [] && $gate === null) {
+            $reasons[Category::Idor->value] = ($deep ? '--deep: ' : '').implode('; ', $labels);
+
+            return true;
+        }
+        [$reason, $source] = $gate === null
+            ? ['owned collection read is scoped to the user', implode('; ', array_unique(array_map(static fn (array $r): string => (string) $r['scope'], $owned)))]
+            : [($unscoped === [] ? 'owned collection read' : implode('; ', $labels)).' is covered by an authorization check', $this->checkText($gate)];
+        if ($deep) {
+            $reasons[Category::Idor->value] = '--deep: '.$reason.': '.$source;
+        } else {
+            $this->exclude($key, Category::Idor, $reason, $source);
+        }
+
+        return true;
+    }
+
+    /** @return list<array{model: ?string, scope: ?string}> every model collection read on the path, and the user scope on its chain */
+    private function collectionReads(ExecutionPath $path): array
+    {
+        $out = [];
+        foreach ($path->nodes as $node) {
+            $body = $this->bodies[$node->id];
+            foreach ($body->calls as $call) {
+                $name = AuthExpressions::name($call) ?? '';
+                $builderOnly = in_array($name, self::BUILDER_ONLY_READS, true) || str_starts_with($name, 'chunk');
+                if (! ($call instanceof Expr\StaticCall || AuthExpressions::isCall($call)) || ! ($builderOnly || in_array($name, self::COLLECTION_READS, true) || str_starts_with($name, 'first'))) {
+                    continue;
+                }
+                if ($call instanceof Expr\StaticCall) {
+                    $model = $this->types->staticModel($call, $node);
+                    if ($model === null) {
+                        continue;
+                    }
+                } else {
+                    [$kind, $model] = $this->receiverModel($call->var, $body, $node, 0);
+                    // A builder-only read on an unresolved receiver is a query of an unknown model.
+                    if ($kind === 'auth' || ($kind === 'none' && ! $builderOnly)) {
+                        continue;
+                    }
+                }
+                $top = $call;
+                while (($p = $body->positions->parent($top)) !== null && AuthExpressions::isCall($p) && $p->var === $top) {
+                    $top = $p;
+                }
+                $out[] = ['model' => $model, 'scope' => $this->scopedChain($top, $body, $node, 0) ? sprintf('%s (%s:%d)', $this->print($top), $node->file, $top->getStartLine()) : null];
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * What a receiver chain queries: 'query' with its model (null when unknown), 'auth' when it reaches the auth user
+     * (the user's own data), 'none' when it is not provably a query. Variables and followed callees are resolved.
+     *
+     * @return array{0: 'query'|'auth'|'none', 1: ?string}
+     */
+    private function receiverModel(Expr $e, FunctionBody $body, PathNode $node, int $depth): array
+    {
+        for (; ; $e = $e->var) {
+            if ($body->auth->isAuthUser($e)) {
+                return ['auth', null];
+            }
+            if ($e instanceof Expr\StaticCall) {
+                $model = $this->types->staticModel($e, $node);
+
+                return $model === null ? ['none', null] : ['query', $model];
+            }
+            $model = $this->types->queryModel($e, $node);
+            if ($model !== null) {
+                return ['query', $model];
+            }
+            $type = $this->types->typeOf($e, $node);
+            if ($type !== null && (in_array($type, self::BUILDERS, true) || str_starts_with($type, self::RELATIONS_NS))) {
+                return ['query', null];
+            }
+            if ($depth < 3 && $e instanceof Expr\Variable && is_string($e->name) && $e->name !== 'this') {
+                return $this->merge(array_map(fn (Expr $v): array => $this->receiverModel($v, $body, $node, $depth + 1), $this->baseValues($e->name, $body) ?? []));
+            }
+            $callee = $depth < 3 && $e instanceof Expr\CallLike ? ($this->callees[spl_object_id($e)] ?? null) : null;
+            if ($callee !== null) {
+                $calleeBody = $this->bodies[$callee->id];
+
+                return $this->merge(array_map(fn (Expr $v): array => $this->receiverModel($v, $calleeBody, $callee, $depth + 1), self::returned($calleeBody)));
+            }
+            if (! AuthExpressions::isCall($e)) {
+                return ['none', null];
+            }
+        }
+    }
+
+    /**
+     * Any query wins (one model, or null when they differ); only auth roots give 'auth'.
+     *
+     * @param  list<array{0: 'query'|'auth'|'none', 1: ?string}>  $results
+     * @return array{0: 'query'|'auth'|'none', 1: ?string}
+     */
+    private function merge(array $results): array
+    {
+        $models = [];
+        foreach ($results as [$kind, $model]) {
+            if ($kind === 'query') {
+                $models[] = $model;
+            }
+        }
+        if ($models !== []) {
+            return ['query', count(array_unique($models, SORT_REGULAR)) === 1 ? $models[0] : null];
+        }
+        $kinds = array_unique(array_column($results, 0));
+
+        return $kinds === ['auth'] ? ['auth', null] : ['none', null];
+    }
+
+    /** @return list<Expr>|null values assigned to $name that do not build on itself; null when any assignment is compound or by reference */
+    private function baseValues(string $name, FunctionBody $body): ?array
+    {
+        $out = [];
+        foreach ($body->assignmentsTo($name) as $assign) {
+            if (! $assign instanceof Expr\Assign) {
+                return null;
+            }
+            if (! self::isVariable(self::chainRoot($assign->expr), $name)) {
+                $out[] = $assign->expr;
+            }
+        }
+
+        return $out;
+    }
+
+    /** @return list<Expr> the expressions the function body returns (nested closures' too, which only widens the answer) */
+    private static function returned(FunctionBody $body): array
+    {
+        $out = [];
+        $finder = new NodeFinder();
+        foreach ($finder->find($body->stmts, static fn (Node $n): bool => $n instanceof Stmt\Return_ && $n->expr !== null) as $return) {
+            \assert($return instanceof Stmt\Return_ && $return->expr !== null);
+            $out[] = $return->expr;
+        }
+        foreach ($body->stmts as $stmt) {
+            // An arrow function's body is its value.
+            if ($stmt instanceof Expr) {
+                $out[] = $stmt;
+            }
+        }
+
+        return $out;
+    }
+
+    private static function chainRoot(Expr $e): Expr
+    {
+        while (AuthExpressions::isCall($e)) {
+            $e = $e->var;
+        }
+
+        return $e;
+    }
+
+    // The read's chain is scoped to the user, directly or through a variable every base assignment of which is scoped.
+    private function scopedChain(Expr $top, FunctionBody $body, PathNode $node, int $depth): bool
+    {
+        if ($this->chainScoped($top, $body, $node, true) || ($body->auth->isRelationRead($top, $this->toOneHops(...)) && ! self::hasOrWhere($top))) {
+            return true;
+        }
+        $root = self::chainRoot($top);
+        if ($depth >= 3 || self::hasOrWhere($top) || ! $root instanceof Expr\Variable || ! is_string($root->name) || $root->name === 'this' || $body->auth->isAuthUser($root)) {
+            return false;
+        }
+        $bases = $this->baseValues($root->name, $body);
+        if ($bases === null || $bases === [] || $this->widenedUse($root->name, $body)) {
+            return false;
+        }
+        foreach ($bases as $base) {
+            if (! $this->scopedChain($base, $body, $node, $depth + 1)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // Some use of the variable is chained with orWhere or a scope reset.
+    private function widenedUse(string $var, FunctionBody $body): bool
+    {
+        foreach ((new NodeFinder())->find($body->stmts, static fn (Node $n): bool => $n instanceof Expr\Variable && $n->name === $var) as $use) {
+            \assert($use instanceof Expr);
+            for ($at = $use; ($p = $body->positions->parent($at)) !== null && AuthExpressions::isCall($p) && $p->var === $at; $at = $p) {
+                $name = AuthExpressions::name($p) ?? '';
+                if (str_starts_with($name, 'orwhere') || in_array($name, Verbs::SCOPE_RESETS, true)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Owned: a relation to or from the auth user model, or an owner key in $fillable, $casts or a belongsTo; false only
+     * when $fillable is readable and none of those holds.
+     *
+     * @return array{0: ?bool, 1: string}
+     */
+    private function ownership(string $model): array
+    {
+        if (isset($this->ownership[$model])) {
+            return $this->ownership[$model];
+        }
+        $short = self::short($model);
+        $user = $this->types->authUserModel();
+        if ($this->symbols->getClass($model) === null) {
+            return $this->ownership[$model] = [null, $short.' is outside the project'];
+        }
+        $columns = [];
+        foreach ($this->symbols->lineage($model) as $symbol) {
+            foreach ($symbol->methods as $method) {
+                $related = $this->relations->relatedClass($model, $method->name);
+                if ($related === null) {
+                    continue;
+                }
+                if ($user !== null && $related === $user) {
+                    return $this->ownership[$model] = [true, sprintf('%s::%s() relates to %s', $short, $method->name, self::short($user))];
+                }
+                $columns[] = $this->belongsToKey($method->node, $method->name);
+            }
+        }
+        foreach ($user === null ? [] : $this->symbols->lineage($user) as $symbol) {
+            foreach ($symbol->methods as $method) {
+                if ($user !== null && $this->relations->relatedClass($user, $method->name) === $model) {
+                    return $this->ownership[$model] = [true, sprintf('%s::%s() relates to %s', self::short($user), $method->name, $short)];
+                }
+            }
+        }
+        $fillable = $this->stringProperty($model, 'fillable');
+        $columns = [...array_filter($columns, 'is_string'), ...(is_array($fillable) ? $fillable : []), ...$this->castKeys($model)];
+        $hit = array_values(array_intersect(array_map('strtolower', $columns), self::OWNER_KEYS));
+        if ($hit !== []) {
+            return $this->ownership[$model] = [true, sprintf('%s has %s', $short, $hit[0])];
+        }
+        if (! is_array($fillable) || $fillable === []) {
+            return $this->ownership[$model] = [null, $short.' columns unknown: no readable $fillable'];
+        }
+
+        return $this->ownership[$model] = [false, sprintf("%s::\$fillable = ['%s'] and no relation to the user", $short, implode("', '", $fillable))];
+    }
+
+    // The foreign key a `$this->belongsTo(X::class[, 'key'])` relation reads: the explicit one, else <method>_id.
+    private function belongsToKey(Stmt\ClassMethod $method, string $name): ?string
+    {
+        $call = (new NodeFinder())->findFirst($method->stmts ?? [], static fn (Node $n): bool => $n instanceof Expr\MethodCall
+            && $n->var instanceof Expr\Variable && $n->var->name === 'this' && $n->name instanceof Node\Identifier && $n->name->toLowerString() === 'belongsto');
+        if (! $call instanceof Expr\MethodCall) {
+            return null;
+        }
+        $key = $call->getArgs()[1]->value ?? null;
+
+        return $key instanceof Node\Scalar\String_ ? $key->value : self::snake($name).'_id';
+    }
+
+    /** @return list<string> keys of `$casts` and of the array `casts()` returns */
+    private function castKeys(string $model): array
+    {
+        $arrays = [];
+        $property = $this->symbols->findProperty($model, 'casts');
+        if ($property !== null && $property->default instanceof Expr\Array_) {
+            $arrays[] = $property->default;
+        }
+        $method = $this->symbols->findMethod($model, 'casts');
+        foreach ((new NodeFinder())->find($method->node->stmts ?? [], static fn (Node $n): bool => $n instanceof Stmt\Return_ && $n->expr instanceof Expr\Array_) as $return) {
+            \assert($return instanceof Stmt\Return_ && $return->expr instanceof Expr\Array_);
+            $arrays[] = $return->expr;
+        }
+        $out = [];
+        foreach ($arrays as $array) {
+            foreach ($array->items as $item) {
+                if ($item->key instanceof Node\Scalar\String_) {
+                    $out[] = $item->key->value;
+                }
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Every property hop from the auth user model is a known to-one relation (SPEC §6 query scope).
+     *
+     * @param  list<string>  $hops
+     */
+    private function toOneHops(array $hops): bool
+    {
+        $model = $this->types->authUserModel();
+        foreach ($hops as $hop) {
+            $next = $model === null ? null : $this->relations->relatedClass($model, $hop);
+            if ($model === null || $next === null || $this->relations->isToOne($model, $hop) !== true) {
+                return false;
+            }
+            $model = $next;
+        }
+
+        return $model !== null;
+    }
+
+    private static function hasOrWhere(Expr $top): bool
+    {
+        for ($e = $top; AuthExpressions::isCall($e); $e = $e->var) {
+            if (str_starts_with(AuthExpressions::name($e) ?? '', 'orwhere')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // The id-like name a request read uses: ->input('post_id'), request('id'), Request::query('userId'), ->post_id, ['post_id'],

@@ -48,6 +48,11 @@ final class TypeResolver
         $this->scopes = new \WeakMap();
     }
 
+    public function authUserModel(): ?string
+    {
+        return $this->authUserModel;
+    }
+
     public function typeOf(Expr $expr, PathNode $context): ?string
     {
         return match (true) {

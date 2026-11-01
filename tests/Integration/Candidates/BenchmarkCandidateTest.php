@@ -48,6 +48,21 @@ final class BenchmarkCandidateTest extends TestCase
         self::assertSame(15, $checked);
     }
 
+    public function testBlindUnscopedTenantListIsSelectedAndItsScopedTwinIsNot(): void
+    {
+        $case = null;
+        foreach (BenchmarkCorpus::casesInSet('blind') as $c) {
+            $case = $c['id'] === 'idor-tenant-list-unscoped' ? $c : $case;
+        }
+        self::assertNotNull($case);
+        [$selected] = self::selected((string) $case['app']);
+        $vuln = $selected[(string) $case['vulnerable']['route']] ?? null;
+        self::assertNotNull($vuln, 'vulnerable not selected; exclusions: '.self::excluded((string) $case['app'], (string) $case['vulnerable']['route']));
+        self::assertSame('unscoped read of owned Ticket collection', $vuln->reasons['idor'] ?? null);
+        $safe = (string) $case['safe']['route'];
+        self::assertArrayNotHasKey($safe, $selected, 'safe selected: '.(isset($selected[$safe]) ? self::reasons($selected[$safe]) : ''));
+    }
+
     public function testEveryExclusionHasAJustification(): void
     {
         foreach (BenchmarkCorpus::APPS as $app) {
