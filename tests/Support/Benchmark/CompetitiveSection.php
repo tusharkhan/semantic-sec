@@ -156,7 +156,7 @@ final class CompetitiveSection
 
         return [
             'Input. They review a PR diff of the three apps plus whatever the agent chooses to open in the checkout; we analyze each app as a whole project, with routes, middleware and policies resolved before the LLM sees a candidate. Their prompt lists only the first 100 changed files (one GitHub API page), although the diff itself is complete.',
-            'Disguise. They ran on the disguised copy (`Vuln`/`Safe` renamed to `Alpha`/`Beta` at random per class pair, routes regrouped to match, line numbers kept outside route files). Our numbers above come from the recordings of the original corpus; the code is otherwise identical, and `semantic-sec map` gives the same checks on both copies.',
+            'Disguise. They ran on the disguised copy (`Vuln`/`Safe` renamed to `Alpha`/`Beta` at random per class pair, routes regrouped to match, line numbers kept outside route files). Our gate numbers above come from the same disguised copy, mapped back to the original names for scoring; the undisguised table is shown only for reference.',
             'Category. Their category is inferred (see above) and may be "any category"; ours must match exactly.',
             'Location. A finding counts only at the case symbol or an accepted one. Their file and line become the enclosing method through our `SymbolTable`; a line in a route file becomes that route\'s controller action. Findings on models, form requests or class bodies land on no case, for both tools.',
             sprintf('Model and method. Theirs: `%s` in one agentic Claude Code session with file tools; ours: `%s`, one structured call per selected route and category.', $model, $ours),

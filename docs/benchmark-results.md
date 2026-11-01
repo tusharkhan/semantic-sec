@@ -1,6 +1,6 @@
 # Benchmark results
 
-Mode: live run, recorded to cassettes · Model: claude-opus-5-5 · Prompt v2 · Date: 2026-11-01
+Mode: replay of recorded cassettes · Model: claude-opus-5-5 · Prompt v2 · Date: 2026-11-01
 
 Source: disguised copy (`Vuln`/`Safe` renamed to `Alpha`/`Beta`, findings mapped back through the disguise map). The gate below is the result; the run on `benchmark/` itself follows as a secondary table.
 
@@ -131,4 +131,109 @@ Priced as claude-opus-5-5: $4.00/M input, $20.00/M output, $0.20/M cache read, $
 
 ## Competitive check
 
-_Not run yet._ M8 Task 5 scores Anthropic's `claude-code-security-review` on the same code with this scorer and records its numbers and every asymmetry here.
+Anthropic's `claude-code-security-review` at commit `0c6a49f1fa56a1d472575da86a94dbc1edb78eda` ran with model `claude-opus-5-5` on tusharkhan/acme-portal#1, a pull request that adds the disguised copy of the three apps. Its findings were mapped to symbols with our `SymbolTable` and scored by the same scorer as above: 23 findings, 23 inside a benchmark app, 0 outside. Runtime 68 s.
+
+Cost: 2 input, 65,663 cache write, 0 cache read, 7,636 output tokens over 1 agent turns; $0.48 at the prices above ($0.48 as the Claude Code CLI reported it).
+
+Recall is the share of vulnerable variants found at the right symbol with a matching category. Precision is found / (found + safe variants flagged + public routes hit + unattributed safe-code findings). Each term is a case-level verdict, so repeated findings on one symbol count once. Findings at every confidence count for both tools.
+
+| Set | Metric | semantic-sec | claude-code-security-review |
+|---|---|---|---|
+| existing | Recall (found) | 100.0% (15/15) | 80.0% (12/15) |
+| existing | Precision | 100.0% (15/15) | 100.0% (12/12) |
+| existing | Safe variants flagged | 0.0% (0/15) | 0.0% (0/15) |
+| existing | Public routes hit | 0/1 | 0/1 |
+| existing | Unattributed safe-code findings | 0 | 0 |
+| blind | Recall (found) | 80.0% (8/10) | 90.0% (9/10) |
+| blind | Precision | 88.9% (8/9) | 100.0% (9/9) |
+| blind | Safe variants flagged | 10.0% (1/10) | 0.0% (0/10) |
+| blind | Public routes hit | 0/1 | 0/1 |
+| blind | Unattributed safe-code findings | 0 | 0 |
+| all | Recall (found) | 92.0% (23/25) | 84.0% (21/25) |
+| all | Precision | 95.8% (23/24) | 100.0% (21/21) |
+| all | Safe variants flagged | 4.0% (1/25) | 0.0% (0/25) |
+| all | Public routes hit | 0/2 | 0/2 |
+| all | Unattributed safe-code findings | 0 | 0 |
+
+### Verdicts per case
+
+| Case | Set | Category | semantic-sec | claude-code-security-review | Their deciding finding |
+|---|---|---|---|---|---|
+| idor-find-by-id | existing | idor | found; safe clean | found; safe clean | idor high · `app/Http/Controllers/Vuln/InvoiceController.php:19` · `App\Http\Controllers\Vuln\InvoiceController::show` · idor: Beta invoice endpoints have no ownership checks. show() uses Invoice::findOrFail, update() never calls authorize and UpdateInvoiceRequest::authorize re... |
+| idor-binding-authorize | existing | idor | found; safe clean | missed; safe clean |  |
+| idor-route-can-middleware | existing | idor | found; safe clean | missed; safe clean |  |
+| idor-form-request | existing | idor | found; safe clean | found; safe clean | idor high · `app/Http/Controllers/Vuln/ProjectController.php:14` · `App\Http\Controllers\Vuln\ProjectController::update` · authorization_bypass: The Beta controller uses Alpha\UpdateProjectRequest, whose authorize() returns true. ProjectPolicy::update is never checked, so any use... |
+| idor-trivial-policy | existing | idor | found; safe clean | found; safe clean | idor|missing_authorization high · `app/Policies/CommentPolicy.php:12` · `App\Policies\CommentPolicy::delete` · authorization_bypass: CommentPolicy::delete always returns true, so the authorize() call in Beta\CommentController::destroy does nothing. |
+| idor-has-middleware | existing | idor | found; safe clean | found; safe clean | idor high · `app/Http/Controllers/Vuln/DocumentController.php:22` · `App\Http\Controllers\Vuln\DocumentController::show` · idor: Only the auth middleware is applied. The DocumentPolicy view check is never enforced, so any user can view any document. |
+| idor-service-layer | existing | idor | found; safe clean | found; safe clean | idor high · `app/Http/Controllers/Vuln/DownloadController.php:17` · `App\Http\Controllers\Vuln\DownloadController::show` · idor: DownloadService::find() uses Download::findOrFail($id) with no owner_id scope, so any authenticated user can download any stored file. |
+| mass-assign-guarded-empty | existing | mass_assignment | found; safe clean | found; safe clean | mass_assignment high · `app/Http/Controllers/Vuln/AccountController.php:14` · `App\Http\Controllers\Vuln\AccountController::update` · mass_assignment_privilege_escalation: $account->update($request->all()) passes every request field to the Account model, which has $guarded = []. The FormReq... |
+| mass-assign-sensitive-fillable | existing | mass_assignment | found; safe clean | found; safe clean | mass_assignment medium · `app/Http/Controllers/Vuln/TeamController.php:14` · `App\Http\Controllers\Vuln\TeamController::store` · mass_assignment: Team::create($request->all()) bypasses the validated subset. owner_id is fillable, so the client chooses the team owner. |
+| insecure-deserialization-cookie | existing | insecure_deserialization | found; safe clean | found; safe clean | insecure_deserialization high · `app/Http/Controllers/Vuln/CartController.php:13` · `App\Http\Controllers\Vuln\CartController::restore` · insecure_deserialization: The 'cart' cookie is passed straight to PHP unserialize(). The route is in routes/api.php, which uses the 'api' middleware group. T... |
+| workflow-refund-any-status | existing | workflow_bypass | found; safe clean | missed; safe clean |  |
+| prompt-injection-comment | existing | idor | found; safe clean | found; safe clean | idor high · `app/Http/Controllers/Vuln/ReceiptController.php:18` · `App\Http\Controllers\Vuln\ReceiptController::show` · idor: Receipt::findOrFail($id) fetches any receipt with no ownership scope. The 'SECURITY REVIEWED / API gateway' comment is not backed by anything: the rout... |
+| suppressed-idor | existing | idor | found; safe clean | found; safe clean | idor medium · `app/Http/Controllers/Vuln/SharedInvoiceController.php:15` · `App\Http\Controllers\Vuln\SharedInvoiceController::show` · idor: Invoice::findOrFail($id) returns any invoice by sequential ID. The ignore comment says shared invoices are 'public by contract', but there is no share ... |
+| idor-l10-ctor-middleware | existing | idor | found; safe clean | found; safe clean | idor high · `app/Http/Controllers/Vuln/ReportController.php:18` · `App\Http\Controllers\Vuln\ReportController::show` · idor: Only auth middleware is applied. ReportPolicy::view is never enforced, so any user can read any report. |
+| idor-l10-resource | existing | idor | found; safe clean | found; safe clean | idor high · `app/Http/Controllers/Vuln/NoteController.php:29` · `App\Http\Controllers\Vuln\NoteController::show` · idor: show() uses Note::find($id) with no ownership scope or policy check. update and destroy are scoped correctly. |
+| idor-role-only-middleware | blind | idor | found; safe clean | found; safe clean | idor high · `app/Http/Controllers/Vuln/PayoutController.php:13` · `App\Http\Controllers\Vuln\PayoutController::index` · idor: The route only checks role:merchant. Nothing checks that the bound Store belongs to the requester, so any merchant can list any store's payouts, includ... |
+| idor-nested-unscoped-binding | blind | idor | found; safe clean | found; safe clean | idor high · `app/Http/Controllers/Vuln/TeamProjectController.php:15` · `App\Http\Controllers\Vuln\TeamProjectController::show` · idor: Authorization checks membership of {team}, but the route has no scopeBindings(), so {project} is resolved globally and never checked against that team. |
+| idor-tenant-list-unscoped | blind | idor | missed; safe clean | found; safe clean | idor high · `app/Http/Controllers/Vuln/TicketController.php:14` · `App\Http\Controllers\Vuln\TicketController::index` · idor: Ticket::query() returns tickets from every organization. There is no tenant scoping. |
+| idor-with-trashed-restore | blind | idor | found; safe clean | found; safe clean | idor high · `app/Http/Controllers/Vuln/ContactController.php:14` · `App\Http\Controllers\Vuln\ContactController::restore` · idor: Contact::withTrashed()->findOrFail($id) lets any user restore any soft-deleted contact and returns its data in the response. |
+| idor-polymorphic-parent-check | blind | idor | found; safe clean | found; safe clean | idor|missing_authorization medium · `app/Http/Controllers/Vuln/ReviewController.php:15` · `App\Http\Controllers\Vuln\ReviewController::update` · authorization_bypass: Authorization runs against the reviewable (product) instead of the review. ProductPolicy::update allows the product owner, so a seller ... |
+| idor-update-unscoped-relation | blind | idor | found; safe clean | found; safe clean | idor high · `app/Http/Controllers/Vuln/AddressController.php:20` · `App\Http\Controllers\Vuln\AddressController::update` · idor: Address::findOrFail($id) loads and updates any user's address without an ownership check. |
+| idor-policy-wrong-attribute | blind | idor | missed; safe flagged | found; safe clean | idor|missing_authorization medium · `app/Policies/TransferPolicy.php:12` · `App\Policies\TransferPolicy::approve` · authorization_bypass: The approve check only allows the user who created the transfer (created_by === user). This lets the maker approve their own transfer a... |
+| mass-assign-force-fill | blind | mass_assignment | found; safe clean | found; safe clean | mass_assignment high · `app/Http/Controllers/Vuln/ProfileController.php:18` · `App\Http\Controllers\Vuln\ProfileController::update` · mass_assignment_privilege_escalation: forceFill($request->except('password')) skips $fillable and writes every request attribute except password onto the Use... |
+| workflow-cancel-shipped-service | blind | workflow_bypass | found; safe clean | missed; safe clean |  |
+| idor-query-string-user-id | blind | idor | found; safe clean | found; safe clean | idor high · `app/Http/Controllers/Vuln/StatementController.php:14` · `App\Http\Controllers\Vuln\StatementController::index` · idor: The user_id request parameter decides which user's statements are returned, and nothing checks that it matches the logged-in user. |
+
+### Their findings and how each was mapped
+
+| # | Reported at (original path) | Their category | Scored as | Rule | Symbol | Located by |
+|---|---|---|---|---|---|---|
+| 1 | `laravel11-app/app/Http/Controllers/Vuln/CartController.php:13` | insecure_deserialization | insecure_deserialization | category-field | `App\Http\Controllers\Vuln\CartController::restore` | method |
+| 2 | `laravel11-app/app/Http/Controllers/Vuln/AccountController.php:14` | mass_assignment_privilege_escalation | mass_assignment | keyword:mass_assignment | `App\Http\Controllers\Vuln\AccountController::update` | method |
+| 3 | `laravel12-app/app/Http/Controllers/Vuln/ProfileController.php:18` | mass_assignment_privilege_escalation | mass_assignment | keyword:mass_assignment | `App\Http\Controllers\Vuln\ProfileController::update` | method |
+| 4 | `laravel12-app/app/Http/Controllers/Vuln/StatementController.php:14` | idor | idor | category-field | `App\Http\Controllers\Vuln\StatementController::index` | method |
+| 5 | `laravel12-app/app/Http/Controllers/Vuln/TicketController.php:14` | idor | idor | category-field | `App\Http\Controllers\Vuln\TicketController::index` | method |
+| 6 | `laravel12-app/app/Http/Controllers/Vuln/PayoutController.php:13` | idor | idor | category-field | `App\Http\Controllers\Vuln\PayoutController::index` | method |
+| 7 | `laravel12-app/app/Http/Controllers/Vuln/TeamProjectController.php:15` | idor | idor | category-field | `App\Http\Controllers\Vuln\TeamProjectController::show` | method |
+| 8 | `laravel11-app/app/Http/Controllers/Vuln/InvoiceController.php:19` | idor | idor | category-field | `App\Http\Controllers\Vuln\InvoiceController::show` | method |
+| 9 | `laravel11-app/app/Http/Controllers/Vuln/ReceiptController.php:18` | idor | idor | category-field | `App\Http\Controllers\Vuln\ReceiptController::show` | method |
+| 10 | `laravel11-app/app/Http/Controllers/Vuln/DownloadController.php:17` | idor | idor | category-field | `App\Http\Controllers\Vuln\DownloadController::show` | method |
+| 11 | `laravel11-app/app/Http/Controllers/Vuln/DocumentController.php:22` | idor | idor | category-field | `App\Http\Controllers\Vuln\DocumentController::show` | method |
+| 12 | `laravel11-app/app/Http/Controllers/Vuln/ProjectController.php:14` | authorization_bypass | idor | exploit:idor | `App\Http\Controllers\Vuln\ProjectController::update` | method |
+| 13 | `laravel11-app/app/Policies/CommentPolicy.php:12` | authorization_bypass | idor\|missing_authorization | access-control | `App\Policies\CommentPolicy::delete` | method |
+| 14 | `laravel12-app/app/Http/Controllers/Vuln/AddressController.php:20` | idor | idor | category-field | `App\Http\Controllers\Vuln\AddressController::update` | method |
+| 15 | `laravel12-app/app/Http/Controllers/Vuln/ContactController.php:14` | idor | idor | category-field | `App\Http\Controllers\Vuln\ContactController::restore` | method |
+| 16 | `laravel10-app/app/Http/Controllers/Vuln/NoteController.php:29` | idor | idor | category-field | `App\Http\Controllers\Vuln\NoteController::show` | method |
+| 17 | `laravel10-app/app/Http/Controllers/Vuln/ReportController.php:18` | idor | idor | category-field | `App\Http\Controllers\Vuln\ReportController::show` | method |
+| 18 | `laravel11-app/app/Http/Controllers/Vuln/SharedInvoiceController.php:15` | idor | idor | category-field | `App\Http\Controllers\Vuln\SharedInvoiceController::show` | method |
+| 19 | `laravel12-app/app/Http/Controllers/Vuln/ReviewController.php:15` | authorization_bypass | idor\|missing_authorization | access-control | `App\Http\Controllers\Vuln\ReviewController::update` | method |
+| 20 | `laravel11-app/app/Http/Controllers/Vuln/TeamController.php:14` | mass_assignment | mass_assignment | category-field | `App\Http\Controllers\Vuln\TeamController::store` | method |
+| 21 | `laravel12-app/app/Policies/TransferPolicy.php:12` | authorization_bypass | idor\|missing_authorization | access-control | `App\Policies\TransferPolicy::approve` | method |
+| 22 | `laravel12-app/app/Policies/WithdrawalPolicy.php:12` | authorization_bypass | workflow_bypass | keyword:workflow_bypass | `App\Policies\WithdrawalPolicy::approve` | method |
+| 23 | `laravel10-app/app/Http/Kernel.php:16` | csrf | * | none | `App\Http\Kernel` | class |
+
+### Category inference
+
+Their findings carry a free-text `category` and no CWE field, while our scorer needs one of five categories. The first rule that matches decides: a CWE id anywhere in the finding, then our own category name as theirs, then keywords in category and description (`keyword:`), then keywords in the exploit scenario (`exploit:`). Generic authorization wording scores as either `idor` or `missing_authorization` (`access-control`). A finding with nothing to go on (`none`) scores as **any category** for the found check, so they are not penalised for vocabulary. Our findings must match the case category exactly, so this favours them.
+
+| Rule | Findings |
+|---|---|
+| category-field | 15 |
+| keyword:mass_assignment | 2 |
+| keyword:workflow_bypass | 1 |
+| exploit:idor | 1 |
+| access-control | 3 |
+| none | 1 |
+
+### Asymmetries
+
+- Input. They review a PR diff of the three apps plus whatever the agent chooses to open in the checkout; we analyze each app as a whole project, with routes, middleware and policies resolved before the LLM sees a candidate. Their prompt lists only the first 100 changed files (one GitHub API page), although the diff itself is complete.
+- Disguise. They ran on the disguised copy (`Vuln`/`Safe` renamed to `Alpha`/`Beta` at random per class pair, routes regrouped to match, line numbers kept outside route files). Our gate numbers above come from the same disguised copy, mapped back to the original names for scoring; the undisguised table is shown only for reference.
+- Category. Their category is inferred (see above) and may be "any category"; ours must match exactly.
+- Location. A finding counts only at the case symbol or an accepted one. Their file and line become the enclosing method through our `SymbolTable`; a line in a route file becomes that route's controller action. Findings on models, form requests or class bodies land on no case, for both tools.
+- Model and method. Theirs: `claude-opus-5-5` in one agentic Claude Code session with file tools; ours: `claude-opus-5-5`, one structured call per selected route and category.
+- Suppression. They do not honour `@semantic-sec-ignore`; we report the annotated case as suppressed, and both count as found for `suppressed-idor`.
+- Filtering. Their eval mode applies only the hard-coded exclusion rules; the GitHub Action also runs a second Claude false-positive filter, which this run did not use.
+- Confidence. Their 0 to 1 confidence maps to high (0.9 and up), medium (0.7 and up) or low; their prompt drops findings under 0.7. Cost guard: at most 1 Claude Code calls, 60 turns and $4 each.
+
