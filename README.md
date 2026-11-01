@@ -299,6 +299,8 @@ The workflow is for **pull requests from branches of the same repository only**:
 
 The GitLab job works the same way: it takes the config and baseline from `$CI_MERGE_REQUEST_DIFF_BASE_SHA` (the merge base on the target branch), scans with `--since` against it, and keeps the report only on exit 0 or 1.
 
+**GitLab's merge-request security widget.** The widget compares the MR pipeline's SAST report with the target branch's latest one. A `--since` report holds only the affected routes, so the widget may list unaffected findings from the target branch as fixed. For that reason the example's `--since` MR job keeps its report as a plain job artifact (`artifacts: paths:`), not a `reports: sast` artifact. Use `--since` for fast feedback. If you rely on the widget, run the full scan without `--since` in MR pipelines; the example has a commented-out `semantic-sec:mr-full` job for that.
+
 ## Privacy: what leaves your machine
 
 `map` and `analyze --dry-run` make no network calls. A real `analyze` sends requests only to the provider you configured (its default API URL, or your `base_url`). There is no telemetry.
@@ -353,6 +355,8 @@ The scanner ran on a disguised copy of the corpus, with the vulnerable and safe 
 | Public-by-design routes flagged | 0/1 | 0/1 | none | 0/2 |
 
 All three safe-variant flags are low-confidence `workflow_bypass` notes saying a pause, approve or publish action has no status guard. They are reported as not failing and never fail CI. Measured against our own release bar (SPEC §15), the existing and blind sets pass, and the holdout fails: 2 of 6 safe variants flagged at any confidence, and 10 of its 12 expected authorization checks matched by `map` (60 of 62 across the corpus).
+
+**Cost.** One full run over the corpus cost about $0.41–0.61 on `claude-opus-5-5`, the model measured above (see [`docs/benchmark-decision.md`](docs/benchmark-decision.md)). On your project, cost grows roughly with the number of candidate routes. `--dry-run` lists every payload with its estimated token count before you spend anything, and `--budget` caps a run.
 
 **Compared with Anthropic's `claude-code-security-review`.** It ran with the same model on the same disguised copy, as one pull request, and was scored by the same scorer. It wasn't run on the holdout.
 
