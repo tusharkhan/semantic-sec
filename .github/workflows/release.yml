@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  phar:
+    runs-on: ubuntu-latest
+    name: Build and publish the PHAR
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer:v2
+          coverage: none
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '/^## \[/ { found = index($0, "## [" v "]") == 1; next } found' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "::error::CHANGELOG.md has no non-empty '## [$version]' section"
+            exit 1
+          fi
+      - run: tools/build-phar.sh
+      - name: Smoke-run the PHAR
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          php build/semantic-sec.phar --version | grep -Fx "semantic-sec $version" || { echo "::error::PHAR version does not match tag $GITHUB_REF_NAME"; exit 1; }
+          php build/semantic-sec.phar map --project-root=benchmark/laravel11-app
+          (cd build && sha256sum -c semantic-sec.phar.sha256)
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" build/semantic-sec.phar build/semantic-sec.phar.sha256 --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"

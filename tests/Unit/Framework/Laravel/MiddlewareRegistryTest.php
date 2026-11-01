@@ -318,7 +318,7 @@ final class MiddlewareRegistryTest extends TestCase
     {
         $r = $this->permissionRegistry(['permission']);
         self::assertSame(MiddlewareKind::Authorization, $r->kind($r->canonical('permission')));
-        self::assertSame(MiddlewareKind::Authorization, $r->kind($r->canonical('permission:some,args')));
+        self::assertSame(MiddlewareKind::Authorization, $r->kind($r->canonical('permission:manage')));
         self::assertSame(MiddlewareKind::Authorization, $r->kind($r->canonical('App\Http\Middleware\CheckPermission:x')));
         self::assertSame(MiddlewareKind::Other, $r->kind($r->canonical('perm')));
         self::assertSame(MiddlewareKind::Other, $r->kind($r->canonical('permissionx')));

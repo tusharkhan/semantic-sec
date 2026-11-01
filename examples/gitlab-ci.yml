@@ -1,0 +1,107 @@
+# semantic-sec: full scan on the default branch, changed-code scan on merge requests, results as a GitLab SAST report.
+# Add it to .gitlab-ci.yml and set ANTHROPIC_API_KEY as a masked CI/CD variable (Settings > CI/CD > Variables).
+# Trust boundary: a merge request pipeline runs the MR's own .gitlab-ci.yml, composer.json and composer.lock.
+# Protect .gitlab-ci.yml, composer.json and composer.lock with CODEOWNERS approval.
+# Fork MRs run in the fork without your variables; don't run them in the parent project unless you trust the code.
+
+.semantic-sec:
+  # Any image with PHP 8.2+, git and Composer works; semantic-sec only reads the project.
+  image: composer:2
+  variables:
+    # Full history, so --since can find the merge base.
+    GIT_DEPTH: "0"
+    # composer: semantic-sec is a dev dependency (composer require --dev tusharkhan/semantic-sec:^0.1).
+    # phar: download the release PHAR; use this when the project runs on PHP 7.4-8.1.
+    SEMANTIC_SEC_INSTALL: composer
+    SEMANTIC_SEC_VERSION: v0.1.0
+  before_script:
+    - |
+      if [ "$SEMANTIC_SEC_INSTALL" = phar ]; then
+        url="https://github.com/tusharkhan/semantic-sec/releases/download/$SEMANTIC_SEC_VERSION"
+        mkdir -p /tmp/semantic-sec && cd /tmp/semantic-sec
+        curl -fsSLO "$url/semantic-sec.phar"
+        curl -fsSLO "$url/semantic-sec.phar.sha256"
+        # For a stronger check, pin the hash here instead of downloading it.
+        sha256sum -c semantic-sec.phar.sha256
+        cd "$CI_PROJECT_DIR"
+        export SEMANTIC_SEC=/tmp/semantic-sec/semantic-sec.phar
+      else
+        composer install --no-interaction --no-progress
+        export SEMANTIC_SEC=vendor/bin/semantic-sec
+      fi
+
+semantic-sec:full:
+  extends: .semantic-sec
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - |
+      set +e
+      php "$SEMANTIC_SEC" analyze --strict --format=gitlab-sast --output=gl-sast-report.json
+      code=$?
+      set -e
+      # Exit 2 or 3 means a partial report; don't publish it.
+      if [ "$code" -gt 1 ]; then rm -f gl-sast-report.json; fi
+      exit "$code"
+  artifacts:
+    # Uploaded after a failing job too; the script deletes the report on exit 2 or 3.
+    when: always
+    reports:
+      sast: gl-sast-report.json
+
+# The MR widget compares this pipeline's SAST report with the target branch's, and a --since report
+# holds only the affected routes, so the widget may list unaffected findings as fixed.
+# This job therefore keeps its report as a plain artifact; use the full-scan variant below for the widget.
+semantic-sec:mr:
+  extends: .semantic-sec
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    # Config and baseline come from the merge base on the target branch, so the MR cannot loosen them.
+    - |
+      base="$CI_MERGE_REQUEST_DIFF_BASE_SHA"
+      git show "$base:semantic-sec.yaml" > /tmp/semantic-sec.yaml 2>/dev/null || : > /tmp/semantic-sec.yaml
+      if git show "$base:semantic-sec-baseline.json" > /tmp/baseline.json 2>/dev/null; then
+        baseline="--baseline=/tmp/baseline.json"
+      else
+        baseline="--no-baseline"
+      fi
+      set +e
+      php "$SEMANTIC_SEC" analyze --since="$base" --config=/tmp/semantic-sec.yaml "$baseline" \
+        --strict --no-cache --format=gitlab-sast --output=gl-sast-report.json
+      code=$?
+      set -e
+      # Exit 2 or 3 means a partial report; don't publish it.
+      if [ "$code" -gt 1 ]; then rm -f gl-sast-report.json; fi
+      exit "$code"
+  artifacts:
+    # Uploaded after a failing job too; the script deletes the report on exit 2 or 3.
+    when: always
+    paths:
+      - gl-sast-report.json
+
+# Optional: a full scan on merge requests, for the MR security widget. Slower and costs more per pipeline.
+# semantic-sec:mr-full:
+#   extends: .semantic-sec
+#   rules:
+#     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+#   script:
+#     - |
+#       base="$CI_MERGE_REQUEST_DIFF_BASE_SHA"
+#       git show "$base:semantic-sec.yaml" > /tmp/semantic-sec.yaml 2>/dev/null || : > /tmp/semantic-sec.yaml
+#       if git show "$base:semantic-sec-baseline.json" > /tmp/baseline.json 2>/dev/null; then
+#         baseline="--baseline=/tmp/baseline.json"
+#       else
+#         baseline="--no-baseline"
+#       fi
+#       set +e
+#       php "$SEMANTIC_SEC" analyze --config=/tmp/semantic-sec.yaml "$baseline" \
+#         --strict --no-cache --format=gitlab-sast --output=gl-sast-report.json
+#       code=$?
+#       set -e
+#       if [ "$code" -gt 1 ]; then rm -f gl-sast-report.json; fi
+#       exit "$code"
+#   artifacts:
+#     when: always
+#     reports:
+#       sast: gl-sast-report.json

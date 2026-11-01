@@ -36,6 +36,7 @@ use TusharKhan\SemanticSec\Llm\GroundingChecker;
 use TusharKhan\SemanticSec\Llm\ValidatingClient;
 use TusharKhan\SemanticSec\Output\BaselineFile;
 use TusharKhan\SemanticSec\Output\ConsoleFormatter;
+use TusharKhan\SemanticSec\Output\GitlabSastFormatter;
 use TusharKhan\SemanticSec\Output\JsonFormatter;
 use TusharKhan\SemanticSec\Output\SafeWriter;
 use TusharKhan\SemanticSec\Output\SarifFormatter;
@@ -56,6 +57,8 @@ class AnalyzeCommand extends Command
 
     // Sorts before every payload file, whose ids start at 001.
     public const SYSTEM_FILE = '000-system.txt';
+
+    private int $startedAt = 0;
 
     /**
      * @param  (\Closure(Config): ClientInterface)|null  $providerClient  test seam: replaces the provider client under ValidatingClient
@@ -86,7 +89,7 @@ class AnalyzeCommand extends Command
             ->addOption('budget', null, InputOption::VALUE_REQUIRED, 'Hard cap on provider tokens; below one request\'s reservation (~35k at the default max_tokens) nothing is sent (config: budget_tokens)')
             ->addOption('no-cache', null, InputOption::VALUE_NONE, 'Ignore cached answers (new answers are still cached)')
             ->addOption('strict', null, InputOption::VALUE_NONE, 'Exit 2 if any request failed, was refused, invalid or truncated, or any payload went unsent (ignored with --dry-run)')
-            ->addOption('format', null, InputOption::VALUE_REQUIRED, 'console, json or sarif', 'console')
+            ->addOption('format', null, InputOption::VALUE_REQUIRED, 'console, json, sarif or gitlab-sast', 'console')
             ->addOption('output', null, InputOption::VALUE_REQUIRED, 'Write the report to this file (never through a symlink); the summary and warnings go to stderr')
             ->addOption('baseline', null, InputOption::VALUE_REQUIRED, 'Baseline file: findings whose fingerprint is in it are baselined, not reported (default: semantic-sec-baseline.json in the project root, if present)')
             ->addOption('no-baseline', null, InputOption::VALUE_NONE, 'Read no baseline file, not even the default one; for runs on code you do not trust')
@@ -120,6 +123,7 @@ class AnalyzeCommand extends Command
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
+        $this->startedAt = time();
         $dryRun = $input->getOption('dry-run') === true;
         $format = (string) $input->getOption('format');
         $generate = $this->generatesBaseline($input);
@@ -147,11 +151,11 @@ class AnalyzeCommand extends Command
         if ($dryRun && $input->getOption('output') !== null) {
             return $this->fail($output, '--output cannot be used with --dry-run');
         }
-        if ($format !== 'console' && $format !== 'json' && $format !== 'sarif') {
-            return $this->fail($output, '--format must be console, json or sarif');
+        if (! in_array($format, ['console', 'json', 'sarif', 'gitlab-sast'], true)) {
+            return $this->fail($output, '--format must be console, json, sarif or gitlab-sast');
         }
-        if ($dryRun && $format === 'sarif') {
-            return $this->fail($output, '--format sarif cannot be used with --dry-run');
+        if ($dryRun && ($format === 'sarif' || $format === 'gitlab-sast')) {
+            return $this->fail($output, '--format '.$format.' cannot be used with --dry-run');
         }
         $report = $this->stringOption($input, 'output');
         if ($report !== null) {
@@ -347,6 +351,8 @@ class AnalyzeCommand extends Command
             'level' => $config->level->value,
             'budget' => $config->budgetTokens,
             'exitCode' => $exit,
+            'startedAt' => $this->startedAt,
+            'finishedAt' => time(),
         ];
 
         $file = $this->stringOption($input, 'output');
@@ -361,6 +367,7 @@ class AnalyzeCommand extends Command
         $formatter = match ($format) {
             'json' => new JsonFormatter(),
             'sarif' => new SarifFormatter(),
+            'gitlab-sast' => new GitlabSastFormatter(),
             default => new ConsoleFormatter(),
         };
         $document = $formatter->format($report, $meta);

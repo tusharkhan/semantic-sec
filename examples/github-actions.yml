@@ -1,0 +1,93 @@
+# semantic-sec: full scan on main, changed-code scan on pull requests, results in GitHub code scanning.
+# Copy to .github/workflows/semantic-sec.yml and add the ANTHROPIC_API_KEY repository secret.
+# Trust boundary: under pull_request the workflow file, composer.json and composer.lock come from the PR.
+# Protect .github/workflows/**, composer.json and composer.lock with CODEOWNERS review.
+# Never switch this to pull_request_target: it hands your secrets to code from the PR.
+name: semantic-sec
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  # composer: semantic-sec is a dev dependency (composer require --dev tusharkhan/semantic-sec:^0.1).
+  # phar: download the release PHAR; use this when the project runs on PHP 7.4-8.1.
+  SEMANTIC_SEC_INSTALL: composer
+  SEMANTIC_SEC_VERSION: v0.1.0
+
+jobs:
+  semantic-sec:
+    # Fork PRs get no secrets, so only same-repository PRs are scanned.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      BASE: origin/${{ github.base_ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, so --since can find the merge base.
+          fetch-depth: 0
+
+      # semantic-sec needs PHP 8.2+ to run; it only reads the project.
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+
+      - name: Install (Composer)
+        if: env.SEMANTIC_SEC_INSTALL == 'composer'
+        run: |
+          composer install --no-interaction --no-progress
+          echo "SEMANTIC_SEC=vendor/bin/semantic-sec" >> "$GITHUB_ENV"
+
+      - name: Install (PHAR)
+        if: env.SEMANTIC_SEC_INSTALL == 'phar'
+        working-directory: ${{ runner.temp }}
+        run: |
+          url="https://github.com/tusharkhan/semantic-sec/releases/download/$SEMANTIC_SEC_VERSION"
+          curl -fsSLO "$url/semantic-sec.phar"
+          curl -fsSLO "$url/semantic-sec.phar.sha256"
+          # For a stronger check, pin the hash here instead of downloading it.
+          sha256sum -c semantic-sec.phar.sha256
+          echo "SEMANTIC_SEC=$RUNNER_TEMP/semantic-sec.phar" >> "$GITHUB_ENV"
+
+      # On a PR the config and baseline come from the base branch, so the PR cannot loosen them.
+      - name: Config and baseline from the base branch
+        if: github.event_name == 'pull_request'
+        run: |
+          git show "$BASE:semantic-sec.yaml" > "$RUNNER_TEMP/semantic-sec.yaml" 2>/dev/null || : > "$RUNNER_TEMP/semantic-sec.yaml"
+          if git show "$BASE:semantic-sec-baseline.json" > "$RUNNER_TEMP/baseline.json" 2>/dev/null; then
+            echo "BASELINE=--baseline=$RUNNER_TEMP/baseline.json" >> "$GITHUB_ENV"
+          else
+            echo "BASELINE=--no-baseline" >> "$GITHUB_ENV"
+          fi
+
+      - name: Scan
+        id: scan
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set +e
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            php "$SEMANTIC_SEC" analyze --since="$BASE" --config="$RUNNER_TEMP/semantic-sec.yaml" "$BASELINE" \
+              --strict --no-cache --format=sarif --output=semantic-sec.sarif
+          else
+            php "$SEMANTIC_SEC" analyze --strict --format=sarif --output=semantic-sec.sarif
+          fi
+          code=$?
+          echo "exit=$code" >> "$GITHUB_OUTPUT"
+          exit $code
+
+      # Exit 2 or 3 means a partial SARIF, which would close alerts for routes it never checked.
+      - name: Upload SARIF (completed runs only)
+        if: always() && (steps.scan.outputs.exit == '0' || steps.scan.outputs.exit == '1')
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: semantic-sec.sarif
+          # A PR scan covers only the affected routes, so it gets its own category.
+          category: ${{ github.event_name == 'pull_request' && 'semantic-sec-pr' || 'semantic-sec' }}

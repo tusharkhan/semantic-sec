@@ -18,7 +18,7 @@ final class ApplicationTest extends TestCase
 
         $tester->run(['--version' => true]);
 
-        self::assertStringContainsString('semantic-sec 0.1.0-dev', $tester->getDisplay());
+        self::assertStringContainsString('semantic-sec 0.1.0', $tester->getDisplay());
         self::assertSame(0, $tester->getStatusCode());
     }
 }
