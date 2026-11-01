@@ -24,13 +24,18 @@ final class Runner
     // Same flags for record and replay, so body-matched requests line up.
     private const ANALYZE = ['--no-cache' => true, '--no-baseline' => true, '--level' => 'low', '--min-confidence' => 'low', '--provider' => 'anthropic', '--format' => 'json'];
 
-    public function __construct(private readonly string $cassetteDir)
+    public const PREFIX = 'benchmark';
+
+    public const DISGUISED_PREFIX = 'benchmark-disguised';
+
+    // $source holds the apps (default benchmark/); $prefix names the cassettes, so disguised runs never touch the originals.
+    public function __construct(private readonly string $cassetteDir, private readonly ?string $source = null, private readonly string $prefix = self::PREFIX)
     {
     }
 
     public function cassette(string $app): string
     {
-        return rtrim($this->cassetteDir, '/')."/benchmark-{$app}.json";
+        return rtrim($this->cassetteDir, '/')."/{$this->prefix}-{$app}.json";
     }
 
     /**
@@ -46,8 +51,8 @@ final class Runner
         }
         $base = sys_get_temp_dir().'/semsec-bench-'.bin2hex(random_bytes(4));
         try {
-            $dry = self::copy($app, $base.'/dry');
-            $root = self::copy($app, $base.'/run');
+            $dry = $this->copy($app, $base.'/dry');
+            $root = $this->copy($app, $base.'/run');
             $dryRun = self::json(new AnalyzeCommand(), ['--project-root' => $dry, '--dry-run' => true, '--format' => 'json'], "dry run of {$app}", [0]);
             $map = self::json((new Application())->find('map'), ['--project-root' => $dry, '--format' => 'json'], "map of {$app}", [0]);
 
@@ -95,12 +100,12 @@ final class Runner
         }
     }
 
-    private static function copy(string $app, string $dir): string
+    private function copy(string $app, string $dir): string
     {
         if (! is_dir($dir) && ! mkdir($dir, 0o777, true)) {
             throw new \RuntimeException("cannot create {$dir}");
         }
-        exec('cp -R '.escapeshellarg(BenchmarkCorpus::root().'/'.$app).' '.escapeshellarg($dir.'/'.$app), $out, $code);
+        exec('cp -R '.escapeshellarg(($this->source ?? BenchmarkCorpus::root()).'/'.$app).' '.escapeshellarg($dir.'/'.$app), $out, $code);
         if ($code !== 0) {
             throw new \RuntimeException("cannot copy {$app} to {$dir}");
         }

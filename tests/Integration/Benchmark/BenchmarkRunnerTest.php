@@ -7,12 +7,15 @@ namespace TusharKhan\SemanticSec\Tests\Integration\Benchmark;
 use PHPUnit\Framework\Attributes\Depends;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Tester\CommandTester;
+use TusharKhan\SemanticSec\Tests\Support\Benchmark\BenchmarkCase;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\BenchmarkCommand;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\Disguise;
+use TusharKhan\SemanticSec\Tests\Support\Benchmark\DisguiseMap;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\ExpectedCases;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\FakeAnthropicHandler;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\Runner;
 use TusharKhan\SemanticSec\Tests\Support\Benchmark\Scorer;
+use TusharKhan\SemanticSec\Tests\Support\Benchmark\Variant;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkCorpus;
 
 /** bin/benchmark's plumbing end to end on laravel10-app: fake-recorded cassette, replay, score, report. No network. */
@@ -126,6 +129,44 @@ final class BenchmarkRunnerTest extends TestCase
         self::assertStringContainsString('| existing | Recall (found) | 100.0% (2/2) | 50.0% (1/2) |', $report);
         self::assertStringContainsString('`abc123`', $report);
         self::assertStringContainsString('`App\Http\Controllers\Vuln\ReportController::show`', $report);
+    }
+
+    #[Depends('testFakeRecordThenReplayScores')]
+    public function testDisguisedRunIsTheGateAndMapsBack(): void
+    {
+        $map = Disguise::run(BenchmarkCorpus::root(), self::$dir.'/disguised/bench', apps: [self::APP]);
+        Disguise::writeMap($map, self::$dir.'/disguised/disguise-map.json');
+        $disguiseMap = DisguiseMap::load(self::$dir.'/disguised/disguise-map.json');
+        $cases = array_values(array_filter(self::cases(), static fn ($c): bool => $c->app === self::APP));
+        $hidden = array_map(static fn ($c) => new BenchmarkCase($c->id, $c->app, $c->set, $c->category, self::hide($disguiseMap, $c->app, $c->vulnerable), self::hide($disguiseMap, $c->app, $c->safe)), $cases);
+        $runner = new Runner(self::$dir, self::$dir.'/disguised/bench', Runner::DISGUISED_PREFIX);
+        $runner->run(self::APP, 'record', new FakeAnthropicHandler($hidden), 'fake-key');
+
+        self::assertFileExists(self::$dir.'/benchmark-disguised-'.self::APP.'.json');
+        self::assertStringNotContainsString('Vuln', (string) file_get_contents($runner->cassette(self::APP)));
+
+        $out = self::$dir.'/disguised.md';
+        $tester = new CommandTester(new BenchmarkCommand());
+        $exit = $tester->execute(['--app' => [self::APP], '--cassettes' => self::$dir, '--out' => $out, '--source' => self::$dir.'/disguised/bench', '--disguise-map' => self::$dir.'/disguised/disguise-map.json']);
+        $report = (string) file_get_contents($out);
+
+        self::assertSame(0, $exit, $tester->getDisplay());
+        self::assertStringContainsString('Source: disguised copy', $report);
+        self::assertStringContainsString('| idor-l10-resource | existing | laravel10-app | idor | found |', $report);
+        self::assertStringContainsString('`App\Http\Controllers\Vuln\NoteController::show`', $report);
+        self::assertStringContainsString('| Expected authorization checks in the map | 100% | 100.0% (4/4) PASS |', $report);
+        self::assertStringContainsString('## Gate, undisguised (names visible)', $report);
+        self::assertStringNotContainsString('\\Alpha\\', $report);
+
+        self::assertSame(2, $tester->execute(['--source' => self::$dir.'/disguised/bench']));
+        self::assertStringContainsString('--source needs --disguise-map', $tester->getDisplay());
+    }
+
+    private static function hide(DisguiseMap $map, string $app, Variant $v): Variant
+    {
+        $symbol = $map->disguisedSymbol($app, $v->symbol);
+
+        return new Variant($map->disguisedRoute($app, $v->route), $symbol, ExpectedCases::fileOf($symbol), $v->map, $v->line, $v->suppressed, $v->accept, $v->candidate, $v->posthoc);
     }
 
     public function testCommandRefusesMissingCassettesAndBadOptions(): void

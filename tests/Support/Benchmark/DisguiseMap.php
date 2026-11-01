@@ -97,6 +97,13 @@ final class DisguiseMap
         return $this->byApp[$app]['files'][$file] ?? $file;
     }
 
+    public function disguisedRoute(string $app, string $route): string
+    {
+        $found = array_search($route, $this->byApp[$app]['routes'] ?? [], true);
+
+        return is_string($found) ? $found : $route;
+    }
+
     public function originalRoute(string $app, string $route): string
     {
         return $this->byApp[$app]['routes'][$route] ?? $route;

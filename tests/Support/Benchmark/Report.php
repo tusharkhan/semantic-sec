@@ -27,7 +27,8 @@ final class Report
     /**
      * @param array<string, mixed> $meta mode, date, models (list), promptVersion, requests, usage (Usage)
      */
-    public static function markdown(Score $s, array $meta, ?CompetitorResult $competitor = null): string
+    // $undisguised: null for a run on benchmark/; for a disguised run, the replayed undisguised score or false when its cassettes are missing.
+    public static function markdown(Score $s, array $meta, ?CompetitorResult $competitor = null, Score|false|null $undisguised = null): string
     {
         $columns = [...$s->sets(), 'all'];
         $out = ['# Benchmark results', ''];
@@ -39,6 +40,10 @@ final class Report
             self::meta($meta, 'date'),
         );
         $out[] = '';
+        if ($undisguised !== null) {
+            $out[] = 'Source: disguised copy (`Vuln`/`Safe` renamed to `Alpha`/`Beta`, findings mapped back through the disguise map). The gate below is the result; the run on `benchmark/` itself follows as a secondary table.';
+            $out[] = '';
+        }
         $out[] = 'Apps: '.implode(', ', $s->apps()).'. Scored at `--level low` with every confidence; "failing" means confidence medium or high.';
         $out[] = '';
 
@@ -48,6 +53,13 @@ final class Report
         $out[] = '## Gate, failing findings only';
         $out[] = '';
         array_push($out, ...self::gateTable($s, $columns, true));
+        if ($undisguised !== null) {
+            $out[] = '## Gate, undisguised (names visible)';
+            $out[] = '';
+            $out[] = 'Secondary only: the same scorer on the recorded run over `benchmark/`, where `Vuln`/`Safe` show in paths, namespaces and routes.';
+            $out[] = '';
+            array_push($out, ...($undisguised === false ? ['Not available: the undisguised cassettes are missing.', ''] : self::gateTable($undisguised, [...$undisguised->sets(), 'all'], false)));
+        }
 
         array_push($out, ...self::selection($s));
 

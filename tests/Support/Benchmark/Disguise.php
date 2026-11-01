@@ -383,12 +383,16 @@ final class Disguise
         }
     }
 
+    // Source only: tool output (.semantic-sec/), hidden files and vendor/ never go into the copy.
     /** @return list<string> relative paths, sorted */
     private static function files(string $dir): array
     {
         $out = [];
         foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS)) as $file) {
-            $out[] = substr((string) $file, strlen($dir) + 1);
+            $relative = substr((string) $file, strlen($dir) + 1);
+            if (preg_match('#(^|/)(\.|vendor/|node_modules/)#', $relative) !== 1) {
+                $out[] = $relative;
+            }
         }
         sort($out);
 

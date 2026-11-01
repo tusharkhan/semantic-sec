@@ -35,6 +35,7 @@ final class BenchmarkCommand extends Command
             ->addOption('app', null, InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY, 'Benchmark app to run (repeatable; default: every app with cases in --set)')
             ->addOption('set', null, InputOption::VALUE_REQUIRED, 'all, existing or blind', 'all')
             ->addOption('competitor', null, InputOption::VALUE_REQUIRED, 'claude-code-security-review eval_results.json to score as well (M8 Task 5)')
+            ->addOption('source', null, InputOption::VALUE_REQUIRED, 'Run on the disguised copy in this directory (needs --disguise-map); cassettes benchmark-disguised-<app>.json')
             ->addOption('disguise-map', null, InputOption::VALUE_REQUIRED, 'disguise-map.json from tools/benchmark-disguise.php; its copy is where the competitor ran')
             ->addOption('out', null, InputOption::VALUE_REQUIRED, 'Report path, relative to the repository root', 'docs/benchmark-results.md')
             ->addOption('budget', null, InputOption::VALUE_REQUIRED, 'Passed to analyze --budget for each app (with --live, default '.self::LIVE_BUDGET.')')
@@ -52,6 +53,10 @@ final class BenchmarkCommand extends Command
         $disguisePath = $input->getOption('disguise-map');
         if (is_string($competitorPath) && ! is_string($disguisePath)) {
             return $this->fail($output, '--competitor needs --disguise-map to map their files back to ours');
+        }
+        $source = $input->getOption('source');
+        if (is_string($source) && ! is_string($disguisePath)) {
+            return $this->fail($output, '--source needs --disguise-map to map our findings back to the original names');
         }
         $yaml = (string) file_get_contents(BenchmarkCorpus::root().'/expected.yaml');
         $cases = array_values(array_filter(ExpectedCases::load($yaml), static fn (BenchmarkCase $c): bool => $set === 'all' || $c->set === $set));
@@ -72,7 +77,23 @@ final class BenchmarkCommand extends Command
         $publics = array_values(array_filter($publics, static fn (PublicRoute $p): bool => in_array($p->app, $apps, true)));
 
         $dir = (string) $input->getOption('cassettes');
-        $runner = new Runner(str_starts_with($dir, '/') ? $dir : $repo.'/'.$dir);
+        $dir = str_starts_with($dir, '/') ? $dir : $repo.'/'.$dir;
+        $disguise = null;
+        if (is_string($source)) {
+            try {
+                $disguise = DisguiseMap::load($disguisePath);
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, $e->getMessage());
+            }
+            $source = str_starts_with($source, '/') ? $source : $repo.'/'.$source;
+            foreach ($apps as $app) {
+                if (! is_dir($source.'/'.$app) || ! in_array($app, $disguise->apps(), true)) {
+                    return $this->fail($output, "{$app} is missing from {$source} or from the disguise map");
+                }
+            }
+        }
+        $runner = $disguise === null ? new Runner($dir) : new Runner($dir, (string) $source, Runner::DISGUISED_PREFIX);
+        $undisguisedRunner = $disguise === null ? null : new Runner($dir);
         $live = $input->getOption('live') === true;
         $missing = array_filter($apps, static fn (string $a): bool => ! is_file($runner->cassette($a)));
         if (! $live && $missing !== []) {
@@ -97,10 +118,18 @@ final class BenchmarkCommand extends Command
             $output->writeln(sprintf('live run: token budget cap %s per app (analyze --budget)', $budget));
         }
         $runs = [];
+        $undisguisedRuns = [];
         try {
             foreach ($apps as $app) {
                 $output->writeln(sprintf('<info>%s</info> %s', $live ? 'recording' : 'replaying', $app), OutputInterface::VERBOSITY_VERBOSE);
-                $runs[$app] = $runner->run($app, $live ? 'record' : 'replay', null, trim($key), $budget);
+                $run = $runner->run($app, $live ? 'record' : 'replay', null, trim($key), $budget);
+                $runs[$app] = $disguise === null ? $run : self::undisguise($disguise, $run);
+            }
+            // The undisguised recordings are only ever replayed here, as the secondary table.
+            if ($undisguisedRunner !== null && array_filter($apps, static fn (string $a): bool => ! is_file($undisguisedRunner->cassette($a))) === []) {
+                foreach ($apps as $app) {
+                    $undisguisedRuns[$app] = $undisguisedRunner->run($app, 'replay', null, trim($key), $budget);
+                }
             }
         } catch (\RuntimeException $e) {
             return $this->fail($output, $e->getMessage());
@@ -116,6 +145,13 @@ final class BenchmarkCommand extends Command
             array_map(static fn (AppRun $r): array => $r->map, $runs),
             $publics,
             array_map(static fn (AppRun $r): array => $r->dryRun, $runs),
+        );
+        $undisguised = $undisguisedRuns === [] ? null : Scorer::score(
+            $cases,
+            array_map(static fn (AppRun $r): array => $r->analyze, $undisguisedRuns),
+            array_map(static fn (AppRun $r): array => $r->map, $undisguisedRuns),
+            $publics,
+            array_map(static fn (AppRun $r): array => $r->dryRun, $undisguisedRuns),
         );
         $competitor = null;
         if (is_string($competitorPath) && is_string($disguisePath)) {
@@ -144,7 +180,7 @@ final class BenchmarkCommand extends Command
             'promptVersion' => SecurityPrompt::VERSION,
             'requests' => $requests,
             'usage' => $usage,
-        ], $competitor);
+        ], $competitor, $disguise === null ? null : ($undisguised ?? false));
         $out = (string) $input->getOption('out');
         $path = str_starts_with($out, '/') ? $out : $repo.'/'.$out;
         if (! is_dir(dirname($path)) || file_put_contents($path, $markdown) === false) {
@@ -176,6 +212,20 @@ final class BenchmarkCommand extends Command
         $output->writeln(sprintf('%d requests, $%.2f estimated; report written to %s', $requests, Report::cost($usage), $out));
 
         return in_array(true, $verdicts, true) && ! in_array(false, $verdicts, true) ? Command::SUCCESS : Command::FAILURE;
+    }
+
+    // Our run on the disguised copy, rewritten to original names so the same cases score it.
+    private static function undisguise(DisguiseMap $map, AppRun $run): AppRun
+    {
+        return new AppRun(
+            $run->app,
+            Undisguise::analyze($map, $run->app, $run->analyze),
+            Undisguise::map($map, $run->app, $run->map),
+            Undisguise::dryRun($map, $run->app, $run->dryRun),
+            $run->usage,
+            $run->models,
+            $run->requests,
+        );
     }
 
     /**
