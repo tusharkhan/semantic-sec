@@ -130,6 +130,14 @@ final class MiddlewareRegistry
         return $middleware;
     }
 
+    // The class a middleware name runs: its alias target, or the name itself without parameters.
+    public function classOf(string $middleware): string
+    {
+        $name = explode(':', ltrim($middleware, '\\'), 2)[0];
+
+        return isset($this->aliases[$name]) ? ltrim(explode(':', $this->aliases[$name])[0], '\\') : $name;
+    }
+
     /**
      * @param  list<string>  $middleware
      * @return list<string>

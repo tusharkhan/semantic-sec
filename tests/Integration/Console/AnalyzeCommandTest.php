@@ -59,7 +59,8 @@ final class AnalyzeCommandTest extends TestCase
         [$code, $out, $err] = $this->analyze([], $this->answers(self::finding()));
 
         self::assertSame(1, $code, $err);
-        self::assertStringContainsString('[HIGH] idor app/Http/Controllers/Vuln/InvoiceController.php:19 App\Http\Controllers\Vuln\InvoiceController::show — IDOR: any authenticated user can read any invoice by id (high)', $out);
+        self::assertStringContainsString("[!] High Severity: IDOR: any authenticated user can read any invoice by id\n      File:          app/Http/Controllers/Vuln/InvoiceController.php\n      Line:          19\n      Symbol:        App\\Http\\Controllers\\Vuln\\InvoiceController::show", $out);
+        self::assertStringContainsString('Confidence:    high', $out);
         self::assertStringNotContainsString('not failing', $out);
         self::assertMatchesRegularExpression('~ok\s+14\b~', $out);
         self::assertCount(14, $this->requests);
@@ -71,7 +72,7 @@ final class AnalyzeCommandTest extends TestCase
         [$code, $out, $err] = $this->analyze(['--concurrency' => '1', '--budget' => '1000000'], $this->answers(self::finding(), 990_000));
 
         self::assertSame(1, $code, $err);
-        self::assertStringContainsString('[HIGH] idor app/Http/Controllers/Vuln/InvoiceController.php:19', $out);
+        self::assertStringContainsString('File:          app/Http/Controllers/Vuln/InvoiceController.php', $out);
         self::assertMatchesRegularExpression('~budget\s+1000000 \(exceeded\)~', $out);
         self::assertCount(2, $this->requests);
     }
@@ -104,7 +105,49 @@ final class AnalyzeCommandTest extends TestCase
         [$code, $out, $err] = $this->analyze([], $this->answers([...self::finding(), 'confidence' => 'low']));
 
         self::assertSame(0, $code, $err);
-        self::assertStringContainsString('InvoiceController::show — IDOR: any authenticated user can read any invoice by id (low, not failing)', $out);
+        self::assertStringContainsString('[!] High Severity: IDOR: any authenticated user can read any invoice by id', $out);
+        self::assertStringContainsString('Confidence:    low (not failing)', $out);
+    }
+
+    public function testStrictReasonInSummary(): void
+    {
+        $answer = fn (LlmRequest $r): LlmResponse => str_ends_with($r->payloadId, self::VULN)
+            ? new LlmResponse($r->payloadId, LlmOutcome::Refused, null, 10, 0, 'm', 'declined')
+            : ($this->answers(self::finding()))($r);
+
+        [$code, $out, $err] = $this->analyze([], $answer);
+        self::assertSame(0, $code, $err);
+        self::assertStringNotContainsString('strict:', $out);
+
+        [$code, $out, $err] = $this->analyze(['--strict' => true], $answer);
+        self::assertSame(2, $code, $err);
+        self::assertStringContainsString('strict: 1 refused', $out);
+        self::assertSame(1, substr_count($out, 'strict:'));
+    }
+
+    public function testStrictDoesNotHideAFailingFinding(): void
+    {
+        [$code, $out, $err] = $this->analyze(['--strict' => true, '--concurrency' => '1', '--budget' => '1000000'], $this->answers(self::finding(), 990_000));
+
+        self::assertSame(1, $code, $err);
+        self::assertStringNotContainsString('strict:', $out);
+    }
+
+    public function testStrictAcceptedWithDryRun(): void
+    {
+        $t = new CommandTester(new AnalyzeCommand());
+        $code = $t->execute(['--project-root' => $this->root, '--dry-run' => true, '--strict' => true], ['capture_stderr_separately' => true]);
+
+        self::assertSame(0, $code, $t->getErrorOutput());
+    }
+
+    public function testFilteredFindingsOnlyCounted(): void
+    {
+        [$code, $out, $err] = $this->analyze(['--level' => 'critical'], $this->answers(self::finding()));
+
+        self::assertSame(0, $code, $err);
+        self::assertMatchesRegularExpression('~filtered\s+1 \(below level critical\)~', $out);
+        self::assertStringNotContainsString('InvoiceController::show', $out);
     }
 
     public function testMissingKeyExitTwoNamesEnvOnly(): void
@@ -138,21 +181,129 @@ final class AnalyzeCommandTest extends TestCase
         self::assertSame("Error: SEMSEC_TEST_KEY is not set\n", $t->getErrorOutput());
     }
 
-    public function testM7OptionsRejected(): void
+    public function testJsonStdoutIsOnlyTheDocument(): void
     {
-        foreach ([
-            [['--format' => 'json'], '--format json is available in a later release'],
-            [['--format' => 'sarif'], '--format sarif is available in a later release'],
-            [['--output' => 'out.json'], '--output is available in a later release'],
-            [['--baseline' => 'b.json'], '--baseline is available in a later release'],
-            [['--generate-baseline' => true], '--generate-baseline is available in a later release'],
-            [['--since' => 'main'], '--since is available in a later release'],
-        ] as [$args, $message]) {
-            [$code, , $err] = $this->analyze($args, $this->answers(self::finding()));
-            self::assertSame(2, $code, $message);
-            self::assertSame("Error: {$message}\n", $err);
-        }
+        [$code, $out, $err] = $this->analyze(['--format' => 'json'], $this->answers(self::finding()));
+
+        self::assertSame(1, $code, $err);
+        $doc = json_decode($out, true, 512, JSON_THROW_ON_ERROR);
+        self::assertSame(1, $doc['version']);
+        self::assertCount(1, $doc['findings']);
+        self::assertSame(1, $doc['summary']['exitCode']);
+        self::assertStringEndsWith("}\n", $out);
+        self::assertMatchesRegularExpression('~^Summary$~m', $err, 'the summary goes to stderr');
+        self::assertStringNotContainsString('"findings"', $err);
+    }
+
+    public function testJsonOutputWritesTheDocumentToTheFile(): void
+    {
+        $file = $this->base.'/reports/report.json';
+        [$code, $out, $err] = $this->analyze(['--format' => 'json', '--output' => $file], $this->answers(self::finding()));
+
+        self::assertSame(1, $code, $err);
+        self::assertSame('', $out);
+        $doc = json_decode((string) file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
+        self::assertCount(1, $doc['findings']);
+        self::assertMatchesRegularExpression('~^Summary$~m', $err);
+        self::assertStringContainsString('Report written to '.$file, $err);
+    }
+
+    public function testSarifStdoutIsOnlyTheDocument(): void
+    {
+        [$code, $out, $err] = $this->analyze(['--format' => 'sarif'], $this->answers(self::finding()));
+
+        self::assertSame(1, $code, $err);
+        $doc = json_decode($out, true, 512, JSON_THROW_ON_ERROR);
+        self::assertSame('2.1.0', $doc['version']);
+        self::assertCount(1, $doc['runs'][0]['results']);
+        self::assertSame('error', $doc['runs'][0]['results'][0]['level']);
+        self::assertStringEndsWith("}\n", $out);
+        self::assertStringNotContainsString($this->root, $out);
+        self::assertMatchesRegularExpression('~^Summary$~m', $err, 'the summary goes to stderr');
+        self::assertStringNotContainsString('"runs"', $err);
+    }
+
+    public function testSarifOutputWritesTheDocumentToTheFile(): void
+    {
+        $file = $this->base.'/reports/report.sarif';
+        [$code, $out, $err] = $this->analyze(['--format' => 'sarif', '--output' => $file], $this->answers(self::finding()));
+
+        self::assertSame(1, $code, $err);
+        self::assertSame('', $out);
+        $doc = json_decode((string) file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
+        self::assertCount(1, $doc['runs'][0]['results']);
+        self::assertStringContainsString('Report written to '.$file, $err);
+    }
+
+    public function testUnknownFormatNamesSarif(): void
+    {
+        [$code, , $err] = $this->analyze(['--format' => 'xml'], $this->answers(self::finding()));
+
+        self::assertSame(2, $code);
+        self::assertSame("Error: --format must be console, json or sarif\n", $err);
         self::assertSame([], $this->requests);
+    }
+
+    public function testOutputWritesFileSummaryToStderr(): void
+    {
+        $file = $this->base.'/reports/report.txt';
+        [$code, $out, $err] = $this->analyze(['--output' => $file, '--strict' => true, '--no-cache' => true], $this->answers(self::finding()));
+        [$plainCode, $plain] = $this->analyze(['--strict' => true, '--no-cache' => true], $this->answers(self::finding()));
+
+        self::assertSame(1, $code, $err);
+        self::assertSame($plainCode, $code, 'exit codes are unchanged');
+        self::assertSame('', $out, 'stdout stays empty');
+        self::assertFileExists($file);
+        $report = (string) file_get_contents($file);
+        self::assertSame($plain, $report, 'the file holds the same report, undecorated');
+        self::assertStringContainsString('[!] High Severity: IDOR', $report);
+        self::assertStringNotContainsString("\e", $report);
+        self::assertStringNotContainsString('[!]', $err, 'findings go to the file only');
+        self::assertMatchesRegularExpression('~^Summary$~m', $err);
+        self::assertMatchesRegularExpression('~ok\s+14\b~', $err);
+        self::assertStringContainsString('Report written to '.$file, $err);
+    }
+
+    public function testOutputSymlinkRefused(): void
+    {
+        file_put_contents($this->base.'/victim', 'keep');
+        symlink($this->base.'/victim', $this->base.'/report.txt');
+        [$code, $out, $err] = $this->analyze(['--output' => $this->base.'/report.txt'], $this->answers(self::finding()));
+
+        self::assertSame(2, $code);
+        self::assertSame('', $out);
+        self::assertStringStartsWith('Error: Refusing to write', $err);
+        self::assertStringContainsString('is a symlink', $err);
+        self::assertSame('keep', file_get_contents($this->base.'/victim'));
+
+        mkdir($this->base.'/dir');
+        [$code, , $err] = $this->analyze(['--output' => $this->base.'/dir'], $this->answers(self::finding()));
+        self::assertSame(2, $code);
+        self::assertStringContainsString('is not a regular file', $err);
+    }
+
+    public function testBadOutputFailsBeforeParsing(): void
+    {
+        mkdir($this->base.'/dir');
+        $mapper = new MapBuilder();
+        [$code, $out, $err] = $this->analyze(['--output' => $this->base.'/dir'], $this->answers(self::finding()), $mapper);
+
+        self::assertSame(2, $code);
+        self::assertSame('', $out);
+        self::assertStringContainsString('is not a regular file', $err);
+        self::assertSame(0, $mapper->parses(), 'the project is never parsed');
+        self::assertSame([], $this->requests);
+        self::assertDirectoryDoesNotExist($this->root.'/.semantic-sec/cache');
+    }
+
+    public function testOutputRejectedWithDryRun(): void
+    {
+        $t = new CommandTester(new AnalyzeCommand());
+        $code = $t->execute(['--project-root' => $this->root, '--dry-run' => true, '--output' => $this->base.'/r.txt'], ['capture_stderr_separately' => true]);
+
+        self::assertSame(2, $code);
+        self::assertSame("Error: --output cannot be used with --dry-run\n", $t->getErrorOutput());
+        self::assertFileDoesNotExist($this->base.'/r.txt');
     }
 
     public function testOverridesApply(): void
@@ -161,7 +312,7 @@ final class AnalyzeCommandTest extends TestCase
         [$code, $out, $err] = $this->analyze(['--level' => 'critical', '--model' => 'test-model-x', '--provider' => 'openai', '--concurrency' => '2'], $this->answers(self::finding()));
 
         self::assertSame(0, $code, $err);
-        self::assertStringNotContainsString('[HIGH]', $out);
+        self::assertStringNotContainsString('[!]', $out);
         self::assertMatchesRegularExpression('~filtered\s+1\b~', $out);
         self::assertSame(['test-model-x'], array_values(array_unique(array_map(static fn (LlmRequest $r): string => $r->model, $this->requests))));
         self::assertSame(['openai', 'test-model-x', 2], [$this->configs[0]->provider, $this->configs[0]->model, $this->configs[0]->concurrency]);
@@ -169,7 +320,7 @@ final class AnalyzeCommandTest extends TestCase
         // --min-confidence high: a medium-confidence finding is reported but does not fail.
         [$code, $out] = $this->analyze(['--min-confidence' => 'high', '--no-cache' => true], $this->answers([...self::finding(), 'confidence' => 'medium']));
         self::assertSame(0, $code);
-        self::assertStringContainsString('(medium, not failing)', $out);
+        self::assertStringContainsString('Confidence:    medium (not failing)', $out);
     }
 
     public function testInvalidOverridesExitTwoNamingTheFlag(): void
@@ -219,12 +370,12 @@ final class AnalyzeCommandTest extends TestCase
         self::assertSame(0, $mapper->parses());
     }
 
-    public function testDryRunSarifIsALaterRelease(): void
+    public function testDryRunSarifIsRejected(): void
     {
         [$code, , $err] = $this->analyze(['--dry-run' => true, '--format' => 'sarif'], $this->answers(self::finding()));
 
         self::assertSame(2, $code);
-        self::assertSame("Error: --format sarif is available in a later release\n", $err);
+        self::assertSame("Error: --format sarif cannot be used with --dry-run\n", $err);
     }
 
     public function testPartialResultsWrittenOnBudget(): void
@@ -233,7 +384,7 @@ final class AnalyzeCommandTest extends TestCase
         [$code, $out, $err] = $this->analyze(['--concurrency' => '1', '--budget' => '1000000'], $this->answers([...self::finding(), 'confidence' => 'low'], 990_000));
 
         self::assertSame(3, $code, $err);
-        self::assertStringContainsString('(low, not failing)', $out);
+        self::assertStringContainsString('Confidence:    low (not failing)', $out);
         self::assertMatchesRegularExpression('~ok\s+2\b~', $out);
         self::assertMatchesRegularExpression('~unsent\s+12\b~', $out);
     }
@@ -275,7 +426,7 @@ final class AnalyzeCommandTest extends TestCase
         [, $out] = $this->analyze([], $this->answers(self::finding()));
 
         self::assertStringContainsString("cache entry {$short}… ignored", $out);
-        self::assertStringNotContainsString('<redacted>', $out);
+        self::assertStringNotContainsString('<redacted>', substr($out, (int) strpos($out, "\nWarnings\n")), 'the cache key is not redacted');
     }
 
     public function testEngineThrowableIsExitTwoWithASafeLine(): void

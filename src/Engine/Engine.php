@@ -40,12 +40,15 @@ final class Engine
     ) {
     }
 
-    /** @param list<Payload> $payloads */
-    public function run(array $payloads, int $candidates): AnalysisResult
+    /**
+     * @param  list<Payload>  $payloads  the payloads to send
+     * @param  int  $unaffected  payloads --since left out; counted, never sent
+     */
+    public function run(array $payloads, int $candidates, int $unaffected = 0): AnalysisResult
     {
         /** @var Stats $stats */
         $stats = [
-            'candidates' => $candidates, 'payloads' => count($payloads), 'skipped' => 0, 'unsent' => 0, 'sent' => 0, 'cacheHits' => 0,
+            'candidates' => $candidates, 'payloads' => count($payloads) + $unaffected, 'skipped' => 0, 'unaffected' => $unaffected, 'unsent' => 0, 'sent' => 0, 'cacheHits' => 0,
             'ok' => 0, 'refused' => 0, 'truncated' => 0, 'invalid' => 0, 'failed' => 0, 'dropped' => 0, 'filtered' => 0, 'tokens' => 0, 'budgetExceeded' => false,
         ];
         $seen = [];
@@ -93,17 +96,19 @@ final class Engine
 
         $findings = [];
         $baselined = [];
+        $filtered = [];
         foreach ((new Deduplicator())->merge($active) as $v) {
             if ($this->baseline->contains($v->fingerprint)) {
                 $baselined[] = $v;
             } elseif ($v->severity->atLeast($this->config->level)) {
                 $findings[] = ['vulnerability' => $v, 'failing' => $v->confidence->atLeast($this->config->minConfidence)];
             } else {
+                $filtered[] = $v;
                 $stats['filtered']++;
             }
         }
 
-        return new AnalysisResult($findings, $suppressed, $baselined, $warnings, $stats);
+        return new AnalysisResult($findings, $suppressed, $baselined, $warnings, $stats, $filtered);
     }
 
     /**

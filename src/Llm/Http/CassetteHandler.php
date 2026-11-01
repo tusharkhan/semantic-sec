@@ -148,7 +148,7 @@ final class CassetteHandler
     }
 
     /**
-     * Replaces every secret form in every string first, then runs the Redactor over header values and bodies.
+     * Replaces every secret form in every string first, then runs the Redactor over header values and request bodies.
      *
      * @param Interaction $interaction
      * @return Interaction
@@ -168,8 +168,9 @@ final class CassetteHandler
         $redactor = new Redactor();
         foreach (['request', 'response'] as $side) {
             $interaction[$side]['headers'] = array_map($redactor->redact(...), $interaction[$side]['headers']);
-            $interaction[$side]['body'] = self::redactBody($redactor, $interaction[$side]['body']);
         }
+        // Response bodies are model output, kept byte for byte; the Redactor would mangle patches and code.
+        $interaction['request']['body'] = self::redactBody($redactor, $interaction['request']['body']);
         $this->assertNoSecretLeft($interaction);
 
         return $interaction;
@@ -252,8 +253,13 @@ final class CassetteHandler
 
             return $clean;
         }
+        // A loop, not an arrow fn: an arrow fn captures $changed by value and loses the flag.
         if (is_array($value)) {
-            return array_map(static fn (mixed $v): mixed => self::redactLeaves($redactor, $v, $changed), $value);
+            foreach ($value as $k => $v) {
+                $value[$k] = self::redactLeaves($redactor, $v, $changed);
+            }
+
+            return $value;
         }
         if ($value instanceof \stdClass) {
             $copy = new \stdClass();

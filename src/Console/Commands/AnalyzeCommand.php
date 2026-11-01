@@ -10,15 +10,19 @@ use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use TusharKhan\SemanticSec\Analysis\Category;
 use TusharKhan\SemanticSec\Candidates\Candidate;
 use TusharKhan\SemanticSec\Config\Config;
 use TusharKhan\SemanticSec\Config\ConfigException;
 use TusharKhan\SemanticSec\Config\ConfigLoader;
+use TusharKhan\SemanticSec\Config\Defaults;
 use TusharKhan\SemanticSec\Console\AnalysisPipeline;
+use TusharKhan\SemanticSec\Console\Application;
 use TusharKhan\SemanticSec\Console\ExitCode;
 use TusharKhan\SemanticSec\Console\OutputDir;
+use TusharKhan\SemanticSec\Console\PipelineResult;
 use TusharKhan\SemanticSec\Console\Terminal;
 use TusharKhan\SemanticSec\Engine\AnalysisResult;
 use TusharKhan\SemanticSec\Engine\Baseline;
@@ -30,16 +34,20 @@ use TusharKhan\SemanticSec\Llm\ClientFactory;
 use TusharKhan\SemanticSec\Llm\ClientInterface;
 use TusharKhan\SemanticSec\Llm\GroundingChecker;
 use TusharKhan\SemanticSec\Llm\ValidatingClient;
+use TusharKhan\SemanticSec\Output\BaselineFile;
+use TusharKhan\SemanticSec\Output\ConsoleFormatter;
+use TusharKhan\SemanticSec\Output\JsonFormatter;
+use TusharKhan\SemanticSec\Output\SafeWriter;
+use TusharKhan\SemanticSec\Output\SarifFormatter;
 use TusharKhan\SemanticSec\Payload\Payload;
 use TusharKhan\SemanticSec\Payload\Redactor;
+use TusharKhan\SemanticSec\Since\ChangedFiles;
+use TusharKhan\SemanticSec\Since\ImpactAnalyzer;
 
 #[AsCommand(name: 'analyze', description: 'Find authorization flaws: map, select candidates, build payloads, then ask the LLM')]
-final class AnalyzeCommand extends Command
+class AnalyzeCommand extends Command
 {
     use ProjectOptions;
-
-    // Rejected until M7 (plan decision 7).
-    private const LATER = ['output', 'baseline', 'generate-baseline', 'since'];
 
     // CLI option => Config::with() key.
     private const OVERRIDES = ['level' => 'level', 'min-confidence' => 'min_confidence', 'provider' => 'provider', 'model' => 'model', 'concurrency' => 'concurrency', 'budget' => 'budget_tokens'];
@@ -51,7 +59,7 @@ final class AnalyzeCommand extends Command
 
     /**
      * @param  (\Closure(Config): ClientInterface)|null  $providerClient  test seam: replaces the provider client under ValidatingClient
-     * @param  (\Closure(Engine, list<Payload>, int): AnalysisResult)|null  $runEngine  test seam: replaces Engine::run
+     * @param  (\Closure(Engine, list<Payload>, int, int): AnalysisResult)|null  $runEngine  test seam: replaces Engine::run
      */
     public function __construct(
         private readonly ?\Closure $providerClient = null,
@@ -77,22 +85,36 @@ final class AnalyzeCommand extends Command
             ->addOption('concurrency', null, InputOption::VALUE_REQUIRED, 'Parallel requests (config: concurrency, default 5)')
             ->addOption('budget', null, InputOption::VALUE_REQUIRED, 'Hard cap on provider tokens; below one request\'s reservation (~35k at the default max_tokens) nothing is sent (config: budget_tokens)')
             ->addOption('no-cache', null, InputOption::VALUE_NONE, 'Ignore cached answers (new answers are still cached)')
-            ->addOption('format', null, InputOption::VALUE_REQUIRED, 'console; with --dry-run also json', 'console')
-            ->addOption('output', null, InputOption::VALUE_REQUIRED, 'Write the report to a file (available in a later release)')
-            ->addOption('baseline', null, InputOption::VALUE_REQUIRED, 'Baseline file (available in a later release)')
-            ->addOption('generate-baseline', null, InputOption::VALUE_NONE, 'Write a baseline (available in a later release)')
-            ->addOption('since', null, InputOption::VALUE_REQUIRED, 'Only files changed since a git ref (available in a later release)')
+            ->addOption('strict', null, InputOption::VALUE_NONE, 'Exit 2 if any request failed, was refused, invalid or truncated, or any payload went unsent (ignored with --dry-run)')
+            ->addOption('format', null, InputOption::VALUE_REQUIRED, 'console, json or sarif', 'console')
+            ->addOption('output', null, InputOption::VALUE_REQUIRED, 'Write the report to this file (never through a symlink); the summary and warnings go to stderr')
+            ->addOption('baseline', null, InputOption::VALUE_REQUIRED, 'Baseline file: findings whose fingerprint is in it are baselined, not reported (default: semantic-sec-baseline.json in the project root, if present)')
+            ->addOption('no-baseline', null, InputOption::VALUE_NONE, 'Read no baseline file, not even the default one; for runs on code you do not trust')
+            ->addOption('generate-baseline', null, InputOption::VALUE_NONE, 'Write every current finding\'s fingerprint to the baseline file and exit 0')
+            ->addOption('since', null, InputOption::VALUE_REQUIRED, 'Send only candidates that committed changes since this git ref (<ref>...HEAD) can affect')
             ->setHelp(<<<'HELP'
                 Maps the project, selects candidate routes, builds their payloads and sends each one to the LLM.
                 Findings are grounded in the payload, fingerprinted, then filtered by suppressions, --level and --min-confidence.
 
                 Exit codes: 0 clean, 1 a failing finding, 2 tool error (config, no framework, missing API key,
                 every request failed), 3 token budget exceeded with no failing finding. 1 beats 3.
+                --strict also exits 2 when any request failed, was refused, invalid or truncated, or any payload
+                went unsent. Precedence: 1 > strict 2 > 3 > all-failed 2 > 0.
 
                 --budget is a hard cap: before each request the pool reserves twice the prompt plus max_tokens,
                 so a budget below one reservation (~35k tokens at the default max_tokens) sends nothing and exits 3.
 
                 --dry-run writes the system prompt and every payload to .semantic-sec/dry-run and needs no API key.
+
+                --no-baseline reads no baseline file at all; use it on pull requests whose baseline you do not trust.
+
+                --since=<ref> sends only the candidates that files committed since <ref> (git diff <ref>...HEAD) can affect;
+                uncommitted changes are ignored. It cannot be combined with --generate-baseline.
+
+                --baseline reads fingerprints to accept (default semantic-sec-baseline.json in the project root, if present).
+                --generate-baseline writes the fingerprint of every reported (failing or not), below-level and already
+                baselined finding there instead, and exits 0 unless every request failed (or --strict trips), in which
+                case nothing is written; `semantic-sec baseline` is the same.
                 HELP);
     }
 
@@ -100,17 +122,44 @@ final class AnalyzeCommand extends Command
     {
         $dryRun = $input->getOption('dry-run') === true;
         $format = (string) $input->getOption('format');
-        foreach (self::LATER as $name) {
-            $value = $input->getOption($name);
-            if ($value !== null && $value !== false) {
-                return $this->fail($output, "--{$name} is available in a later release");
+        $generate = $this->generatesBaseline($input);
+        if ($dryRun && $generate) {
+            return $this->fail($output, '--generate-baseline cannot be used with --dry-run');
+        }
+        $noBaseline = $input->getOption('no-baseline') === true;
+        if ($noBaseline && $input->getOption('baseline') !== null) {
+            return $this->fail($output, '--no-baseline cannot be combined with --baseline');
+        }
+        if ($noBaseline && $generate) {
+            return $this->fail($output, '--no-baseline cannot be combined with --generate-baseline');
+        }
+        $since = $input->getOption('since');
+        if ($since !== null) {
+            if ($generate) {
+                return $this->fail($output, '--since cannot be combined with --generate-baseline; a baseline must cover every finding');
+            }
+            try {
+                ChangedFiles::validate((string) $since);
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, $e->getMessage());
             }
         }
-        if ($format === 'sarif' || ($format === 'json' && ! $dryRun)) {
-            return $this->fail($output, "--format {$format} is available in a later release");
+        if ($dryRun && $input->getOption('output') !== null) {
+            return $this->fail($output, '--output cannot be used with --dry-run');
         }
-        if ($format !== 'console' && $format !== 'json') {
-            return $this->fail($output, $dryRun ? '--format must be console or json' : '--format must be console');
+        if ($format !== 'console' && $format !== 'json' && $format !== 'sarif') {
+            return $this->fail($output, '--format must be console, json or sarif');
+        }
+        if ($dryRun && $format === 'sarif') {
+            return $this->fail($output, '--format sarif cannot be used with --dry-run');
+        }
+        $report = $this->stringOption($input, 'output');
+        if ($report !== null) {
+            try {
+                SafeWriter::check($report);
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, (new Redactor())->redact($e->getMessage()));
+            }
         }
         $overrides = [];
         foreach (self::OVERRIDES as $option => $key) {
@@ -128,6 +177,19 @@ final class AnalyzeCommand extends Command
             return $this->fail($output, 'Project root does not exist: '.(string) $input->getOption('project-root'));
         }
         $paths = $this->paths($root, $input->getArgument('paths'));
+        $baselinePath = $this->stringOption($input, 'baseline') ?? $root.'/'.BaselineFile::DEFAULT;
+        $baseline = Baseline::empty();
+        if (! $dryRun && ! $noBaseline) {
+            try {
+                if ($generate) {
+                    SafeWriter::check($baselinePath);
+                } else {
+                    $baseline = BaselineFile::load($baselinePath, $this->stringOption($input, 'baseline') !== null);
+                }
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, (new Redactor())->redact($e->getMessage()));
+            }
+        }
 
         // Flags, config and key are checked before the project is parsed, so a mistake fails fast.
         try {
@@ -135,7 +197,7 @@ final class AnalyzeCommand extends Command
             if (! $dryRun) {
                 $client = $this->providerClient === null ? ClientFactory::validated($config) : new ValidatingClient(($this->providerClient)($config));
 
-                return $this->analyze($input, $output, $root, $paths, $overrides, $config, $client);
+                return $this->analyze($input, $output, $root, $paths, $overrides, $config, $client, $baseline, $generate ? $baselinePath : null);
             }
         } catch (ConfigException $e) {
             return $this->fail($output, $e->getMessage());
@@ -162,6 +224,14 @@ final class AnalyzeCommand extends Command
             return $this->fail($output, $e->getMessage());
         }
         [$results, $warnings, $system] = [$run->results, $run->warnings, $run->system];
+        $unaffected = 0;
+        if ($since !== null) {
+            try {
+                [$results, $unaffected] = $this->since($root, (string) $since, $run);
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, Terminal::clean($redactor->redact($e->getMessage())));
+            }
+        }
 
         try {
             $this->write($root, $results, $system);
@@ -175,9 +245,10 @@ final class AnalyzeCommand extends Command
         if ($format === 'json') {
             $output->writeln(json_encode([
                 'summary' => [
-                    'candidates' => count($rows),
-                    'payloads' => array_sum(array_map(static fn (array $r): int => count($r['payloads']), $rows)),
+                    'candidates' => count($run->results),
+                    'payloads' => array_sum(array_map(static fn (array $r): int => count($r['payloads']), $rows)) + $unaffected,
                     'tokens' => array_sum(array_column($rows, 'tokens')),
+                    'unaffected' => $unaffected,
                     'directory' => $dir,
                     'system' => self::SYSTEM_FILE,
                 ],
@@ -185,7 +256,7 @@ final class AnalyzeCommand extends Command
                 'warnings' => $warnings,
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR));
         } else {
-            $this->renderConsole($output, $rows, $warnings, $dir);
+            $this->renderConsole($output, $rows, $warnings, $dir, $since === null ? null : sprintf('%d of %d candidates affected since %s; %d unaffected payloads not written', count($rows), count($run->results), (string) $since, $unaffected));
         }
 
         return ExitCode::OK;
@@ -196,8 +267,9 @@ final class AnalyzeCommand extends Command
      *
      * @param  list<string>|null  $paths
      * @param  array<string, mixed>  $overrides
+     * @param  string|null  $generate  the baseline file to write, or null to only read $baseline
      */
-    private function analyze(InputInterface $input, OutputInterface $output, string $root, ?array $paths, array $overrides, Config $config, ClientInterface $client): int
+    private function analyze(InputInterface $input, OutputInterface $output, string $root, ?array $paths, array $overrides, Config $config, ClientInterface $client, Baseline $baseline, ?string $generate): int
     {
         $redactor = new Redactor();
         try {
@@ -227,80 +299,121 @@ final class AnalyzeCommand extends Command
             return $this->fail($output, $redactor->redact($e->getMessage()));
         }
 
+        $results = $run->results;
+        $unaffected = 0;
+        $since = $input->getOption('since');
+        if ($since !== null) {
+            try {
+                [$results, $unaffected] = $this->since($root, (string) $since, $run);
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, Terminal::clean($redactor->redact($e->getMessage())));
+            }
+        }
+        $payloads = [];
+        foreach ($results as $r) {
+            array_push($payloads, ...$r['payloads']);
+        }
+
         $project = $run->project;
-        $engine = new Engine($client, $cache, new Fingerprinter($project->parsed, $project->symbols), new GroundingChecker($project->symbols), $project->parsed, $config, Baseline::empty());
+        $engine = new Engine($client, $cache, new Fingerprinter($project->parsed, $project->symbols), new GroundingChecker($project->symbols), $project->parsed, $config, $baseline);
         try {
-            $result = $this->runEngine === null ? $engine->run($run->payloads(), count($run->results)) : ($this->runEngine)($engine, $run->payloads(), count($run->results));
+            $result = $this->runEngine === null ? $engine->run($payloads, count($run->results), $unaffected) : ($this->runEngine)($engine, $payloads, count($run->results), $unaffected);
         } catch (\Throwable $e) {
             return $this->fail($output, 'analysis failed: '.Terminal::clean($redactor->redact($e->getMessage())));
         }
 
-        $this->renderResult($output, $result, array_map($redactor->redact(...), [...$run->warnings, ...$result->warnings]), $config);
+        $strict = $input->getOption('strict') === true;
+        $warnings = array_map($redactor->redact(...), [...$run->warnings, ...$result->warnings]);
+        $report = new AnalysisResult($result->findings, $result->suppressed, $result->baselined, $warnings, $result->stats, $result->filtered);
+        // A generating run exits 0 whatever the findings; only all-failed or --strict still exit 2, and then nothing is written.
+        $decides = $generate === null ? $result : new AnalysisResult([], [], [], [], $result->stats);
+        $exit = ExitCode::for($decides, $strict);
+        $exit = $generate !== null && $exit === ExitCode::BUDGET ? ExitCode::OK : $exit;
+        $wrote = null;
+        if ($generate !== null && $exit === ExitCode::OK) {
+            try {
+                $wrote = sprintf('wrote %d fingerprints to %s', BaselineFile::write($generate, $result), Terminal::safe($generate));
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, $redactor->redact($e->getMessage()));
+            }
+        }
+        $meta = [
+            'tool' => Application::NAME,
+            'version' => Application::VERSION,
+            'provider' => $config->provider,
+            'model' => $config->model ?? Defaults::model($config->provider) ?? 'default',
+            'strictReason' => ExitCode::strictReason($decides, $strict),
+            'level' => $config->level->value,
+            'budget' => $config->budgetTokens,
+            'exitCode' => $exit,
+        ];
 
-        return ExitCode::for($result);
+        $file = $this->stringOption($input, 'output');
+        $format = $input->getOption('format');
+        $err = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
+        if ($file === null && $format === 'console') {
+            $output->write((new ConsoleFormatter($output->isDecorated()))->format($report, $meta), false, OutputInterface::OUTPUT_RAW);
+            $this->baselineLine($err, $generate, $wrote);
+
+            return $exit;
+        }
+        $formatter = match ($format) {
+            'json' => new JsonFormatter(),
+            'sarif' => new SarifFormatter(),
+            default => new ConsoleFormatter(),
+        };
+        $document = $formatter->format($report, $meta);
+        if ($file === null) {
+            $output->write($document, false, OutputInterface::OUTPUT_RAW);
+        } else {
+            try {
+                SafeWriter::write($file, $document);
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, $redactor->redact($e->getMessage()));
+            }
+        }
+        $err->write((new ConsoleFormatter($err->isDecorated()))->summary($report, $meta), false, OutputInterface::OUTPUT_RAW);
+        if ($file !== null) {
+            $err->writeln('Report written to '.Terminal::safe($file));
+        }
+        $this->baselineLine($err, $generate, $wrote);
+
+        return $exit;
     }
 
     /**
-     * Minimal M6 output: one line per reported finding, the summary, then warnings; M7 replaces it.
+     * Keeps the candidates the files committed since $ref can affect; git runs after parsing, before any request.
      *
-     * @param  list<string>  $warnings
+     * @return array{list<array{candidate: Candidate, payloads: list<Payload>}>, int} the kept results and how many payloads were left out
      */
-    private function renderResult(OutputInterface $output, AnalysisResult $r, array $warnings, Config $config): void
+    private function since(string $root, string $ref, PipelineResult $run): array
     {
-        $line = static fn (string $text) => $output->writeln(Terminal::safe($text));
-        $failing = 0;
-        foreach ($r->findings as $f) {
-            $v = $f['vulnerability'];
-            $failing += (int) $f['failing'];
-            $line(sprintf(
-                '[%s] %s %s:%d %s — %s (%s%s)',
-                strtoupper($v->severity->value),
-                $v->category->value,
-                $v->file,
-                $v->line,
-                $v->symbol,
-                $v->title,
-                $v->confidence->value,
-                $f['failing'] ? '' : ', not failing',
-            ));
-        }
-        if ($r->findings !== []) {
-            $line('');
-        }
-
-        $s = $r->stats;
-        $budget = $config->budgetTokens === null ? 'unlimited' : (string) $config->budgetTokens;
-        $rows = [
-            'candidates' => $s['candidates'],
-            'payloads' => $s['payloads'],
-            'skipped' => $s['skipped'].' (no source code)',
-            'unsent' => $s['unsent'].' (token budget)',
-            'cache hits' => $s['cacheHits'],
-            'sent' => $s['sent'],
-            'ok' => $s['ok'],
-            'refused' => $s['refused'],
-            'truncated' => $s['truncated'],
-            'invalid' => $s['invalid'],
-            'failed' => $s['failed'],
-            'dropped' => $s['dropped'].' (not grounded)',
-            'findings' => count($r->findings).' ('.$failing.' failing)',
-            'filtered' => $s['filtered'].' (below level '.$config->level->value.')',
-            'suppressed' => count($r->suppressed),
-            'baselined' => count($r->baselined),
-            'tokens' => $s['tokens'],
-            'budget' => $budget.($s['budgetExceeded'] ? ' (exceeded)' : ''),
-        ];
-        $line('Summary');
-        foreach ($rows as $label => $value) {
-            $line(sprintf('  %-11s %s', $label, $value));
-        }
-
-        if ($warnings !== []) {
-            $line('');
-            $line('Warnings');
-            foreach ($warnings as $warning) {
-                $line('  '.$warning);
+        $changed = ChangedFiles::between($root, $ref);
+        $project = $run->project;
+        $affected = (new ImpactAnalyzer($project->parsed, $project->symbols, $project->config))->affected(array_column($run->results, 'candidate'), $changed);
+        $kept = [];
+        $unaffected = 0;
+        foreach ($run->results as $result) {
+            if (in_array($result['candidate'], $affected, true)) {
+                $kept[] = $result;
+            } else {
+                $unaffected += count($result['payloads']);
             }
+        }
+
+        return [$kept, $unaffected];
+    }
+
+    // `semantic-sec baseline` overrides this; analyze generates only with --generate-baseline.
+    protected function generatesBaseline(InputInterface $input): bool
+    {
+        return $input->getOption('generate-baseline') === true;
+    }
+
+    private function baselineLine(OutputInterface $err, ?string $generate, ?string $wrote): void
+    {
+        if ($generate !== null) {
+            $err->writeln($wrote ?? 'Baseline not written: no request succeeded, or --strict failed the run');
         }
     }
 
@@ -423,7 +536,7 @@ final class AnalyzeCommand extends Command
      * @param  list<array{number: int, route: string, categories: list<string>, tokens: int, payloads: list<array<string, mixed>>}>  $rows
      * @param  list<string>  $warnings
      */
-    private function renderConsole(OutputInterface $output, array $rows, array $warnings, string $dir): void
+    private function renderConsole(OutputInterface $output, array $rows, array $warnings, string $dir, ?string $since): void
     {
         $table = new Table($output);
         $table->setHeaders(['#', 'Route', 'Categories', 'Parts', 'Tokens']);
@@ -436,6 +549,9 @@ final class AnalyzeCommand extends Command
         $table->render();
 
         $output->writeln(sprintf('%d candidates, %d payloads, ~%d tokens; written to %s', count($rows), $payloads, $tokens, Terminal::safe($dir)));
+        if ($since !== null) {
+            $output->writeln(Terminal::safe($since));
+        }
 
         if ($warnings !== []) {
             $output->writeln('');

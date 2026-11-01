@@ -325,14 +325,47 @@ final class CassetteHandlerTest extends TestCase
 
         $json = (string) file_get_contents($path);
         self::assertStringNotContainsString($github, $json);
-        self::assertStringNotContainsString($aws, $json);
         $saved = $this->saved($path)['interactions'][0];
         $request = json_decode($saved['request']['body'], false, flags: JSON_THROW_ON_ERROR);
         self::assertInstanceOf(\stdClass::class, $request);
         self::assertSame('token <redacted> "quoted"', $request->note);
         self::assertInstanceOf(\stdClass::class, $request->empty);
         self::assertSame(1.0, $request->n);
-        self::assertSame('plain text with <redacted> inside', $saved['response']['body']);
+        self::assertSame("plain text with {$aws} inside", $saved['response']['body'], 'response bodies are recorded as received');
+    }
+
+    public function testRecordKeepsResponseBodiesVerbatimButScrubsSecrets(): void
+    {
+        $path = $this->dir . '/response.json';
+        $file = 'app/Http/Controllers/Vuln/AccountController.php';
+        $patch = "--- a/app/X.php\n+++ b/app/X.php\n@@ -1 +1 @@\n-old\n+new\n--- a/{$file}\n+++ b/{$file}\n@@ -13,2 +13,2 @@";
+        $text = json_encode(['patch' => $patch], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        $response = json_encode(['content' => [['text' => $text]], 'leak' => 'k=' . self::KEY], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        $inner = new MockHandler([new Response(200, [], $response)]);
+        $client = HttpClientFactory::create(new CassetteHandler(Cassette::load($path), 'record', $inner, [self::KEY]));
+        $client->post('https://api.example.test/v1/x', ['body' => '{"q":"password = \\"hunter2hunter2\\""}']);
+
+        $json = (string) file_get_contents($path);
+        self::assertStringNotContainsString(self::KEY, $json);
+        $saved = $this->saved($path)['interactions'][0];
+        $body = json_decode($saved['response']['body'], true, flags: JSON_THROW_ON_ERROR);
+        $data = json_decode($body['content'][0]['text'], true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame($patch, $data['patch'], 'the response body is not run through the Redactor');
+        self::assertSame('k=<scrubbed>', $body['leak'], 'configured secrets are still scrubbed');
+        self::assertStringNotContainsString('hunter2hunter2', $saved['request']['body'], 'request bodies are still redacted');
+    }
+
+    public function testRecordRedactsRequestSecretsNestedInArrays(): void
+    {
+        $path = $this->dir . '/nested.json';
+        $github = 'ghp_' . str_repeat('aB3dE5', 6);
+        $inner = new MockHandler([new Response(200, [], '{}')]);
+        $body = json_encode(['messages' => [['role' => 'user', 'content' => [['text' => "token {$github}"]]]]], JSON_THROW_ON_ERROR);
+        HttpClientFactory::create(new CassetteHandler(Cassette::load($path), 'record', $inner))->post('https://api.example.test/v1/x', ['body' => $body]);
+
+        self::assertStringNotContainsString($github, (string) file_get_contents($path));
+        $request = json_decode($this->saved($path)['interactions'][0]['request']['body'], true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame('token <redacted>', $request['messages'][0]['content'][0]['text']);
     }
 
     public function testRecordLeavesCleanJsonBodiesVerbatim(): void

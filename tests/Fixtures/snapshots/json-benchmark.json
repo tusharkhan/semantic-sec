@@ -1,0 +1,491 @@
+{
+    "version": 1,
+    "tool": {
+        "name": "semantic-sec",
+        "version": "snapshot"
+    },
+    "summary": {
+        "candidates": 14,
+        "payloads": 14,
+        "skipped": 0,
+        "unaffected": 0,
+        "unsent": 0,
+        "sent": 14,
+        "cacheHits": 0,
+        "ok": 14,
+        "refused": 0,
+        "truncated": 0,
+        "invalid": 0,
+        "failed": 0,
+        "dropped": 0,
+        "filtered": 0,
+        "tokens": 55482,
+        "budgetExceeded": false,
+        "exitCode": 1,
+        "strictReason": null
+    },
+    "findings": [
+        {
+            "title": "Mass assignment: $request->all() written to Account with empty $guarded",
+            "category": "mass_assignment",
+            "severity": "high",
+            "confidence": "high",
+            "file": "app/Http/Controllers/Vuln/AccountController.php",
+            "line": 14,
+            "symbol": "App\\Http\\Controllers\\Vuln\\AccountController::update",
+            "context": "PUT /vuln/account is protected only by the web and auth middleware. UpdateAccountRequest::authorize returns true, and its rules validate only 'name' and 'email'. The action loads the logged-in user's own account (L13).",
+            "flaw": "At L14 the action calls $account->update($request->all()). $request->all() returns every key the client sends, including keys outside the validated 'name' and 'email'. The Account model sets $guarded = [], so every column can be mass-assigned. A logged-in user can therefore overwrite sensitive columns on their account, such as an owner or user_id, a balance, a plan or a role or status flag. That allows reassigning the account to another owner or escalating their own privileges or entitlements.",
+            "fix": "Pass only validated data, using $request->validated() or $request->only(['name', 'email']). Also give Account an explicit $fillable list, limited to user-editable fields, in place of $guarded = [].",
+            "patch": "--- <redacted> <redacted> -13,2 +13,2 @@\n         $account = $request->user()->account;\n-        $account->update($request->all());\n+        $account->update($request->validated());",
+            "path": [
+                {
+                    "file": "app/Http/Controllers/Vuln/AccountController.php",
+                    "line": 11,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\AccountController::update"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/AccountController.php",
+                    "line": 13,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\AccountController::update"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/AccountController.php",
+                    "line": 14,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\AccountController::update"
+                }
+            ],
+            "fingerprint": "424feaf29d1985fc1d829b702abcec8f1a8d0e532ccd61baeedeef1fce489ae4",
+            "failing": true,
+            "routeKey": "PUT /vuln/account",
+            "model": "claude-opus-5-5"
+        },
+        {
+            "title": "unserialize() on the client-supplied 'cart' cookie allows PHP object injection",
+            "category": "insecure_deserialization",
+            "severity": "critical",
+            "confidence": "high",
+            "file": "app/Http/Controllers/Vuln/CartController.php",
+            "line": 13,
+            "symbol": "App\\Http\\Controllers\\Vuln\\CartController::restore",
+            "context": "Any authenticated user can reach PUT /api/vuln/cart. The only protection is auth:sanctum (routes/api.php:9). The 'api' middleware group does not include EncryptCookies, so a token-authenticated caller can send any raw value in the 'cart' cookie.",
+            "flaw": "L13 passes $request->cookie('cart') straight to unserialize() with no allowed_classes restriction. The caller controls that value, so they can craft a serialized object that instantiates arbitrary classes. Gadget chains in the framework or vendor code can then trigger __wakeup/__destruct side effects, up to remote code execution. L14 then saves the deserialized value into the user's cart.",
+            "fix": "Do not unserialize client data. Store the cart as JSON and decode it with json_decode(..., true), then validate the structure. If unserialize() cannot be avoided, pass ['allowed_classes' => false] and verify the result is an array.",
+            "patch": "--- <redacted> <redacted> -13,2 +13,5 @@\n-        $items = unserialize($request->cookie('cart'));\n+        $items = json_decode((string) $request->cookie('cart'), true);\n+        if (!is_array($items)) {\n+            $items = [];\n+        }\n         $cart = $request->user()->cart()->updateOrCreate([], ['items' => $items]);",
+            "path": [
+                {
+                    "file": "app/Http/Controllers/Vuln/CartController.php",
+                    "line": 11,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\CartController::restore"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/CartController.php",
+                    "line": 13,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\CartController::restore"
+                }
+            ],
+            "fingerprint": "60f3cc319d630289b1b7f83a9819cb96308cbea7b540249184735d809dbce5d8",
+            "failing": true,
+            "routeKey": "PUT /api/vuln/cart",
+            "model": "claude-opus-5-5"
+        },
+        {
+            "title": "Any authenticated user can delete any comment: CommentPolicy::delete always returns true",
+            "category": "idor",
+            "severity": "high",
+            "confidence": "high",
+            "file": "app/Http/Controllers/Vuln/CommentController.php",
+            "line": 18,
+            "symbol": "App\\Http\\Controllers\\Vuln\\CommentController::destroy",
+            "context": "DELETE /vuln/comments/{comment} sits behind the web and auth middleware only. {comment} is route-model-bound to App\\Models\\Comment. The action calls $this->authorize('delete', $comment), which runs CommentPolicy::delete.",
+            "flaw": "CommentPolicy::delete returns true unconditionally (L12) and never compares $comment's owner with $user. The authorize call at L16 therefore lets every logged-in user through. Any user can supply another user's comment id and L18 deletes that comment.",
+            "fix": "Make CommentPolicy::delete check ownership, for example by returning $user->id === $comment->user_id, optionally also allowing moderators or admins.",
+            "patch": "--- <redacted> <redacted> -10,4 +10,4 @@\n     public function delete(User $user, Comment $comment): bool\n     {\n-        return true;\n+        return $comment->user_id === $user->id;\n     }",
+            "path": [
+                {
+                    "file": "app/Http/Controllers/Vuln/CommentController.php",
+                    "line": 14,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\CommentController::destroy"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/CommentController.php",
+                    "line": 16,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\CommentController::destroy"
+                },
+                {
+                    "file": "app/Policies/CommentPolicy.php",
+                    "line": 12,
+                    "symbol": "App\\Policies\\CommentPolicy::delete"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/CommentController.php",
+                    "line": 18,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\CommentController::destroy"
+                }
+            ],
+            "fingerprint": "961813b03bd4a17dd27029984eae40fb52699cefa86687ebe51011e730333356",
+            "failing": true,
+            "routeKey": "DELETE /vuln/comments/{comment}",
+            "model": "claude-opus-5-5"
+        },
+        {
+            "title": "IDOR: any authenticated user can read any Document via route model binding",
+            "category": "idor",
+            "severity": "high",
+            "confidence": "high",
+            "file": "app/Http/Controllers/Vuln/DocumentController.php",
+            "line": 22,
+            "symbol": "App\\Http\\Controllers\\Vuln\\DocumentController::show",
+            "context": "GET /vuln/documents/{document} is protected only by the web and auth middleware. {document} is resolved through route model binding on App\\Models\\Document. The context block lists no policy, gate or ownership check for this route.",
+            "flaw": "Route model binding at L20 loads the Document by the client-supplied id and checks nothing about access. L22 returns the whole record as JSON without calling $this->authorize() and without comparing the document's owner to the current user. Any logged-in user can enumerate ids and read other users' documents, including their title and storage path.",
+            "fix": "Authorize access before returning the record. Call $this->authorize('view', $document) backed by a DocumentPolicy that checks ownership, or add can:view,document middleware to the route. An alternative is to scope the lookup to the user, e.g. $request->user()->documents()->findOrFail($id).",
+            "patch": "--- <redacted> <redacted> -20,4 +20,5 @@\n     public function show(Document $document): JsonResponse\n     {\n+        $this->authorize('view', $document);\n         return response()->json($document);\n     }",
+            "path": [
+                {
+                    "file": "app/Http/Controllers/Vuln/DocumentController.php",
+                    "line": 20,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\DocumentController::show"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/DocumentController.php",
+                    "line": 22,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\DocumentController::show"
+                }
+            ],
+            "fingerprint": "a39e9d88295c6f741d7414034cde31e1426d864683508026cf071a05afec715d",
+            "failing": true,
+            "routeKey": "GET /vuln/documents/{document}",
+            "model": "claude-opus-5-5"
+        },
+        {
+            "title": "IDOR: any authenticated user can read any invoice by ID",
+            "category": "idor",
+            "severity": "high",
+            "confidence": "high",
+            "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+            "line": 19,
+            "symbol": "App\\Http\\Controllers\\Vuln\\InvoiceController::show",
+            "context": "GET /vuln/invoices/{id} (routes/web.php:12) is behind the web and auth middleware only. Per the context block, authentication is the only check on the route; no policy, gate or ownership scope applies.",
+            "flaw": "L19 loads the invoice with Invoice::findOrFail($id), using the route-supplied id with no ownership constraint and no policy call. L21 then returns the whole record as JSON. Any logged-in user can enumerate ids and read other users' invoices.",
+            "fix": "Scope the lookup to the current user, for example through the user's invoices relation or a where on the owner column. Alternatively, call $this->authorize('view', $invoice) backed by an InvoicePolicy that compares the owner to the authenticated user.",
+            "patch": "--- <redacted> <redacted> -17,5 +17,6 @@\n     public function show(Request $request, int $id): JsonResponse\n     {\n         $invoice = Invoice::findOrFail($id);\n+        $this->authorize('view', $invoice);\n         return response()->json($invoice);\n     }",
+            "path": [
+                {
+                    "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+                    "line": 17,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\InvoiceController::show"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+                    "line": 19,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\InvoiceController::show"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+                    "line": 21,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\InvoiceController::show"
+                }
+            ],
+            "fingerprint": "c119f50b1953c7cf011f105de8fbf3bfcd26af7e367f01d3f8fe756ef5e8dd0f",
+            "failing": true,
+            "routeKey": "GET /vuln/invoices/{id}",
+            "model": "claude-opus-5-5"
+        },
+        {
+            "title": "Any authenticated user can update any invoice via route-bound {invoice} without ownership check",
+            "category": "idor",
+            "severity": "high",
+            "confidence": "high",
+            "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+            "line": 26,
+            "symbol": "App\\Http\\Controllers\\Vuln\\InvoiceController::update",
+            "context": "PUT /vuln/invoices/{invoice} sits behind only the web and auth middleware. {invoice} is resolved by route model binding to App\\Models\\Invoice. UpdateInvoiceRequest::authorize returns true, and the controller calls no policy or gate.",
+            "flaw": "Route model binding at L24 loads whichever Invoice matches the id in the URL. L26 then calls $invoice->update($request->validated()) with no check that the current user owns the invoice or may change it. Any logged-in user can therefore change the amount and status of another user's invoice by sending a PUT for its id.",
+            "fix": "Authorize the record before the write. Call $this->authorize('update', $invoice) backed by an InvoicePolicy that compares the invoice owner or tenant with the current user, or make UpdateInvoiceRequest::authorize return $this->user()->can('update', $this->route('invoice')). Alternatively, scope the lookup through the user's relation.",
+            "patch": "--- <redacted> <redacted> -24,5 +24,6 @@\n     public function update(UpdateInvoiceRequest $request, Invoice $invoice): JsonResponse\n     {\n+        $this->authorize('update', $invoice);\n         $invoice->update($request->validated());\n         return response()->json($invoice);\n     }",
+            "path": [
+                {
+                    "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+                    "line": 24,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\InvoiceController::update"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+                    "line": 26,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\InvoiceController::update"
+                }
+            ],
+            "fingerprint": "1ee5daa414e457c0b996f503a1a0a116cf4773f62a5ad7f6fb14bc8b08a683d2",
+            "failing": true,
+            "routeKey": "PUT /vuln/invoices/{invoice}",
+            "model": "claude-opus-5-5"
+        },
+        {
+            "title": "Invoice status can be set to any value without enforcing valid state transitions",
+            "category": "workflow_bypass",
+            "severity": "medium",
+            "confidence": "low",
+            "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+            "line": 26,
+            "symbol": "App\\Http\\Controllers\\Vuln\\InvoiceController::update",
+            "context": "The same PUT route requires only authentication. UpdateInvoiceRequest validates the keys amount and status; the payload does not show which status values the rules allow.",
+            "flaw": "L26 writes the client-supplied status straight onto the invoice. Nothing checks the invoice's current state, so a client could mark an unpaid invoice as paid, or change the amount of an invoice that is already paid or finalized.",
+            "fix": "Check the current status before updating. Allow only legitimate transitions, for example through a dedicated state-machine method, and refuse changes to amount once the invoice is finalized or paid.",
+            "patch": "",
+            "path": [
+                {
+                    "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+                    "line": 24,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\InvoiceController::update"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+                    "line": 26,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\InvoiceController::update"
+                }
+            ],
+            "fingerprint": "b98613e76afd053142cd0c3c4e42a9e6c0ae430ae6f466d42dab2433f2a16823",
+            "failing": true,
+            "routeKey": "PUT /vuln/invoices/{invoice}",
+            "model": "claude-opus-5-5"
+        },
+        {
+            "title": "IDOR: any authenticated user can download any invoice PDF via route-bound {invoice}",
+            "category": "idor",
+            "severity": "high",
+            "confidence": "high",
+            "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+            "line": 33,
+            "symbol": "App\\Http\\Controllers\\Vuln\\InvoiceController::pdf",
+            "context": "GET /vuln/invoices/{invoice}/pdf (routes/web.php:14) is protected only by the web and auth middleware. {invoice} is resolved by route model binding to App\\Models\\Invoice. The context block lists no policy, gate or ownership check for this route.",
+            "flaw": "Route model binding at L31 loads any Invoice by its key without checking ownership. L33 then streams the matching PDF file (storage_path(\"app/invoices/{$invoice->number}.pdf\")) to the caller with no authorization check. Any logged-in user can enumerate invoice ids and download other users' invoices.",
+            "fix": "Authorize access before the download, for example with $this->authorize('view', $invoice) backed by an InvoicePolicy that compares the invoice owner to the current user. Alternatively, scope the lookup to the authenticated user's invoices, or add can:view,invoice middleware to the route.",
+            "patch": "--- <redacted> <redacted> -31,4 +31,5 @@\n     public function pdf(Invoice $invoice): BinaryFileResponse\n     {\n+        $this->authorize('view', $invoice);\n         return response()->download(storage_path(\"app/invoices/{$invoice->number}.pdf\"));\n     }",
+            "path": [
+                {
+                    "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+                    "line": 31,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\InvoiceController::pdf"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+                    "line": 33,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\InvoiceController::pdf"
+                }
+            ],
+            "fingerprint": "25441fa4060d37d39d589d5aa8830a176f5fb5ce4f2921b73c416174318ef087",
+            "failing": true,
+            "routeKey": "GET /vuln/invoices/{invoice}/pdf",
+            "model": "claude-opus-5-5"
+        },
+        {
+            "title": "Refund sets status to 'refunded' without checking the order is paid or not already refunded",
+            "category": "workflow_bypass",
+            "severity": "medium",
+            "confidence": "high",
+            "file": "app/Http/Controllers/Vuln/OrderController.php",
+            "line": 18,
+            "symbol": "App\\Http\\Controllers\\Vuln\\OrderController::refund",
+            "context": "POST /vuln/orders/{order}/refund sits behind the web and auth middleware, with {order} resolved by route model binding. At L16, $this->authorize('refund', $order) calls OrderPolicy::refund, which only checks that the order belongs to the current user (L12).",
+            "flaw": "Neither the policy (L12) nor the controller checks the order's current status. Once the ownership check at L16 passes, L18 unconditionally runs $order->update(['status' => 'refunded']). An owner can therefore refund an order that was never paid, refund one that is already refunded, or refund one in any other state where a refund is not allowed (e.g. pending or cancelled). This breaks the order lifecycle and could trigger duplicate or unwarranted refunds downstream.",
+            "fix": "Enforce the state transition before updating. Only allow the refund when the order is in a refundable state (e.g. status === 'paid'), and reject anything else with a 409/422. Ideally put this check in the policy or in an Order state machine, and use a conditional update so concurrent requests cannot both succeed.",
+            "patch": "--- <redacted> <redacted> -16,3 +16,7 @@\n         $this->authorize('refund', $order);\n+\n+        if ($order->status !== 'paid') {\n+            abort(409, 'Only paid orders can be refunded.');\n+        }\n\n         $order->update(['status' => 'refunded']);",
+            "path": [
+                {
+                    "file": "app/Http/Controllers/Vuln/OrderController.php",
+                    "line": 14,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\OrderController::refund"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/OrderController.php",
+                    "line": 16,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\OrderController::refund"
+                },
+                {
+                    "file": "app/Policies/OrderPolicy.php",
+                    "line": 12,
+                    "symbol": "App\\Policies\\OrderPolicy::refund"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/OrderController.php",
+                    "line": 18,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\OrderController::refund"
+                }
+            ],
+            "fingerprint": "717a2d084406596a4766de60fc5b390fa13fba8ed1d6e97ff38502001bd00e82",
+            "failing": true,
+            "routeKey": "POST /vuln/orders/{order}/refund",
+            "model": "claude-opus-5-5"
+        },
+        {
+            "title": "IDOR: any authenticated user can update any Project via route-bound {project}",
+            "category": "idor",
+            "severity": "high",
+            "confidence": "high",
+            "file": "app/Http/Controllers/Vuln/ProjectController.php",
+            "line": 14,
+            "symbol": "App\\Http\\Controllers\\Vuln\\ProjectController::update",
+            "context": "PATCH /vuln/projects/{project} is protected only by the web and auth middleware. {project} is resolved by route model binding. UpdateProjectRequest::authorize returns true, and no policy or ownership check is applied.",
+            "flaw": "Route model binding loads any Project by id (L12). L14 then calls $project->update($request->validated()) without checking that the current user owns the project or may modify it. Any logged-in user can change the name and description of another user's project.",
+            "fix": "Authorize the action against the bound model, for example with $this->authorize('update', $project) and a ProjectPolicy that compares owner ids. Alternatively, have UpdateProjectRequest::authorize return $this->user()->can('update', $this->route('project')).",
+            "patch": "--- <redacted> <redacted> -12,5 +12,6 @@\n     public function update(UpdateProjectRequest $request, Project $project): JsonResponse\n     {\n+        $this->authorize('update', $project);\n         $project->update($request->validated());\n         return response()->json($project);\n     }",
+            "path": [
+                {
+                    "file": "app/Http/Controllers/Vuln/ProjectController.php",
+                    "line": 12,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\ProjectController::update"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/ProjectController.php",
+                    "line": 14,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\ProjectController::update"
+                }
+            ],
+            "fingerprint": "bb223b7f124bd77e3feb3409aea66f66b84e02a8c405ed3d2ce460cce86fc333",
+            "failing": true,
+            "routeKey": "PATCH /vuln/projects/{project}",
+            "model": "claude-opus-5-5"
+        },
+        {
+            "title": "IDOR: any authenticated user can read any receipt via unscoped Receipt::findOrFail($id)",
+            "category": "idor",
+            "severity": "high",
+            "confidence": "high",
+            "file": "app/Http/Controllers/Vuln/ReceiptController.php",
+            "line": 18,
+            "symbol": "App\\Http\\Controllers\\Vuln\\ReceiptController::show",
+            "context": "GET /vuln/receipts/{id} (routes/web.php:22) is protected only by the web and auth middleware. The only check on the route is authentication; no policy, gate or ownership scoping applies.",
+            "flaw": "At L18 the receipt is loaded with Receipt::findOrFail($id) using the route parameter {id}. Nothing scopes the lookup to the current user or checks ownership, and L20 returns the full record as JSON. Any logged-in user can enumerate ids and read other users' receipts. The docblock at L13 claims an API gateway enforces ownership, but that is unverified text, not a check in the code.",
+            "fix": "Scope the lookup to the authenticated user, for example $request->user()->receipts()->findOrFail($id) or Receipt::where('user_id', $request->user()->id)->findOrFail($id). Alternatively, call $this->authorize('view', $receipt) backed by a ReceiptPolicy that compares the owner.",
+            "patch": "--- <redacted> <redacted> -15,7 +15,8 @@\n     public function show(Request $request, int $id): JsonResponse\n     {\n-        $receipt = Receipt::findOrFail($id);\n+        $receipt = Receipt::findOrFail($id);\n+        $this->authorize('view', $receipt);\n\n         return response()->json($receipt);\n     }",
+            "path": [
+                {
+                    "file": "app/Http/Controllers/Vuln/ReceiptController.php",
+                    "line": 15,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\ReceiptController::show"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/ReceiptController.php",
+                    "line": 18,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\ReceiptController::show"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/ReceiptController.php",
+                    "line": 20,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\ReceiptController::show"
+                }
+            ],
+            "fingerprint": "282d65848a1b0db8c798ec160f26f464fd30cb018f5e8e0b123d64305cf06c88",
+            "failing": true,
+            "routeKey": "GET /vuln/receipts/{id}",
+            "model": "claude-opus-5-5"
+        },
+        {
+            "title": "Mass assignment of owner_id via Team::create($request->all()) in TeamController::store",
+            "category": "mass_assignment",
+            "severity": "high",
+            "confidence": "high",
+            "file": "app/Http/Controllers/Vuln/TeamController.php",
+            "line": 14,
+            "symbol": "App\\Http\\Controllers\\Vuln\\TeamController::store",
+            "context": "POST /vuln/teams is protected only by the web and auth middleware. StoreTeamRequest::authorize() returns true and its rules() validate only \"name\". The Team model's $fillable is [\"name\", \"owner_id\"].",
+            "flaw": "At L14 the controller passes $request->all() to Team::create(). all() returns every input field, not only the validated ones, so a client can send an arbitrary owner_id and it will be written because owner_id is fillable. Any authenticated user can therefore create teams attributed to another user, forging ownership records and planting teams in other users' accounts. The owner is never derived from the authenticated user.",
+            "fix": "Pass only validated data ($request->validated()) and set owner_id on the server from the authenticated user. Also consider removing owner_id from Team::$fillable.",
+            "patch": "--- <redacted> <redacted> -14 +14,4 @@\n-        $team = Team::create($request->all());\n+        $team = Team::create([\n+            'name' => $request->validated()['name'],\n+            'owner_id' => $request->user()->id,\n+        ]);",
+            "path": [
+                {
+                    "file": "app/Http/Controllers/Vuln/TeamController.php",
+                    "line": 12,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\TeamController::store"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/TeamController.php",
+                    "line": 14,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\TeamController::store"
+                }
+            ],
+            "fingerprint": "bab6d3ae934448ecaca36f0e786b2e5a8112d7636ecd0abb587e81d03dda07bb",
+            "failing": true,
+            "routeKey": "POST /vuln/teams",
+            "model": "claude-opus-5-5"
+        },
+        {
+            "title": "IDOR: any authenticated user can download any Download record's file by id",
+            "category": "idor",
+            "severity": "high",
+            "confidence": "high",
+            "file": "app/Services/DownloadService.php",
+            "line": 11,
+            "symbol": "App\\Services\\DownloadService::find",
+            "context": "GET /vuln/downloads/{id} is protected only by the web and auth middleware. The context block lists no policy, gate or ownership check for the route.",
+            "flaw": "DownloadController::show passes the user-supplied {id} to DownloadService::find (L17). At L11 the service calls Download::findOrFail($id), which loads any row with no scoping to the current user. L19 then streams the stored file to the caller. Any logged-in user can enumerate ids and download files that belong to other users.",
+            "fix": "Authorize access to the record before serving the file. Either call $this->authorize('view', $download) through a DownloadPolicy, or scope the lookup to the current user (for example where('user_id', auth()->id())->findOrFail($id)). The second option needs an owner column on downloads.",
+            "patch": "--- <redacted> <redacted> -15,5 +15,6 @@\n     public function show(int $id): BinaryFileResponse\n     {\n         $download = $this->downloads->find($id);\n+        $this->authorize('view', $download);\n         return response()->download(storage_path(\"app/downloads/{$download->path}\"), $download->name);\n     }",
+            "path": [
+                {
+                    "file": "app/Http/Controllers/Vuln/DownloadController.php",
+                    "line": 17,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\DownloadController::show"
+                },
+                {
+                    "file": "app/Services/DownloadService.php",
+                    "line": 11,
+                    "symbol": "App\\Services\\DownloadService::find"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/DownloadController.php",
+                    "line": 19,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\DownloadController::show"
+                }
+            ],
+            "fingerprint": "16ea84cdfb66ca08a05c82742eb85b3cc8b901c56715e354d8f9af37c42591b6",
+            "failing": true,
+            "routeKey": "GET /vuln/downloads/{id}",
+            "model": "claude-opus-5-5"
+        }
+    ],
+    "suppressed": [
+        {
+            "title": "IDOR: any authenticated user can read any invoice by id via Invoice::findOrFail",
+            "category": "idor",
+            "severity": "high",
+            "confidence": "high",
+            "file": "app/Http/Controllers/Vuln/SharedInvoiceController.php",
+            "line": 15,
+            "symbol": "App\\Http\\Controllers\\Vuln\\SharedInvoiceController::show",
+            "context": "GET /vuln/shared-invoices/{id} is protected only by the web and auth middleware (routes/web.php:23). No policy, gate or ownership check is recorded for the route.",
+            "flaw": "At L15 the invoice is loaded with Invoice::findOrFail($id) using the client-supplied {id}, with no scope to the current user and no authorize() call. At L17 the full record is returned as JSON. Any logged-in user can enumerate ids and read other users' invoices (number, amount, status).",
+            "fix": "Scope the lookup to the authenticated user, for example through the user's invoices relation or a where on the owner column. Alternatively, call $this->authorize('view', $invoice) backed by an InvoicePolicy that checks ownership or share rights.",
+            "patch": "--- <redacted> <redacted> -13,5 +13,6 @@\n     public function show(Request $request, int $id): JsonResponse\n     {\n         $invoice = Invoice::findOrFail($id);\n+        $this->authorize('view', $invoice);\n\n         return response()->json($invoice);\n     }",
+            "path": [
+                {
+                    "file": "app/Http/Controllers/Vuln/SharedInvoiceController.php",
+                    "line": 13,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\SharedInvoiceController::show"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/SharedInvoiceController.php",
+                    "line": 15,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\SharedInvoiceController::show"
+                },
+                {
+                    "file": "app/Http/Controllers/Vuln/SharedInvoiceController.php",
+                    "line": 17,
+                    "symbol": "App\\Http\\Controllers\\Vuln\\SharedInvoiceController::show"
+                }
+            ],
+            "fingerprint": "7d0af4ccd54f3dec3d11873e1c563ba9555e87087ad8f6fea32c1d108500dec2",
+            "failing": false,
+            "routeKey": "GET /vuln/shared-invoices/{id}",
+            "model": "claude-opus-5-5",
+            "suppression": {
+                "file": "app/Http/Controllers/Vuln/SharedInvoiceController.php",
+                "line": 12,
+                "category": "idor",
+                "reason": "shared invoices are public by contract"
+            }
+        }
+    ],
+    "baselined": [],
+    "filtered": [],
+    "warnings": []
+}

@@ -28,7 +28,7 @@ It works in two stages:
 | Frameworks v1 | **Laravel 8 – 13 only** **[changed]**. Symfony moves to v1.1, after the accuracy gate (section 15). The `FrameworkContext` interface keeps that slot open. Plain-PHP projects get exit code 2 with "no supported framework detected" until a plain-PHP context exists. |
 | Tool distribution | Composer `require-dev` for PHP 8.2+ projects; PHAR for older projects and standalone CI. |
 
-**Runtime dependencies:** `nikic/php-parser ^5`, `phpstan/phpdoc-parser ^2`, `symfony/console ^6.4 || ^7`, `symfony/yaml ^6.4 || ^7`, `symfony/process ^7` (git, for `--since`), `guzzlehttp/guzzle ^7.9`, `opis/json-schema ^2`.
+**Runtime dependencies:** `nikic/php-parser ^5`, `phpstan/phpdoc-parser ^2`, `symfony/console ^6.4 || ^7`, `symfony/yaml ^6.4 || ^7`, `symfony/process ^6.4.33 || ^7.4.5` (git, for `--since`; the floors are the first releases without known advisories), `guzzlehttp/guzzle ^7.9`, `opis/json-schema ^2`.
 **Dev dependencies:** `phpunit/phpunit ^11`, `phpstan/phpstan ^2` (level 8), `laravel/pint ^1` (PSR-12, same `pint.json` as agentic-php), `humbug/box` (PHAR).
 
 ## 3. Scope of findings (v1)
@@ -252,7 +252,10 @@ A route action becomes a candidate for a category when:
    - A closure id drops its `:<line>` in the fingerprint input, so lines added above it don't change it. Two closures starting on the same line share an id, and byte-identical closures in one file share a fingerprint; both collide by design.
    - An id with no node falls back to the sha256 of its header's tagged lines in the payload, without `L<n>| ` tags, comments or layout. Those fingerprints depend on the visible lines, so truncation (`max_payload_tokens`) can change them.
 3. **Dedup:** for the same fingerprint, keep the highest severity, then the highest confidence, and merge the `path`s. The input is sorted first by fingerprint, payload id, line and title, so ties resolve the same way whatever order the requests complete in.
-4. **Baseline:** a finding whose fingerprint is in the baseline file goes to `baselined`.
+4. **Baseline:** a finding whose fingerprint is in the baseline file goes to `baselined`. This runs before the level filter, so a baselined finding is never reported or filtered.
+   - File (`BaselineFile`): `{"version": 1, "tool": "semantic-sec", "fingerprints": [{fingerprint, category, file, symbol, title}]}`, sorted by fingerprint, pretty-printed with unescaped slashes and unicode and a trailing newline; the same findings always give the same bytes. Text fields have control characters replaced. Loading reads only `fingerprint`.
+   - Generating writes every reported (failing or not), filtered (below `--level`) and baselined finding, once per fingerprint; suppressed findings are left out, since their comments already silence them.
+   - Loading fails (exit 2, naming the file) on a UTF-8 byte-order mark (`<file> starts with a byte-order mark; save it without BOM`), invalid JSON, a `version` other than the integer `1`, a missing `fingerprints` list, an entry without a 64-hex lowercase `fingerprint`, a path that is not a regular file, or a file over 16 MB.
 5. **Filters:** keep findings with `severity ≥ --level`. Those with `confidence < --min-confidence` are still **reported**, marked "not failing", but don't affect the exit code.
 
 ## 12. Cache, budget, diff mode
@@ -270,10 +273,13 @@ A route action becomes a candidate for a category when:
   - A budget smaller than one request's reservation dispatches nothing and reports `budgetExceeded`. With the default `max_tokens` of 16000 that is roughly 35k+ tokens per request.
   - On settle, success or failure, `r` is released and the actual tokens are added: the response's input plus output, or the failure's spent tokens (a failed schema retry still counts the first attempt).
   - So `used` never goes over the budget, apart from HTTP attempts that the retry middleware discards: the provider never reports them, so they can't be counted. `budgetExceeded` is also true if the final `used` is above the budget, which needs the provider's tokenizer to beat the estimator's pessimistic 3.5 bytes per token, or a provider billing past `maxTokens`.
-- **`--since=<ref>`:**
-  1. Run `git diff --name-only <ref>...HEAD` (through `symfony/process`), then parse the whole project as usual.
-  2. Mark affected candidates: those whose execution path touches a changed file, those whose route is in a changed route file, those using changed middleware, policy, FormRequest or model files, plus every candidate if `Kernel.php`, `bootstrap/app.php`, `AuthServiceProvider` or `RouteServiceProvider` changed.
-  3. Send only the affected candidates.
+- **`--since=<ref>`:** sends only the candidates that the files committed since `<ref>` can affect.
+  1. **Ref.** Checked before the project is parsed: empty, longer than 255 characters, a leading `-` or `..`, or any whitespace or control character (NUL included) is exit 2 (`--since must be a git ref …`).
+  2. **Changed files** (`ChangedFiles`, after parsing, before any request), through `symfony/process` with array arguments, no shell and a 60 s timeout: `git -C <root> rev-parse --show-prefix` (exit 2 `<root> is not a git repository, or git refused it`), `git rev-parse --verify --quiet <ref>^{commit}` (exit 2 `unknown git ref: <ref>`; in a shallow clone the message adds `(in CI, fetch full history, e.g. actions/checkout with fetch-depth: 0)`), then `git diff --name-only --no-relative --no-renames --no-ext-diff --no-textconv -z <ref>...HEAD --`. Every call pins `-c diff.relative=false -c diff.noprefix=false -c core.quotePath=false -c diff.renames=false -c diff.external=` and unsets `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, the object and namespace variables, `GIT_EXTERNAL_DIFF`, `GIT_DIFF_OPTS`, `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT` and `GIT_CONFIG_KEY_n`/`VALUE_n`, so repository, global, system or environment config cannot change the listed paths (`diff.relative=true` would otherwise make a subdirectory project see no changes). Only committed changes count: the diff is from the merge base of `<ref>` and `HEAD` to `HEAD`, so uncommitted edits are ignored. `--no-renames` lists both sides of a rename. Paths are mapped from the repository root to the project root, which may be a subdirectory; changes outside it are dropped. git missing, a non-zero exit (a shallow clone without the merge base, for instance) or a timeout is exit 2 with a fixed message; git's stderr is never printed.
+  3. **Affected candidates** (`ImpactAnalyzer`). A candidate is affected when a changed file is: its route file; the file of any execution-path node; the file of a route check; the class (or a parent, trait or interface of it) of a middleware it runs after group expansion, of its controller, of a path node's class, of any project class the path's code names (models, FormRequests), of a bound or checked model, or the policy of any of those; or a `Gate::define` for an ability it checks. Unresolved calls on its path count too: a `may-be-overridden`, `ambiguous` or `not-found` record makes the files of the classes it names reachable; an `unknown-type`, `dynamic` or `not-found` record makes reachable every project file declaring a method with the called name (taken from the record text and from the calls on that line), and a `depth-limit` node does the same for every method its body calls, one level past the limit.
+  4. **Every candidate** is affected when a changed file is `app/Http/Kernel.php`, `bootstrap/app.php`, `config/auth.php`, any `*AuthServiceProvider.php` or `*RouteServiceProvider.php`, or, because a wrong "unaffected" hides a vulnerability: any file declaring a class that extends the HTTP kernel or `ServiceProvider` (providers register gates, policies and route files); a file that failed to parse; a deleted or renamed-away PHP file the parser would have read (it may have been a policy or middleware); or a file that loads other route files (`require`/`include`, or `group()` with a file path).
+  5. **Not widened:** the rest of `config/`, `composer.lock`, `semantic-sec.yaml`, views and other non-PHP files; a config change that alters authorization outside `config/auth.php` needs a full run. **Known limit:** a call with no recoverable method name (`new $class(…)`, `$fn(…)`, `$obj->{$name}(…)`) is not mapped, so a change reachable only through it leaves the candidate unaffected. Widening such candidates on any `app/**/*.php` change was measured on a 629-candidate app: the median share of candidates sent per one-file change would go from 0.3% to 9.1% (mean 7.1% to 14.7%), so it is not done.
+  6. **Send only the affected candidates.** The rest are counted in the stat `unaffected`, and `payloads = skipped + unaffected + unsent + cacheHits + sent`. A change that touches no candidate sends nothing and exits 0. With `--dry-run`, only the affected payloads are written and listed; the JSON `summary` still counts every candidate and payload, like the engine summary, with the left-out payloads in `unaffected`. `--since` with `--generate-baseline` is exit 2 (`--since cannot be combined with --generate-baseline`), since a baseline must cover everything.
 
 ## 13. CLI
 
@@ -290,36 +296,67 @@ semantic-sec baseline             # alias for analyze --generate-baseline
 | `--framework` | auto | `laravel` |
 | `--level` | **`high`** [new] | Minimum severity to report and to fail on: `low`, `medium`, `high`, `critical` |
 | `--min-confidence` | **`medium`** [new] | Below this: reported (marked `not failing`), but never fails the build |
-| `--format` | `console` | `console`, `json`, `sarif`. Until M7 only `console`, plus `json` with `--dry-run` |
-| `--output` | stdout | Writes the formatter output to a file; the console summary still goes to stderr. M7 |
+| `--format` | `console` | `console`, `json`, `sarif`. With `--dry-run`, `json` lists the payloads and `sarif` is exit 2 (`--format sarif cannot be used with --dry-run`) |
+| `--output` | stdout | Writes the formatter output to this file (relative to the cwd; may be outside the project; on macOS `/tmp` and `/var` are symlinks, so use a path under the project or `realpath`) and the summary, strict line and warnings to stderr; stdout stays empty and exit codes are unchanged. Checked before the project is parsed: exit 2 when the target is a symlink or not a regular file, or any existing ancestor directory is a symlink or not a directory. A missing parent is created; the write is temp-then-rename, keeps an existing file's mode, and creates a new one as 0644 within the umask. `--output` with `--dry-run` is exit 2 |
 | `--provider` / `--model` | from config | |
 | `--concurrency` | 5 | A positive integer |
 | `--budget` | unlimited | Hard token cap (§12), an integer ≥ 0. Below one request's reservation (~35k+ at the default 16000 `max_tokens`), nothing is sent and the run exits 3 |
-| `--since` | — | git ref. M7 |
-| `--baseline` | `semantic-sec-baseline.json` if present | M7 |
-| `--generate-baseline` | — | Writes all current fingerprints, exits 0. M7 |
+| `--since` | — | git ref: send only the candidates the files committed since it can affect (§12). The ref is checked before parsing, git runs after parsing; not a repository, an unknown ref or a bad ref is exit 2. With `--dry-run` only affected payloads are written; with `--generate-baseline` it is exit 2 |
+| `--baseline` | `semantic-sec-baseline.json` in the project root, if present | Findings whose fingerprint is in the file are `baselined` (§11.4). A missing default file is an empty baseline; a missing explicit path (relative to the cwd) is exit 2, as is a bad file (§11.4). Read before the project is parsed; ignored with `--dry-run` |
+| `--no-baseline` | off | Reads no baseline file, not even the default; for runs over code whose baseline you do not trust. With `--baseline` or `--generate-baseline` (or `semantic-sec baseline`) it is exit 2 (`--no-baseline cannot be combined with …`) |
+| `--generate-baseline` | — | Runs the full analysis (needs the API key), prints the normal report, then writes every current fingerprint (§11.4) to the `--baseline` path (default `<root>/semantic-sec-baseline.json`) through the same safe writer as `--output`, and prints `wrote N fingerprints to <path>` to stderr. Exits 0 whatever the findings or budget; only when every request failed, or `--strict` trips, is it exit 2 with nothing written. The target is checked before parsing. With `--dry-run` it is exit 2 (`--generate-baseline cannot be used with --dry-run`). `semantic-sec baseline` takes every `analyze` option and behaves exactly like this flag |
 | `--deep` | off | Section 7 |
 | `--dry-run` | off | Writes the system prompt, exactly as sent, to `.semantic-sec/dry-run/000-system.txt` and every payload to `NNN-<verb-uri-slug>-<part>.txt` (e.g. `001-post-api-posts-id-1.txt`); makes no network calls; needs no API key |
 | `--no-cache` | off | Skips cache reads; validated answers are still written (§12) |
+| `--strict` | off | Exit 2 if any sent request ended `failed`, `refused`, `invalid` or `truncated`, or any payload was `unsent`. Accepted and ignored with `--dry-run`, since nothing is sent |
 
-**Overrides:** `--level`, `--min-confidence`, `--provider`, `--model`, `--concurrency` and `--budget` override the config file and are validated the same way; an invalid value is exit 2 with a message naming the flag (e.g. `--budget must be an integer ≥ 0.`). Flags, the config file and, outside `--dry-run`, the API key are checked before the project is parsed. `--output`, `--baseline`, `--generate-baseline`, `--since`, `--format sarif`, and `--format json` without `--dry-run` exit 2 with `<option> is available in a later release` until M7.
+**Overrides:** `--level`, `--min-confidence`, `--provider`, `--model`, `--concurrency` and `--budget` override the config file and are validated the same way; an invalid value is exit 2 with a message naming the flag (e.g. `--budget must be an integer ≥ 0.`). Flags, the config file and, outside `--dry-run`, the API key are checked before the project is parsed.
 
-**Console output (M6, minimal; M7 replaces it):** on stdout, one line per reported finding, `[<SEVERITY>] <category> <file>:<line> <symbol> — <title> (<confidence>[, not failing])`; then a `Summary` block (candidates, payloads, skipped, unsent, cache hits, sent, ok, refused, truncated, invalid, failed, dropped, findings, filtered, suppressed, baselined, tokens, budget); then `Warnings`. Model-controlled text has control characters replaced and console tags escaped. Errors go to stderr as `Error: <message>`; a missing key names the env var, never its value.
+**Console output:** the §14 report on stdout (or in the `--output` file, undecorated). Findings below `--level` are kept in `AnalysisResult::$filtered` (for baselines and the JSON/SARIF formatters) but only their count is printed. Model-controlled and source-derived text has control characters replaced and console tags escaped. Errors go to stderr as `Error: <message>`; a missing key names the env var, never its value.
 
 **Memory:** `bin/semantic-sec` raises PHP's `memory_limit` to `1G` when it is lower (and not `-1`), since real projects exceed the 128M default; `SEMANTIC_SEC_MEMORY_LIMIT` overrides it with any php.ini value (`-1`, `2G`, …).
 
-**Exit codes:** `0` clean (or only suppressed, baselined or non-failing findings) · `1` at least one failing finding · `2` tool error (bad config or option, no framework detected, missing API key when not in dry-run, unsafe `.semantic-sec/` directory, every request failed) · `3` budget exceeded with no failing findings. **[new] `1` beats `3`:** if the budget runs out after failing findings are found, the exit code is 1, and the partial results are always written.
+**Exit codes:** `0` clean (or only suppressed, baselined or non-failing findings) · `1` at least one failing finding · `2` tool error (bad config or option, no framework detected, missing API key when not in dry-run, unsafe `.semantic-sec/` directory, every request failed) · `3` budget exceeded with no failing findings. With `--strict`, `2` also when any request ended `failed`, `refused`, `invalid` or `truncated`, or any payload was `unsent`. **[new] `1` beats `3`:** if the budget runs out after failing findings are found, the exit code is 1, and the partial results are always written.
 
-Precedence, from `AnalysisResult`: `1` if any finding is failing; else `3` if the budget was exceeded; else `2` if at least one request was sent, none came back `ok` and nothing came from the cache (refused, truncated, invalid and failed all count as failed); else `0`. Errors before the engine runs (config, framework, key, cache directory) are always `2`.
+Precedence, from `AnalysisResult`, is `1 > strict-2 > 3 > all-failed-2 > 0`: `1` if any finding is failing; else, with `--strict`, `2` if `failed + refused + invalid + truncated + unsent > 0`; else `3` if the budget was exceeded; else `2` if at least one request was sent, none came back `ok` and nothing came from the cache (refused, truncated, invalid and failed all count as failed); else `0`. Errors before the engine runs (config, framework, key, cache directory) are always `2`.
 
 ## 14. Output
 
-- **Console:** the spec's original layout (`[!] High Severity: <title>` / File / Line / Context / Flaw / Suggested Fix with diff), grouped by file, then a summary: findings, suppressed, baselined, cache hits, tokens, warnings.
-- **JSON:** `{version, tool, summary, findings[], suppressed[], baselined[], warnings[]}`, each finding in the section 10 shape plus `fingerprint`.
-- **SARIF 2.1.0:**
-  - one `rule` per category: `id = CWE-xxx`, name, `helpUri` = the cwe.mitre.org page
-  - `results` with `ruleId`, `level` (critical/high → `error`, medium → `warning`, low → `note`), `message`, `locations` (relative URI and `startLine`), `partialFingerprints: {"semanticSec/v1": <fingerprint>}`, `properties.confidence`, `fixes` when a patch exists, and `codeFlows[].threadFlows[].locations` from `path`
-  - must validate against the official SARIF 2.1.0 JSON schema, which tests check
+- **Console:**
+  - a header `semantic-sec <version> — <provider> <model>`
+  - findings grouped by file (a bold file line per group), sorted by file then line, each as:
+    ```
+      [!] High Severity: <title>
+          File:          <root-relative path>
+          Line:          <line>
+          Symbol:        <symbol>
+          Category:      <label> (CWE-xxx)
+          Confidence:    <confidence>[ (not failing)]
+          Context:       <context>
+          Flaw:          <flaw>
+          Suggested Fix: <fix>
+          Patch:         (only when the finding has one; the diff, one line each, + green, - red, @@ cyan)
+    ```
+    or `No findings.`
+  - `Suppressed (n)` and `Baselined (n)` lists, each entry `- <title> — <file>:<line> — <reason>` (the suppression reason, `no reason given`, or `in baseline`); filtered findings appear only as a count
+  - the `Summary` block (candidates, payloads, skipped, unaffected, unsent, cache hits, sent, ok, refused, truncated, invalid, failed, dropped, findings, filtered, suppressed, baselined, tokens, budget), the `strict: …` line when `--strict` decides the exit, then `Warnings`
+  - every model- or source-derived string goes through the `Terminal` helper (invalid UTF-8 bytes become U+FFFD, bidi controls are removed, other control characters become spaces, console tags are escaped, and a line whose text starts with `::` after leading whitespace gets that prefix rewritten to `: :`, so the GitHub Actions runner never reads model text as a workflow command); multi-line prose keeps its line breaks, and patch lines keep their indentation. Colour comes only from the formatter's own template and only when the output is decorated; the `--output` file is plain text
+- **JSON** (`--format json`; stdout carries only the document, the summary and warnings go to stderr; with `--output` the document goes to the file):
+  - `{version, tool, summary, findings[], suppressed[], baselined[], filtered[], warnings[]}`, in that key order, pretty-printed with unescaped slashes and unicode and a trailing newline
+  - `version` is the JSON schema version (`1`); `tool` is `{name, version}`
+  - `summary` is every engine stat (`candidates` … `tokens`, `budgetExceeded`, with `unaffected` from §12) plus `exitCode` and `strictReason` (`null` unless `--strict` decided the exit)
+  - each finding has the section 10 fields in the order `title, category, severity, confidence, file, line, symbol, context, flaw, fix, patch, path[{file,line,symbol}]`, then `fingerprint`, `failing`, `routeKey`, `model`; findings are sorted by file then line
+  - a `suppressed` entry adds `suppression: {file, line, category|null, reason|null}` (the comment's location); `baselined` and `filtered` entries use the same shape with `failing: false`
+  - model text has control characters and bidi marks stripped and invalid UTF-8 replaced by U+FFFD, with no console-tag escaping; prose and patches keep their line breaks; fingerprints, paths and keys are never redacted
+- **SARIF 2.1.0** (`--format sarif`; stdout carries only the document, the summary and warnings go to stderr; with `--output` the document goes to the file):
+  - `$schema` (the OASIS errata01 URL), `version: "2.1.0"` and one `run`; `tool.driver` has `name`, `version`, `informationUri` (the GitHub repo) and `rules`
+  - `rules`: all five categories in fixed order (`idor`, `missing_authorization`, `mass_assignment`, `insecure_deserialization`, `workflow_bypass`), each `{id: CWE-xxx, name, shortDescription.text, fullDescription.text, help {text, markdown}, helpUri: https://cwe.mitre.org/data/definitions/<n>.html, properties {tags: ["security", "external/cwe/cwe-<n>"], precision: "high", "security-severity"}}`. `help` explains the flaw class and the Laravel fix. `security-severity` (a string, GitHub's 0–10 score) is CWE-502 `9.1`, CWE-862 `8.5`, CWE-639 `8.1`, CWE-915 `7.5`, CWE-841 `5.5`
+  - `results`: the reported findings only, sorted by file then line. Suppressed and baselined findings are **not** results, because GitHub does not document `suppressions` or `baselineState` and would open them as live alerts; their counts are `run.properties.summary.suppressed` and `.baselined` (the JSON output still lists them). Filtered findings (below `--level`) are not results either. Each has `ruleId`, `ruleIndex`, `level` (critical/high → `error`, medium → `warning`, low → `note`; a non-failing finding, below `--min-confidence`, is always `note` whatever its severity, which stays in `properties.severity` and the rule's `security-severity`), `message.text` (the title, a blank line, then the flaw), `locations[0].physicalLocation` (`artifactLocation {uri, uriBaseId: "%SRCROOT%"}` and `region.startLine`), `partialFingerprints: {"semanticSec/v1": <fingerprint>}`, `codeFlows[0].threadFlows[0].locations` from `path` when it is not empty, and `properties {severity, confidence, failing, category, symbol, routeKey, fix, patch?}`
+  - length caps, in UTF-8 characters and never mid-character, ending in `…` when cut: `message.text` 4000, `shortDescription`/`fullDescription` 1024, `properties.fix` and `properties.patch` 8000 each
+  - URIs are the root-relative path with each segment percent-encoded; a line below 1 omits `region`. `run.originalUriBaseIds."%SRCROOT%"` has only a `description`, never the absolute project path. `run.properties.summary` is the JSON `summary` plus the `suppressed` and `baselined` counts
+  - **no `fixes`:** the schema requires `fixes[].artifactChanges` with exact replacement regions, which a model-written unified diff cannot give reliably, so the fix text and the diff go in `properties.fix` and `properties.patch` (the latter only when the finding has a patch)
+  - text is cleaned as in JSON (control characters and bidi marks stripped, invalid UTF-8 replaced, no console escaping); fingerprints, paths and keys are never redacted
+  - must validate against the official SARIF 2.1.0 JSON schema, vendored at `tests/Fixtures/sarif-schema-2.1.0.json` (source in the sibling `.source` file); it is draft-04, so the test validates it as draft-07 after checking it uses only keywords that mean the same in both
 
 ## 15. Quality bar & benchmark
 
