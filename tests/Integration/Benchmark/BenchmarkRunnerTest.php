@@ -162,6 +162,31 @@ final class BenchmarkRunnerTest extends TestCase
         self::assertStringContainsString('--source needs --disguise-map', $tester->getDisplay());
     }
 
+    // M8 regression: a stale secondary (undisguised) cassette must not abort scoring of a fresh disguised recording.
+    #[Depends('testDisguisedRunIsTheGateAndMapsBack')]
+    public function testStaleUndisguisedCassetteLeavesTheDisguisedGateStanding(): void
+    {
+        $dir = self::$dir.'/stale-secondary';
+        mkdir($dir);
+        copy(self::$dir.'/benchmark-disguised-'.self::APP.'.json', $dir.'/benchmark-disguised-'.self::APP.'.json');
+        $stale = (array) json_decode((string) file_get_contents(self::$dir.'/benchmark-'.self::APP.'.json'), true);
+        foreach ($stale['interactions'] as $i => $interaction) {
+            $stale['interactions'][$i]['request']['body'] = str_replace('You are a security reviewer', 'You were an older reviewer', $interaction['request']['body']);
+        }
+        file_put_contents($dir.'/benchmark-'.self::APP.'.json', json_encode($stale));
+
+        $out = $dir.'/report.md';
+        $tester = new CommandTester(new BenchmarkCommand());
+        $exit = $tester->execute(['--app' => [self::APP], '--cassettes' => $dir, '--out' => $out, '--source' => self::$dir.'/disguised/bench', '--disguise-map' => self::$dir.'/disguised/disguise-map.json']);
+        $report = (string) file_get_contents($out);
+
+        self::assertSame(0, $exit, $tester->getDisplay());
+        self::assertStringContainsString('all      PASS', $tester->getDisplay());
+        self::assertStringContainsString('undisguised secondary table skipped', $tester->getDisplay());
+        self::assertStringContainsString('## Gate, undisguised (names visible)', $report);
+        self::assertStringContainsString('Not available: the undisguised cassettes are stale', $report);
+    }
+
     private static function hide(DisguiseMap $map, string $app, Variant $v): Variant
     {
         $symbol = $map->disguisedSymbol($app, $v->symbol);

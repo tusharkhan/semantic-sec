@@ -119,16 +119,23 @@ final class BenchmarkCommand extends Command
         }
         $runs = [];
         $undisguisedRuns = [];
+        $unavailable = 'the undisguised cassettes are missing';
         try {
             foreach ($apps as $app) {
                 $output->writeln(sprintf('<info>%s</info> %s', $live ? 'recording' : 'replaying', $app), OutputInterface::VERBOSITY_VERBOSE);
                 $run = $runner->run($app, $live ? 'record' : 'replay', null, trim($key), $budget);
                 $runs[$app] = $disguise === null ? $run : self::undisguise($disguise, $run);
             }
-            // The undisguised recordings are only ever replayed here, as the secondary table.
+            // The undisguised recordings are only ever replayed here, as an optional secondary table: never a reason to fail.
             if ($undisguisedRunner !== null && array_filter($apps, static fn (string $a): bool => ! is_file($undisguisedRunner->cassette($a))) === []) {
-                foreach ($apps as $app) {
-                    $undisguisedRuns[$app] = $undisguisedRunner->run($app, 'replay', null, trim($key), $budget);
+                try {
+                    foreach ($apps as $app) {
+                        $undisguisedRuns[$app] = $undisguisedRunner->run($app, 'replay', null, trim($key), $budget);
+                    }
+                } catch (\RuntimeException $e) {
+                    $undisguisedRuns = [];
+                    $unavailable = 'the undisguised cassettes are stale and need bin/benchmark --live without --source';
+                    $output->writeln('undisguised secondary table skipped: '.$e->getMessage());
                 }
             }
         } catch (\RuntimeException $e) {
@@ -180,7 +187,7 @@ final class BenchmarkCommand extends Command
             'promptVersion' => SecurityPrompt::VERSION,
             'requests' => $requests,
             'usage' => $usage,
-        ], $competitor, $disguise === null ? null : ($undisguised ?? false));
+        ], $competitor, $disguise === null ? null : ($undisguised ?? $unavailable));
         $out = (string) $input->getOption('out');
         $path = str_starts_with($out, '/') ? $out : $repo.'/'.$out;
         if (! is_dir(dirname($path)) || file_put_contents($path, $markdown) === false) {

@@ -27,8 +27,8 @@ final class Report
     /**
      * @param array<string, mixed> $meta mode, date, models (list), promptVersion, requests, usage (Usage)
      */
-    // $undisguised: null for a run on benchmark/; for a disguised run, the replayed undisguised score or false when its cassettes are missing.
-    public static function markdown(Score $s, array $meta, ?CompetitorResult $competitor = null, Score|false|null $undisguised = null): string
+    // $undisguised: null for a run on benchmark/; for a disguised run, the replayed undisguised score or why it is not available.
+    public static function markdown(Score $s, array $meta, ?CompetitorResult $competitor = null, Score|string|null $undisguised = null): string
     {
         $columns = [...$s->sets(), 'all'];
         $out = ['# Benchmark results', ''];
@@ -63,7 +63,7 @@ final class Report
             $out[] = '';
             $out[] = 'Secondary only: the same scorer on the recorded run over `benchmark/`, where `Vuln`/`Safe` show in paths, namespaces and routes.';
             $out[] = '';
-            array_push($out, ...($undisguised === false ? ['Not available: the undisguised cassettes are missing.', ''] : self::gateTable($undisguised, [...$undisguised->sets(), 'all'], false)));
+            array_push($out, ...(is_string($undisguised) ? ['Not available: '.$undisguised.'.', ''] : self::gateTable($undisguised, [...$undisguised->sets(), 'all'], false)));
         }
 
         array_push($out, ...self::selection($s));
