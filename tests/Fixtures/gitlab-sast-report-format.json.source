@@ -1,0 +1,7 @@
+Source: https://gitlab.com/gitlab-org/security-products/security-report-schemas/-/raw/v15.2.5/dist/sast-report-format.json
+Repository: https://gitlab.com/gitlab-org/security-products/security-report-schemas (path dist/sast-report-format.json, tag v15.2.5) commit 94999aa479bd7607fb28e28701754021fe3a6723
+Version: 15.2.5 (latest 15.x tag on 2026-11-01)
+Downloaded: 2026-11-01
+SHA-256: 1d2d2717fe7bd7bc5f3428bcfc4c3f2b7d60dbe27482602f99041da57afc33d8
+Schema id: https://gitlab.com/gitlab-org/security-products/security-report-schemas/-/raw/master/dist/sast-report-format.json
+Draft: draft-07, which opis/json-schema supports natively; it is validated unchanged, with only local #/definitions refs.

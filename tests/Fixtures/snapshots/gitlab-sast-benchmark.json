@@ -1,0 +1,341 @@
+{
+    "version": "15.2.5",
+    "scan": {
+        "analyzer": {
+            "id": "semantic_sec",
+            "name": "semantic-sec",
+            "url": "https://github.com/tusharkhan/semantic-sec",
+            "version": "0.7.0",
+            "vendor": {
+                "name": "semantic-sec"
+            }
+        },
+        "scanner": {
+            "id": "semantic_sec",
+            "name": "semantic-sec",
+            "url": "https://github.com/tusharkhan/semantic-sec",
+            "version": "0.7.0",
+            "vendor": {
+                "name": "semantic-sec"
+            }
+        },
+        "type": "sast",
+        "start_time": "2026-11-01T10:00:00",
+        "end_time": "2026-11-01T10:02:05",
+        "status": "success"
+    },
+    "vulnerabilities": [
+        {
+            "id": "156f0f05-108f-573c-9973-e4561fa0c6da",
+            "name": "Mass assignment: $request->all() written to Account whose $guarded is empty",
+            "description": "At L14, $account->update($request->all()) passes every request field to the model, not just the validated name and email. Account declares $guarded = [], so every column is mass-assignable. An authenticated user can therefore set sensitive columns on their account by adding extra fields to the request, such as the owner or user id, the tenant id, a balance, a plan or a status flag. Changing the owner or tenant column could move the account to another user or tenant.",
+            "severity": "High",
+            "solution": "Write only validated input with $request->validated() or $request->only(['name','email']). Also give Account an explicit $fillable list, or guard its sensitive columns, so other code paths cannot mass-assign them either.",
+            "location": {
+                "file": "app/Http/Controllers/Vuln/AccountController.php",
+                "start_line": 14
+            },
+            "identifiers": [
+                {
+                    "type": "cwe",
+                    "name": "CWE-915",
+                    "value": "915",
+                    "url": "https://cwe.mitre.org/data/definitions/915.html"
+                },
+                {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec fingerprint",
+                    "value": "424feaf29d1985fc1d829b702abcec8f1a8d0e532ccd61baeedeef1fce489ae4"
+                }
+            ]
+        },
+        {
+            "id": "3186f3c7-fcce-5c6e-b350-ce7e6ff75029",
+            "name": "unserialize() on client-supplied 'cart' cookie enables PHP object injection",
+            "description": "L13 passes $request->cookie('cart') straight to unserialize() with no allowed_classes restriction. The api middleware group does not include EncryptCookies by default, so the client controls the cookie bytes. An attacker can supply a serialized object whose magic methods (__wakeup/__destruct) start gadget chains from Laravel or its dependencies, which can lead to remote code execution. The result is then persisted at L14.",
+            "severity": "Critical",
+            "solution": "Do not use PHP native serialization for client-held data. Store the cart as JSON and read it with json_decode() plus validation. If unserialize() cannot be avoided, pass ['allowed_classes' => false] and validate the resulting structure.",
+            "location": {
+                "file": "app/Http/Controllers/Vuln/CartController.php",
+                "start_line": 13
+            },
+            "identifiers": [
+                {
+                    "type": "cwe",
+                    "name": "CWE-502",
+                    "value": "502",
+                    "url": "https://cwe.mitre.org/data/definitions/502.html"
+                },
+                {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec fingerprint",
+                    "value": "60f3cc319d630289b1b7f83a9819cb96308cbea7b540249184735d809dbce5d8"
+                }
+            ]
+        },
+        {
+            "id": "000bb174-84ac-50c8-9afe-527bd5737423",
+            "name": "IDOR: any authenticated user can read any Document via route model binding",
+            "description": "Route model binding at L20 loads any Document by the ID the client supplies. L22 returns the whole record as JSON without checking that the current user owns the document or may access it. Any logged-in user can enumerate IDs and read other users' documents, including their title and path.",
+            "severity": "High",
+            "solution": "Authorize access before returning the document, for example $this->authorize('view', $document) backed by a DocumentPolicy that compares the document's owner with the current user. Alternatively, scope the lookup to the user's own documents.",
+            "location": {
+                "file": "app/Http/Controllers/Vuln/DocumentController.php",
+                "start_line": 22
+            },
+            "identifiers": [
+                {
+                    "type": "cwe",
+                    "name": "CWE-639",
+                    "value": "639",
+                    "url": "https://cwe.mitre.org/data/definitions/639.html"
+                },
+                {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec fingerprint",
+                    "value": "a39e9d88295c6f741d7414034cde31e1426d864683508026cf071a05afec715d"
+                }
+            ]
+        },
+        {
+            "id": "c9d3829b-6d31-5a2e-a575-fd9ed4c83db8",
+            "name": "IDOR: any authenticated user can read any invoice by id",
+            "description": "L19 loads the invoice with Invoice::findOrFail($id) using the id from the URL. The query is not scoped to the current user. L21 returns the whole record as JSON, so any logged-in user can enumerate ids and read other users' invoices.",
+            "severity": "High",
+            "solution": "Scope the lookup to the current user, for example through the user's invoices relation or a where on the owner column. Alternatively, call $this->authorize('view', $invoice) backed by an InvoicePolicy that compares the user with the invoice owner.",
+            "location": {
+                "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+                "start_line": 19
+            },
+            "identifiers": [
+                {
+                    "type": "cwe",
+                    "name": "CWE-639",
+                    "value": "639",
+                    "url": "https://cwe.mitre.org/data/definitions/639.html"
+                },
+                {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec fingerprint",
+                    "value": "c119f50b1953c7cf011f105de8fbf3bfcd26af7e367f01d3f8fe756ef5e8dd0f"
+                }
+            ]
+        },
+        {
+            "id": "0a82f186-1541-5693-b675-76e0b63981fb",
+            "name": "Any authenticated user can update any invoice via route-bound {invoice} without an ownership check",
+            "description": "Route model binding (L24) loads any Invoice by its id and does not check who owns it. At L26, $invoice->update($request->validated()) writes the client-supplied amount and status without checking that the current user owns or may modify this invoice. Any logged-in user can change the amount and status of other users' invoices by enumerating ids.",
+            "severity": "High",
+            "solution": "Authorize the update against the specific invoice before writing, for example with $this->authorize('update', $invoice) backed by an InvoicePolicy that compares the invoice owner with the current user. Alternatively, make UpdateInvoiceRequest::authorize() perform that comparison instead of returning true.",
+            "location": {
+                "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+                "start_line": 26
+            },
+            "identifiers": [
+                {
+                    "type": "cwe",
+                    "name": "CWE-639",
+                    "value": "639",
+                    "url": "https://cwe.mitre.org/data/definitions/639.html"
+                },
+                {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec fingerprint",
+                    "value": "1ee5daa414e457c0b996f503a1a0a116cf4773f62a5ad7f6fb14bc8b08a683d2"
+                }
+            ]
+        },
+        {
+            "id": "aec03523-b625-5edb-be3c-25f62c16d4ad",
+            "name": "Invoice status can be set to any value with no state-transition enforcement",
+            "description": "At L26 the validated \"status\" is written directly to the invoice. Nothing visible checks that the current status allows the requested transition, so a user could, for example, mark an unpaid invoice as paid or reopen a settled one. The validation rules are not shown and might restrict the allowed values, but no transition logic is visible.",
+            "severity": "Medium",
+            "solution": "Remove status from the generic update payload and change it only through dedicated actions that check the current state, such as pay or void. Alternatively, validate that the requested status is a permitted transition from the invoice's current status.",
+            "location": {
+                "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+                "start_line": 26
+            },
+            "identifiers": [
+                {
+                    "type": "cwe",
+                    "name": "CWE-841",
+                    "value": "841",
+                    "url": "https://cwe.mitre.org/data/definitions/841.html"
+                },
+                {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec fingerprint",
+                    "value": "b98613e76afd053142cd0c3c4e42a9e6c0ae430ae6f466d42dab2433f2a16823"
+                }
+            ]
+        },
+        {
+            "id": "24ced712-0110-5c8d-821f-f90034ba6efe",
+            "name": "IDOR: any authenticated user can download any invoice PDF via route-bound {invoice}",
+            "description": "At L31 the Invoice is resolved from the user-supplied {invoice} route key by implicit binding, which loads any row. At L33 the method streams the invoice PDF straight back to the caller. Nothing checks that the current user owns the invoice or may access it, so any logged-in user can enumerate invoice IDs and download other users' invoices.",
+            "severity": "High",
+            "solution": "Authorize the invoice before serving the file. Either call $this->authorize('view', $invoice) backed by an InvoicePolicy that compares the invoice owner with auth()->id(), or abort with 403/404 unless the invoice belongs to the current user (or their tenant).",
+            "location": {
+                "file": "app/Http/Controllers/Vuln/InvoiceController.php",
+                "start_line": 33
+            },
+            "identifiers": [
+                {
+                    "type": "cwe",
+                    "name": "CWE-639",
+                    "value": "639",
+                    "url": "https://cwe.mitre.org/data/definitions/639.html"
+                },
+                {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec fingerprint",
+                    "value": "25441fa4060d37d39d589d5aa8830a176f5fb5ce4f2921b73c416174318ef087"
+                }
+            ]
+        },
+        {
+            "id": "583563b6-ba18-5d44-b58d-81074dafbc8a",
+            "name": "Order refunded without checking current status (unpaid or already refunded orders can be refunded)",
+            "description": "Neither the policy (L12) nor the controller checks the order's current state. At L18 the status is set to 'refunded' unconditionally. An owner can therefore refund an order that was never paid, that is already refunded, that was cancelled, or that is otherwise not eligible. This breaks the order state machine and can trigger refund processing that should not happen.",
+            "severity": "Medium",
+            "solution": "Before the transition, check that the order is in a refundable state (for example 'paid' or 'delivered'), and reject the request with an error otherwise. You can also add the state check to OrderPolicy::refund.",
+            "location": {
+                "file": "app/Http/Controllers/Vuln/OrderController.php",
+                "start_line": 18
+            },
+            "identifiers": [
+                {
+                    "type": "cwe",
+                    "name": "CWE-841",
+                    "value": "841",
+                    "url": "https://cwe.mitre.org/data/definitions/841.html"
+                },
+                {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec fingerprint",
+                    "value": "717a2d084406596a4766de60fc5b390fa13fba8ed1d6e97ff38502001bd00e82"
+                }
+            ]
+        },
+        {
+            "id": "2af70e64-a3b4-550a-bcd1-ebcabb6d1dd0",
+            "name": "Any authenticated user can update any Project via route-model-bound {project} without ownership check",
+            "description": "At L12, route model binding loads whichever Project the client's {project} id names. At L14 that Project is updated with the validated name and description, and nothing compares the current user with the project's owner. Any logged-in user can change any other user's project, and L16 returns the modified record.",
+            "severity": "High",
+            "solution": "Authorize the specific record before updating it. Either call $this->authorize('update', $project) backed by a ProjectPolicy that checks ownership, or have UpdateProjectRequest::authorize() return $this->user()->can('update', $this->route('project')).",
+            "location": {
+                "file": "app/Http/Controllers/Vuln/ProjectController.php",
+                "start_line": 14
+            },
+            "identifiers": [
+                {
+                    "type": "cwe",
+                    "name": "CWE-639",
+                    "value": "639",
+                    "url": "https://cwe.mitre.org/data/definitions/639.html"
+                },
+                {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec fingerprint",
+                    "value": "bb223b7f124bd77e3feb3409aea66f66b84e02a8c405ed3d2ce460cce86fc333"
+                }
+            ]
+        },
+        {
+            "id": "64672802-093d-51d9-8308-d9086a0d8f51",
+            "name": "IDOR: any authenticated user can read any receipt by id via Receipt::findOrFail",
+            "description": "L18 loads the receipt with Receipt::findOrFail($id), using the {id} the client supplies. The query is not scoped to the current user and no policy is called. L20 returns the whole record as JSON, so any logged-in user can read other users' receipts by changing the id. The docblock at L13 says a gateway enforces ownership, but no such check appears in the code or the context block, so the comment proves nothing.",
+            "severity": "High",
+            "solution": "Scope the lookup to the authenticated user, for example $request->user()->receipts()->findOrFail($id) or Receipt::where('user_id', $request->user()->id)->findOrFail($id). Alternatively, call $this->authorize('view', $receipt) backed by a ReceiptPolicy that compares the receipt's owner with the user.",
+            "location": {
+                "file": "app/Http/Controllers/Vuln/ReceiptController.php",
+                "start_line": 18
+            },
+            "identifiers": [
+                {
+                    "type": "cwe",
+                    "name": "CWE-639",
+                    "value": "639",
+                    "url": "https://cwe.mitre.org/data/definitions/639.html"
+                },
+                {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec fingerprint",
+                    "value": "282d65848a1b0db8c798ec160f26f464fd30cb018f5e8e0b123d64305cf06c88"
+                }
+            ]
+        },
+        {
+            "id": "289b1bd6-ad73-5a0c-8668-47e057a99cd9",
+            "name": "Mass assignment of owner_id via Team::create($request->all())",
+            "description": "L14 passes $request->all() to Team::create(). all() returns every input key the client sends, including keys that were never validated, so the rules() limit to \"name\" does not filter anything out. Because owner_id is fillable, any logged-in user can send owner_id and create a team owned by an arbitrary user. That user may then get ownership-based access tied to a team they never created. The creator can also plant teams under other accounts.",
+            "severity": "Medium",
+            "solution": "Pass only validated input with $request->validated() and set owner_id on the server from the authenticated user, for example $request->user()->id. Also consider removing owner_id from Team::$fillable.",
+            "location": {
+                "file": "app/Http/Controllers/Vuln/TeamController.php",
+                "start_line": 14
+            },
+            "identifiers": [
+                {
+                    "type": "cwe",
+                    "name": "CWE-915",
+                    "value": "915",
+                    "url": "https://cwe.mitre.org/data/definitions/915.html"
+                },
+                {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec fingerprint",
+                    "value": "bab6d3ae934448ecaca36f0e786b2e5a8112d7636ecd0abb587e81d03dda07bb"
+                }
+            ]
+        },
+        {
+            "id": "c0de7610-6e4f-5b75-bafb-b7764931c43f",
+            "name": "Any authenticated user can delete any comment: CommentPolicy::delete always returns true",
+            "description": "CommentPolicy::delete returns true unconditionally (L12) and never compares $user with the comment's owner. Any logged-in user can supply an arbitrary comment id and the record is deleted at CommentController.php L18.",
+            "severity": "High",
+            "solution": "Have the policy compare the current user with the comment's owner, for example $comment->user_id === $user->id. Optionally also allow the owner of the parent post or a moderator.",
+            "location": {
+                "file": "app/Policies/CommentPolicy.php",
+                "start_line": 12
+            },
+            "identifiers": [
+                {
+                    "type": "cwe",
+                    "name": "CWE-639",
+                    "value": "639",
+                    "url": "https://cwe.mitre.org/data/definitions/639.html"
+                },
+                {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec fingerprint",
+                    "value": "59418e3ea2f14d59e7f3806a5bd4329ac9ab1b4b79abc6b45d9c3d97b8f6c694"
+                }
+            ]
+        },
+        {
+            "id": "177ee2a7-5f22-5ef6-9e69-da32a6831a55",
+            "name": "IDOR: any logged-in user can download any Download record by its id",
+            "description": "The route takes {id} from the URL. DownloadController::show passes it to DownloadService::find (L17), which runs Download::findOrFail($id) (L11) with no filter on owner, team or tenant. L19 then streams the file at the record's path to the caller. Any authenticated user can enumerate ids and download other users' files. Confidence is medium because the payload does not show Download's ownership column; if downloads are meant to be public to every logged-in user, this is not a flaw.",
+            "severity": "High",
+            "solution": "Authorize access to the specific record before serving it. Either call $this->authorize('view', $download) backed by a DownloadPolicy that compares the user with the record's owner, or scope the lookup to the current user, e.g. auth()->user()->downloads()->findOrFail($id).",
+            "location": {
+                "file": "app/Services/DownloadService.php",
+                "start_line": 11
+            },
+            "identifiers": [
+                {
+                    "type": "cwe",
+                    "name": "CWE-639",
+                    "value": "639",
+                    "url": "https://cwe.mitre.org/data/definitions/639.html"
+                },
+                {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec fingerprint",
+                    "value": "16ea84cdfb66ca08a05c82742eb85b3cc8b901c56715e354d8f9af37c42591b6"
+                }
+            ]
+        }
+    ]
+}

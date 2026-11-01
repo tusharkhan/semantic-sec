@@ -45,7 +45,7 @@ authorization_middleware:
 | `--project-root` | The Laravel app to scan (default: the cwd) |
 | `--config` | A `semantic-sec.yaml` to use instead of the one in the project root |
 | `--framework` | Skip detection and force `laravel` |
-| `--format` | `console` (default), `json` or `sarif`. JSON and SARIF print only the document on stdout, and the summary and warnings go to stderr, so stdout stays parseable. With `--dry-run`, `json` lists the payloads and `sarif` is exit 2 |
+| `--format` | `console` (default), `json`, `sarif` or `gitlab-sast` (GitLab's SAST report, schema 15.2.5). JSON, SARIF and GitLab SAST print only the document on stdout, and the summary and warnings go to stderr, so stdout stays parseable. With `--dry-run`, `json` lists the payloads, and `sarif` and `gitlab-sast` are exit 2 |
 | `--output` | Write the report to this file instead of stdout. Stdout stays empty and the summary goes to stderr; exit codes don't change |
 | `--level` | Minimum severity to report and fail on: `low`, `medium`, `high` (default), `critical`. Findings below it are only counted (and kept in JSON) |
 | `--min-confidence` | Below this confidence (`low`, `medium` default, `high`) a finding is still reported, marked `not failing`. It never fails the build, and in SARIF it is a `note` |

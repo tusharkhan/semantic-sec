@@ -298,7 +298,7 @@ semantic-sec baseline             # alias for analyze --generate-baseline
 | `--framework` | auto | `laravel` |
 | `--level` | **`high`** [new] | Minimum severity to report and to fail on: `low`, `medium`, `high`, `critical` |
 | `--min-confidence` | **`medium`** [new] | Below this: reported (marked `not failing`), but never fails the build |
-| `--format` | `console` | `console`, `json`, `sarif`. With `--dry-run`, `json` lists the payloads and `sarif` is exit 2 (`--format sarif cannot be used with --dry-run`) |
+| `--format` | `console` | `console`, `json`, `sarif`, `gitlab-sast`. With `--dry-run`, `json` lists the payloads, and `sarif` and `gitlab-sast` are exit 2 (`--format <format> cannot be used with --dry-run`) |
 | `--output` | stdout | Writes the formatter output to this file (relative to the cwd; may be outside the project; on macOS `/tmp` and `/var` are symlinks, so use a path under the project or `realpath`) and the summary, strict line and warnings to stderr; stdout stays empty and exit codes are unchanged. Checked before the project is parsed: exit 2 when the target is a symlink or not a regular file, or any existing ancestor directory is a symlink or not a directory. A missing parent is created; the write is temp-then-rename, keeps an existing file's mode, and creates a new one as 0644 within the umask. `--output` with `--dry-run` is exit 2 |
 | `--provider` / `--model` | from config | |
 | `--concurrency` | 5 | A positive integer |
@@ -359,6 +359,13 @@ Precedence, from `AnalysisResult`, is `1 > strict-2 > 3 > all-failed-2 > 0`: `1`
   - **no `fixes`:** the schema requires `fixes[].artifactChanges` with exact replacement regions, which a model-written unified diff cannot give reliably, so the fix text and the diff go in `properties.fix` and `properties.patch` (the latter only when the finding has a patch)
   - text is cleaned as in JSON (control characters and bidi marks stripped, invalid UTF-8 replaced, no console escaping); fingerprints, paths and keys are never redacted
   - must validate against the official SARIF 2.1.0 JSON schema, vendored at `tests/Fixtures/sarif-schema-2.1.0.json` (source in the sibling `.source` file); it is draft-04, so the test validates it as draft-07 after checking it uses only keywords that mean the same in both
+- **GitLab SAST** (`--format gitlab-sast`; stdout carries only the document, the summary and warnings go to stderr; with `--output` the document goes to the file, e.g. `gl-sast-report.json` for `artifacts: reports: sast`):
+  - `{version, scan, vulnerabilities[]}`, pretty-printed with a trailing newline; `version` is the schema version `15.2.5`
+  - `scan`: `analyzer` and `scanner` are both `{id: "semantic_sec", name: "semantic-sec", url: <GitHub repo>, version, vendor: {name: "semantic-sec"}}`; `type: "sast"`; `start_time` and `end_time` in UTC as `YYYY-MM-DDTHH:MM:SS` (the run's start and the report's creation); `status` is `failure` when the exit code is 2, else `success`
+  - `vulnerabilities`: the reported findings only, sorted by file then line; suppressed, baselined and filtered findings are left out, as in SARIF. Each has `id` (a version-5 UUID of the fingerprint under the fixed namespace `84d1fcaf-52cc-5cb0-a675-4b8a9ad45331`, so it is stable across runs and line moves), `name` (the title), `description` (the flaw, or the title when the flaw is empty), `severity` (`Critical`, `High`, `Medium`, `Low`; a non-failing finding, below `--min-confidence`, is `Info`, as SARIF makes it a `note`), `solution` (the fix, omitted when empty), `location {file, start_line}` (the root-relative path, not a URI; a line below 1 omits `start_line`) and `identifiers`: `{type: "cwe", name: "CWE-xxx", value: "xxx", url}` first (the primary identifier), then `{type: "semantic_sec_fingerprint", name: "semantic-sec fingerprint", value: <fingerprint>}`. Schema 15.x has no `confidence` field
+  - length caps, in UTF-8 characters and never mid-character, ending in `…` when cut: `name` 255, `description` 4000, `solution` 7000 (the schema's limits are 255, 1 MiB and 7000)
+  - text is cleaned as in JSON; the title and path become one line; fingerprints and paths are never redacted
+  - must validate against GitLab's official `sast-report-format.json` 15.2.5 (draft-07), vendored at `tests/Fixtures/gitlab-sast-report-format.json` (source and SHA-256 in the sibling `.source` file)
 
 ## 15. Quality bar & benchmark
 

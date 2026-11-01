@@ -235,12 +235,42 @@ final class AnalyzeCommandTest extends TestCase
         self::assertStringContainsString('Report written to '.$file, $err);
     }
 
+    public function testGitlabSastStdoutIsOnlyTheDocument(): void
+    {
+        [$code, $out, $err] = $this->analyze(['--format' => 'gitlab-sast'], $this->answers(self::finding()));
+
+        self::assertSame(1, $code, $err);
+        $doc = json_decode($out, true, 512, JSON_THROW_ON_ERROR);
+        self::assertSame('15.2.5', $doc['version']);
+        self::assertSame('success', $doc['scan']['status']);
+        self::assertMatchesRegularExpression('~^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$~', $doc['scan']['start_time']);
+        self::assertLessThanOrEqual($doc['scan']['end_time'], $doc['scan']['start_time']);
+        self::assertCount(1, $doc['vulnerabilities']);
+        self::assertStringStartsWith("{\n", $out);
+        self::assertStringEndsWith("}\n", $out);
+        self::assertStringNotContainsString($this->root, $out);
+        self::assertMatchesRegularExpression('~^Summary$~m', $err, 'the summary goes to stderr');
+        self::assertStringNotContainsString('"vulnerabilities"', $err);
+    }
+
+    public function testGitlabSastOutputWritesTheDocumentToTheFile(): void
+    {
+        $file = $this->base.'/reports/gl-sast-report.json';
+        [$code, $out, $err] = $this->analyze(['--format' => 'gitlab-sast', '--output' => $file], $this->answers(self::finding()));
+
+        self::assertSame(1, $code, $err);
+        self::assertSame('', $out);
+        $doc = json_decode((string) file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
+        self::assertCount(1, $doc['vulnerabilities']);
+        self::assertStringContainsString('Report written to '.$file, $err);
+    }
+
     public function testUnknownFormatNamesSarif(): void
     {
         [$code, , $err] = $this->analyze(['--format' => 'xml'], $this->answers(self::finding()));
 
         self::assertSame(2, $code);
-        self::assertSame("Error: --format must be console, json or sarif\n", $err);
+        self::assertSame("Error: --format must be console, json, sarif or gitlab-sast\n", $err);
         self::assertSame([], $this->requests);
     }
 
@@ -376,6 +406,14 @@ final class AnalyzeCommandTest extends TestCase
 
         self::assertSame(2, $code);
         self::assertSame("Error: --format sarif cannot be used with --dry-run\n", $err);
+    }
+
+    public function testDryRunGitlabSastIsRejected(): void
+    {
+        [$code, , $err] = $this->analyze(['--dry-run' => true, '--format' => 'gitlab-sast'], $this->answers(self::finding()));
+
+        self::assertSame(2, $code);
+        self::assertSame("Error: --format gitlab-sast cannot be used with --dry-run\n", $err);
     }
 
     public function testPartialResultsWrittenOnBudget(): void
