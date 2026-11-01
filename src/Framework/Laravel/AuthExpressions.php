@@ -327,13 +327,27 @@ final class AuthExpressions
         return self::isCall($expr) && ! in_array(self::name($expr), [...self::LOGIN_CALLS, 'can', 'cannot', 'cant'], true) && $this->isAuthUser($expr->var);
     }
 
-    /** A chain rooted at the auth user whose first call is a relation and a later call is a read. */
-    public function isRelationRead(Expr $outer): bool
+    /**
+     * A chain rooted at the auth user whose first call is a relation and a later call is a read.
+     * Property hops before the first call (`->organization->tickets()->get()`) count only when $toOneHops accepts them.
+     *
+     * @param  (\Closure(list<string>): bool)|null  $toOneHops
+     */
+    public function isRelationRead(Expr $outer, ?\Closure $toOneHops = null): bool
     {
         $calls = [];
+        $hops = [];
         $node = $outer;
         while (! $this->isAuthUser($node)) {
-            if (! self::isCall($node)) {
+            $isFetch = $node instanceof Expr\PropertyFetch || $node instanceof Expr\NullsafePropertyFetch;
+            if ($isFetch && $node->name instanceof Node\Identifier) {
+                array_unshift($hops, $node->name->toString());
+                $node = $node->var;
+
+                continue;
+            }
+            // A call below a property hop would make the hop a property of a call result.
+            if (! self::isCall($node) || $hops !== []) {
                 return false;
             }
             $name = self::name($node);
@@ -342,6 +356,9 @@ final class AuthExpressions
             }
             array_unshift($calls, $name);
             $node = $node->var;
+        }
+        if ($hops !== [] && ($toOneHops === null || ! $toOneHops($hops))) {
+            return false;
         }
         if (array_intersect($calls, Verbs::SCOPE_RESETS) !== []) {
             return false;
