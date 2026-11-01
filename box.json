@@ -1,0 +1,21 @@
+{
+    "$schema": "https://raw.githubusercontent.com/box-project/box/4.7.0/res/schema.json",
+    "main": "bin/semantic-sec",
+    "output": "semantic-sec.phar",
+    "files": [
+        "bin/semantic-sec",
+        "LICENSE"
+    ],
+    "directories": [
+        "src",
+        "config",
+        "vendor"
+    ],
+    "exclude-composer-files": true,
+    "exclude-dev-files": true,
+    "compactors": [
+        "KevinGH\\Box\\Compactor\\Php",
+        "KevinGH\\Box\\Compactor\\Json"
+    ],
+    "check-requirements": true
+}

@@ -407,6 +407,14 @@ Unknown keys are a config error (exit 2), which catches typos.
 ## 17. Distribution
 
 - Composer package on Packagist. The PHAR is built with Box and attached to GitHub releases.
+- **Building the PHAR.** Run `tools/build-phar.sh` (or `composer phar`). It needs `php` and `composer`; without a host PHP it re-runs itself in the repo's `php` compose service.
+  - It downloads the pinned official `box.phar` (Box 4.7.0) into `build/` and checks its SHA-256 before every use.
+  - It copies `bin/semantic-sec`, `src/`, `config/`, `composer.json`, `composer.lock`, `box.json` and `LICENSE` to a temp dir and runs `composer install --no-dev --classmap-authoritative` there, with advisory blocking on. The working tree's `vendor/` is never touched.
+  - Box (`box.json`) packs only `bin/semantic-sec`, `src/`, `config/`, `vendor/` and `LICENSE`, with the PHP and JSON compactors and the requirement checker (PHP ≥ 8.2 from `composer.json`).
+  - The output is `build/semantic-sec.phar` plus `build/semantic-sec.phar.sha256`.
+  - `tools/build-phar.sh --verify` (host with docker) also runs the PHAR under `php:8.2-cli` and `php:8.4-cli`: `--version`, `map` byte-identical to `bin/semantic-sec map`, and `analyze --dry-run`.
+  - `SEMANTIC_SEC_PHAR=1 vendor/bin/phpunit tests/Integration/PharBuildTest.php` builds it and checks the same, plus the PHAR's file list (no tests, benchmark, tools, docs, `.env`, cassettes or `sk-ant-` strings).
+- **Releasing.** Pushing a `v*` tag runs `.github/workflows/release.yml` (`contents: write` only). It takes the notes from the `## [<version>]` section of `CHANGELOG.md` and fails if that section is missing or empty. It then builds the PHAR, checks that `--version` matches the tag, smoke-runs `map` on `benchmark/laravel11-app`, and creates the release with the PHAR and its `.sha256`.
 - `examples/github-actions.yml` uploads SARIF with `github/codeql-action/upload-sarif`. `examples/gitlab-ci.yml` uses the SAST report artifact. Both use `--since` on pull/merge requests.
 - The README documents the PHAR path for PHP 7.4–8.1 projects, Ollama's limits, what code leaves the machine (`--dry-run` shows exactly what), and the prompt-injection caveat: only run on trusted branches, or review the output.
 

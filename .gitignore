@@ -7,3 +7,4 @@
 /.semantic-sec/
 /.claude/
 /.env.live
+/build/
