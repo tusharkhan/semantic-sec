@@ -255,7 +255,7 @@ A route action becomes a candidate for a category when:
 4. **Baseline:** a finding whose fingerprint is in the baseline file goes to `baselined`. This runs before the level filter, so a baselined finding is never reported or filtered.
    - File (`BaselineFile`): `{"version": 1, "tool": "semantic-sec", "fingerprints": [{fingerprint, category, file, symbol, title}]}`, sorted by fingerprint, pretty-printed with unescaped slashes and unicode and a trailing newline; the same findings always give the same bytes. Text fields have control characters replaced. Loading reads only `fingerprint`.
    - Generating writes every reported (failing or not), filtered (below `--level`) and baselined finding, once per fingerprint; suppressed findings are left out, since their comments already silence them.
-   - Loading fails (exit 2, naming the file) on invalid JSON, a `version` other than the integer `1`, a missing `fingerprints` list, an entry without a 64-hex lowercase `fingerprint`, a path that is not a regular file, or a file over 16 MB.
+   - Loading fails (exit 2, naming the file) on a UTF-8 byte-order mark (`<file> starts with a byte-order mark; save it without BOM`), invalid JSON, a `version` other than the integer `1`, a missing `fingerprints` list, an entry without a 64-hex lowercase `fingerprint`, a path that is not a regular file, or a file over 16 MB.
 5. **Filters:** keep findings with `severity ≥ --level`. Those with `confidence < --min-confidence` are still **reported**, marked "not failing", but don't affect the exit code.
 
 ## 12. Cache, budget, diff mode

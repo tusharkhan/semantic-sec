@@ -45,6 +45,9 @@ final class BaselineFile
         if ($text === false || strlen($text) > self::MAX_BYTES) {
             throw new \RuntimeException("Cannot read baseline {$path}");
         }
+        if (str_starts_with($text, "\xEF\xBB\xBF")) {
+            throw new \RuntimeException("Baseline {$path} starts with a byte-order mark; save it without BOM");
+        }
         try {
             $doc = json_decode($text, true, 16, JSON_THROW_ON_ERROR);
         } catch (\JsonException) {

@@ -35,7 +35,7 @@ authorization_middleware:
   - permission
 ```
 
-**Trust boundary.** `semantic-sec.yaml`, `@semantic-sec-ignore` suppression comments and `.semantic-sec/cache/` are all trusted input. Anyone who can change them can hide a finding. Add `.semantic-sec/` to your `.gitignore`. In CI on pull requests you don't trust, run with `--no-cache`, because a committed cache entry can hide a finding.
+**Trust boundary.** `semantic-sec.yaml`, `@semantic-sec-ignore` suppression comments, the baseline file and `.semantic-sec/cache/` are all trusted input. Anyone who can change them can hide a finding. Add `.semantic-sec/` to your `.gitignore`. In CI on pull requests you don't trust, run with `--no-cache`, because a committed cache entry can hide a finding, and use only a baseline you control (an explicit `--baseline` path the PR cannot edit) or none, because the PR can edit `semantic-sec-baseline.json`.
 
 ## Baselines
 
@@ -47,7 +47,11 @@ vendor/bin/semantic-sec analyze --project-root=/path/to/laravel-app       # uses
 vendor/bin/semantic-sec analyze --baseline=ci/baseline.json               # or an explicit file (must exist)
 ```
 
-Generating runs the full analysis and writes the fingerprint of every finding, including non-failing and below-`--level` ones (not suppressed ones), to `semantic-sec-baseline.json` in the project root. It exits 0 whatever it found, unless every request failed. The file is sorted and pretty-printed, so commit it and review its diffs. Later runs list matching findings as baselined instead of reporting them. A fingerprint covers the file, symbol, category and the symbol's code, so editing a baselined method brings its finding back. A malformed baseline file is exit 2. The baseline is trusted input, like suppression comments: anyone who can edit it can hide a finding.
+Generating runs the full analysis and writes the fingerprint of every finding, including non-failing and below-`--level` ones (not suppressed ones), to `semantic-sec-baseline.json` in the project root. It exits 0 whatever it found, unless every request failed. The file is sorted and pretty-printed, so commit it and review its diffs. Later runs list matching findings as baselined instead of reporting them. A fingerprint covers the file, symbol, category and the symbol's code, so editing a baselined method brings its finding back. A malformed baseline file is exit 2.
+
+**What a fingerprint does not cover.** A fingerprint hashes only the finding's own method. A baselined finding stays hidden when only a callee, the route, its middleware or a policy changes, even if that change makes the flaw worse. One fingerprint also covers every flaw of the same category in that method, so a second IDOR added to a baselined method without touching the first stays hidden too. Review such changes by hand; removing the entry from the baseline brings the finding back.
+
+The baseline is trusted input, like suppression comments: anyone who can edit it can hide a finding.
 
 ## Dry run
 

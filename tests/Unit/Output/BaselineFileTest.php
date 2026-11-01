@@ -150,6 +150,17 @@ final class BaselineFileTest extends TestCase
         }
     }
 
+    public function testByteOrderMarkNamed(): void
+    {
+        $path = $this->dir.'/bom.json';
+        file_put_contents($path, "\xEF\xBB\xBF".'{"version": 1, "fingerprints": []}');
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage($path.' starts with a byte-order mark; save it without BOM');
+
+        BaselineFile::load($path, false);
+    }
+
     public function testOversizedFileRefused(): void
     {
         $path = $this->dir.'/big.json';
