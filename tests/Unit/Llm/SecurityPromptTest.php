@@ -32,6 +32,7 @@ final class SecurityPromptTest extends TestCase
             'Report every flaw you can support with tagged lines, including low-confidence ones; filtering happens downstream',
             'An authorization check protects a record only if it compares the current user with the attribute that represents ownership of, or permission over, this record for this action',
             'A check against an unrelated attribute is no protection',
+            'It also covers a list or collection endpoint that returns records belonging to other users, teams or tenants because its query is not scoped to the current user; report those as idor too',
         ] as $clause) {
             self::assertStringContainsString($clause, $prompt);
         }
