@@ -28,7 +28,7 @@ It works in two stages:
 | Frameworks v1 | **Laravel 8 – 13 only** **[changed]**. Symfony moves to v1.1, after the accuracy gate (section 15). The `FrameworkContext` interface keeps that slot open. Plain-PHP projects get exit code 2 with "no supported framework detected" until a plain-PHP context exists. |
 | Tool distribution | Composer `require-dev` for PHP 8.2+ projects; PHAR for older projects and standalone CI. |
 
-**Runtime dependencies:** `nikic/php-parser ^5`, `phpstan/phpdoc-parser ^2`, `symfony/console ^6.4 || ^7`, `symfony/yaml ^6.4 || ^7`, `symfony/process ^6.4.33 || ^7.4.5` (git, for `--since`; the floors are the first releases without known advisories), `guzzlehttp/guzzle ^7.9`, `opis/json-schema ^2`.
+**Runtime dependencies:** `nikic/php-parser ^5`, `phpstan/phpdoc-parser ^2`, `symfony/console ^6.4 || ^7 || ^8`, `symfony/yaml ^6.4 || ^7 || ^8`, `symfony/process ^6.4.33 || ^7.4.5 || ^8` (git, for `--since`; the floors are the first releases without known advisories), `guzzlehttp/guzzle ^7.15.2`, `opis/json-schema ^2`.
 **Dev dependencies:** `phpunit/phpunit ^11`, `phpstan/phpstan ^2` (level 8), `laravel/pint ^1` (PSR-12, same `pint.json` as agentic-php), `humbug/box` (PHAR).
 
 ## 3. Scope of findings (v1)
@@ -440,4 +440,4 @@ Unknown keys are a config error (exit 2), which catches typos.
 | D9 | Benchmark built first, with a competitive check against `claude-code-security-review` | `research/09` recommendations 4–5 |
 | D10 | Malformed LLM JSON retried once, then dropped | Keeps the "never crash on LLM output" promise without loops |
 | D11 | No default model ID hardcoded in docs | Model IDs go stale; kept in `config/defaults.php` and refreshed each release |
-| D12 | Symfony components ^6.4 \|\| ^7 | Laravel 9/10 lock Symfony 6; ^7 blocked composer installs there |
+| D12 | Symfony components ^6.4 \|\| ^7 \|\| ^8 | Laravel 9/10 lock Symfony 6; ^7 blocked composer installs there. ^8 added in 0.1.1: fresh Laravel 12 apps on PHP 8.4+ lock `symfony/yaml` 8 |
