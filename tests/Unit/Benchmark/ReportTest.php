@@ -117,6 +117,18 @@ final class ReportTest extends TestCase
         self::assertStringNotContainsString('tuned-on', Report::markdown(self::score(), self::meta()));
     }
 
+    public function testHoldoutGetsItsOwnColumnAndCountsInAll(): void
+    {
+        $yaml = str_replace("  - id: policy-accept\n    app: app-a\n    set: blind\n", "  - id: policy-accept\n    app: app-a\n    set: holdout\n", ScorerTest::YAML);
+        $score = Scorer::score(ExpectedCases::load($yaml), ScorerTest::analyze(), ScorerTest::perfectMaps(), ExpectedCases::publicRoutes($yaml));
+        $markdown = Report::markdown($score, self::meta());
+
+        self::assertContains('holdout', $score->sets());
+        self::assertSame(1, $score->counts('holdout')->cases);
+        self::assertSame($score->counts(null)->cases, $score->counts('existing')->cases + $score->counts('blind')->cases + 1);
+        self::assertMatchesRegularExpression('/\| Criterion \| Threshold \|( [a-z]+ \|)* holdout \| all \|/', $markdown);
+    }
+
     public function testCost(): void
     {
         self::assertEqualsWithDelta(6.45, Report::cost(['input' => 1_000_000, 'output' => 100_000, 'cacheRead' => 1_000_000, 'cacheWrite' => 50_000]), 1e-9);

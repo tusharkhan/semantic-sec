@@ -102,9 +102,12 @@ PHP;
         $this->assertSingleError('sample-case: missing key "set"', $case);
 
         $case['set'] = 'hidden';
-        $this->assertSingleError('sample-case: set must be existing or blind', $case);
+        $this->assertSingleError('sample-case: set must be existing, blind or holdout', $case);
 
         $case['set'] = 'blind';
+        self::assertSame([], CorpusValidator::caseErrors($case, BenchmarkCorpus::root()));
+
+        $case['set'] = 'holdout';
         self::assertSame([], CorpusValidator::caseErrors($case, BenchmarkCorpus::root()));
     }
 
@@ -148,7 +151,7 @@ PHP;
         $route = ['app' => 'laravel11-app', 'route' => 'GET /posts/{post}', 'symbol' => 'App\Http\Controllers\PostController::show'];
         self::assertSame([], CorpusValidator::publicRouteErrors('p', $route, BenchmarkCorpus::root()));
         self::assertSame([], CorpusValidator::publicRouteErrors('p', [...$route, 'set' => 'blind'], BenchmarkCorpus::root()));
-        self::assertSame(['p: set must be existing or blind'], CorpusValidator::publicRouteErrors('p', [...$route, 'set' => 'x'], BenchmarkCorpus::root()));
+        self::assertSame(['p: set must be existing, blind or holdout'], CorpusValidator::publicRouteErrors('p', [...$route, 'set' => 'x'], BenchmarkCorpus::root()));
         self::assertSame(['p: unknown key "line"'], CorpusValidator::publicRouteErrors('p', [...$route, 'line' => 3], BenchmarkCorpus::root()));
     }
 

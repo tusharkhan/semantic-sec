@@ -13,7 +13,7 @@ namespace TusharKhan\SemanticSec\Tests\Support\Benchmark;
  */
 final class Score
 {
-    public const SETS = ['existing', 'blind'];
+    public const SETS = ['existing', 'blind', 'holdout'];
 
     /**
      * @param list<CaseVerdict> $cases

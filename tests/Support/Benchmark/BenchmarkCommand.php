@@ -20,7 +20,7 @@ final class BenchmarkCommand extends Command
 
     public const LIVE_BUDGET = '300000';
 
-    private const SETS = ['all', 'existing', 'blind'];
+    private const SETS = ['all', 'existing', 'blind', 'holdout'];
 
     // A live run always has a token cap per app: --budget, or LIVE_BUDGET.
     public static function budget(?string $option, bool $live): ?string
@@ -33,7 +33,7 @@ final class BenchmarkCommand extends Command
         $this
             ->addOption('live', null, InputOption::VALUE_NONE, 'Call Anthropic with the key from .env.live and record the cassettes (controller only; costs money)')
             ->addOption('app', null, InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY, 'Benchmark app to run (repeatable; default: every app with cases in --set)')
-            ->addOption('set', null, InputOption::VALUE_REQUIRED, 'all, existing or blind', 'all')
+            ->addOption('set', null, InputOption::VALUE_REQUIRED, 'all, existing, blind or holdout', 'all')
             ->addOption('competitor', null, InputOption::VALUE_REQUIRED, 'claude-code-security-review eval_results.json to score as well (M8 Task 5)')
             ->addOption('source', null, InputOption::VALUE_REQUIRED, 'Run on the disguised copy in this directory (needs --disguise-map); cassettes benchmark-disguised-<app>.json')
             ->addOption('disguise-map', null, InputOption::VALUE_REQUIRED, 'disguise-map.json from tools/benchmark-disguise.php; its copy is where the competitor ran')
@@ -47,7 +47,7 @@ final class BenchmarkCommand extends Command
         $repo = dirname(BenchmarkCorpus::root());
         $set = (string) $input->getOption('set');
         if (! in_array($set, self::SETS, true)) {
-            return $this->fail($output, '--set must be all, existing or blind');
+            return $this->fail($output, '--set must be all, existing, blind or holdout');
         }
         $competitorPath = $input->getOption('competitor');
         $disguisePath = $input->getOption('disguise-map');

@@ -16,7 +16,7 @@ final class CorpusValidator
 {
     public const VARIANTS = ['vulnerable', 'safe'];
 
-    public const SETS = ['existing', 'blind'];
+    public const SETS = ['existing', 'blind', 'holdout'];
 
     private const CASE_KEYS = ['id', 'app', 'set', 'category', 'description', 'vulnerable', 'safe', 'tuned_on'];
 
@@ -67,7 +67,7 @@ final class CorpusValidator
         }
 
         if (array_key_exists('set', $case) && ! in_array($case['set'], self::SETS, true)) {
-            $errors[] = "$id: set must be existing or blind";
+            $errors[] = "$id: set must be existing, blind or holdout";
         }
 
         if (array_key_exists('tuned_on', $case) && ! is_bool($case['tuned_on'])) {
@@ -110,7 +110,7 @@ final class CorpusValidator
             }
         }
         if (array_key_exists('set', $route) && ! in_array($route['set'], self::SETS, true)) {
-            $errors[] = "$label: set must be existing or blind";
+            $errors[] = "$label: set must be existing, blind or holdout";
         }
         if (is_string($route['app'] ?? null) && ! self::isApp($route['app'], $root)) {
             $errors[] = "$label: app \"{$route['app']}\" is not a benchmark app";
