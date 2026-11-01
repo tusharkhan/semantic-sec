@@ -31,7 +31,7 @@ composer require --dev tusharkhan/semantic-sec:^0.1
 vendor/bin/semantic-sec --version
 ```
 
-**PHAR**, for projects on PHP 7.4–8.1, or when Composer can't fit semantic-sec's dependencies (Symfony 6.4 or 7, Guzzle 7) next to yours. Each GitHub release has `semantic-sec.phar` and its SHA-256:
+**PHAR**, for projects on PHP 7.4–8.1, or when Composer can't fit semantic-sec's dependencies (Symfony 6.4, 7 or 8, Guzzle 7) next to yours. Each GitHub release has `semantic-sec.phar` and its SHA-256:
 
 ```
 curl -fsSLO https://github.com/tusharkhan/semantic-sec/releases/download/v0.1.1/semantic-sec.phar
