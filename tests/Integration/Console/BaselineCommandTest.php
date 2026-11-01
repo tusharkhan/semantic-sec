@@ -148,6 +148,35 @@ final class BaselineCommandTest extends TestCase
         self::assertFileDoesNotExist($this->root.'/.semantic-sec/dry-run');
     }
 
+    public function testNoBaselineIgnoresTheDefaultFile(): void
+    {
+        [$code] = $this->analyze(['--generate-baseline' => true], $this->vulnOnly());
+        self::assertSame(0, $code);
+
+        [$code, $out, $err] = $this->analyze(['--no-baseline' => true], $this->vulnOnly());
+        self::assertSame(1, $code, $err);
+        self::assertStringContainsString('File:          '.self::SHOW, $out);
+
+        file_put_contents($this->root.'/semantic-sec-baseline.json', '{"version":');
+        [$code, , $err] = $this->analyze(['--no-baseline' => true], $this->vulnOnly());
+        self::assertSame(1, $code, 'a malformed default file is never read: '.$err);
+    }
+
+    public function testNoBaselineConflictsAreExitTwo(): void
+    {
+        foreach ([
+            [AnalyzeCommand::class, ['--no-baseline' => true, '--baseline' => $this->base.'/b.json'], '--no-baseline cannot be combined with --baseline'],
+            [AnalyzeCommand::class, ['--no-baseline' => true, '--generate-baseline' => true], '--no-baseline cannot be combined with --generate-baseline'],
+            [BaselineCommand::class, ['--no-baseline' => true], '--no-baseline cannot be combined with --generate-baseline'],
+        ] as [$class, $args, $message]) {
+            [$code, , $err] = $this->analyze($args, $this->vulnOnly(), [], $class);
+            self::assertSame(2, $code, $message);
+            self::assertSame("Error: {$message}\n", $err);
+        }
+        self::assertSame([], $this->requests);
+        self::assertFileDoesNotExist($this->root.'/semantic-sec-baseline.json');
+    }
+
     public function testMissingExplicitIsExitTwo(): void
     {
         [$code, , $err] = $this->analyze(['--baseline' => $this->base.'/missing.json'], $this->vulnOnly());

@@ -89,6 +89,7 @@ class AnalyzeCommand extends Command
             ->addOption('format', null, InputOption::VALUE_REQUIRED, 'console, json or sarif', 'console')
             ->addOption('output', null, InputOption::VALUE_REQUIRED, 'Write the report to this file (never through a symlink); the summary and warnings go to stderr')
             ->addOption('baseline', null, InputOption::VALUE_REQUIRED, 'Baseline file: findings whose fingerprint is in it are baselined, not reported (default: semantic-sec-baseline.json in the project root, if present)')
+            ->addOption('no-baseline', null, InputOption::VALUE_NONE, 'Read no baseline file, not even the default one; for runs on code you do not trust')
             ->addOption('generate-baseline', null, InputOption::VALUE_NONE, 'Write every current finding\'s fingerprint to the baseline file and exit 0')
             ->addOption('since', null, InputOption::VALUE_REQUIRED, 'Send only candidates that committed changes since this git ref (<ref>...HEAD) can affect')
             ->setHelp(<<<'HELP'
@@ -104,6 +105,8 @@ class AnalyzeCommand extends Command
                 so a budget below one reservation (~35k tokens at the default max_tokens) sends nothing and exits 3.
 
                 --dry-run writes the system prompt and every payload to .semantic-sec/dry-run and needs no API key.
+
+                --no-baseline reads no baseline file at all; use it on pull requests whose baseline you do not trust.
 
                 --since=<ref> sends only the candidates that files committed since <ref> (git diff <ref>...HEAD) can affect;
                 uncommitted changes are ignored. It cannot be combined with --generate-baseline.
@@ -121,6 +124,13 @@ class AnalyzeCommand extends Command
         $generate = $this->generatesBaseline($input);
         if ($dryRun && $generate) {
             return $this->fail($output, '--generate-baseline cannot be used with --dry-run');
+        }
+        $noBaseline = $input->getOption('no-baseline') === true;
+        if ($noBaseline && $input->getOption('baseline') !== null) {
+            return $this->fail($output, '--no-baseline cannot be combined with --baseline');
+        }
+        if ($noBaseline && $generate) {
+            return $this->fail($output, '--no-baseline cannot be combined with --generate-baseline');
         }
         $since = $input->getOption('since');
         if ($since !== null) {
@@ -168,7 +178,7 @@ class AnalyzeCommand extends Command
         $paths = $this->paths($root, $input->getArgument('paths'));
         $baselinePath = $this->stringOption($input, 'baseline') ?? $root.'/'.BaselineFile::DEFAULT;
         $baseline = Baseline::empty();
-        if (! $dryRun) {
+        if (! $dryRun && ! $noBaseline) {
             try {
                 if ($generate) {
                     SafeWriter::check($baselinePath);
@@ -234,8 +244,8 @@ class AnalyzeCommand extends Command
         if ($format === 'json') {
             $output->writeln(json_encode([
                 'summary' => [
-                    'candidates' => count($rows),
-                    'payloads' => array_sum(array_map(static fn (array $r): int => count($r['payloads']), $rows)),
+                    'candidates' => count($run->results),
+                    'payloads' => array_sum(array_map(static fn (array $r): int => count($r['payloads']), $rows)) + $unaffected,
                     'tokens' => array_sum(array_column($rows, 'tokens')),
                     'unaffected' => $unaffected,
                     'directory' => $dir,
@@ -245,7 +255,7 @@ class AnalyzeCommand extends Command
                 'warnings' => $warnings,
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR));
         } else {
-            $this->renderConsole($output, $rows, $warnings, $dir, $since === null ? null : $unaffected);
+            $this->renderConsole($output, $rows, $warnings, $dir, $since === null ? null : sprintf('%d of %d candidates affected since %s; %d unaffected payloads not written', count($rows), count($run->results), (string) $since, $unaffected));
         }
 
         return ExitCode::OK;
@@ -525,7 +535,7 @@ class AnalyzeCommand extends Command
      * @param  list<array{number: int, route: string, categories: list<string>, tokens: int, payloads: list<array<string, mixed>>}>  $rows
      * @param  list<string>  $warnings
      */
-    private function renderConsole(OutputInterface $output, array $rows, array $warnings, string $dir, ?int $unaffected): void
+    private function renderConsole(OutputInterface $output, array $rows, array $warnings, string $dir, ?string $since): void
     {
         $table = new Table($output);
         $table->setHeaders(['#', 'Route', 'Categories', 'Parts', 'Tokens']);
@@ -538,8 +548,8 @@ class AnalyzeCommand extends Command
         $table->render();
 
         $output->writeln(sprintf('%d candidates, %d payloads, ~%d tokens; written to %s', count($rows), $payloads, $tokens, Terminal::safe($dir)));
-        if ($unaffected !== null) {
-            $output->writeln(sprintf('%d payloads not written: unaffected since the --since ref', $unaffected));
+        if ($since !== null) {
+            $output->writeln(Terminal::safe($since));
         }
 
         if ($warnings !== []) {

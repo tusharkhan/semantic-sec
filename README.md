@@ -35,7 +35,7 @@ authorization_middleware:
   - permission
 ```
 
-**Trust boundary.** `semantic-sec.yaml`, `@semantic-sec-ignore` suppression comments, the baseline file and `.semantic-sec/cache/` are all trusted input. Anyone who can change them can hide a finding. Add `.semantic-sec/` to your `.gitignore`. In CI on pull requests you don't trust, run with `--no-cache`, because a committed cache entry can hide a finding, and use only a baseline you control (an explicit `--baseline` path the PR cannot edit) or none, because the PR can edit `semantic-sec-baseline.json`.
+**Trust boundary.** `semantic-sec.yaml`, `@semantic-sec-ignore` suppression comments, the baseline file and `.semantic-sec/cache/` are all trusted input. Anyone who can change them can hide a finding. Add `.semantic-sec/` to your `.gitignore`. In CI on pull requests you don't trust, run with `--no-cache`, because a committed cache entry can hide a finding, and use only a baseline you control (an explicit `--baseline` path the PR cannot edit) or `--no-baseline`, because the PR can edit `semantic-sec-baseline.json`.
 
 ## Baselines
 
@@ -61,15 +61,31 @@ On a pull request, send only the routes the PR's commits can affect:
 vendor/bin/semantic-sec analyze --since=origin/main
 ```
 
-It runs `git diff --name-only <ref>...HEAD`, so only committed changes since the merge base count. A route is sent when the change touches its route file, any method on its execution path, or a middleware, policy, FormRequest or model it uses. A change to `app/Http/Kernel.php`, `bootstrap/app.php`, any service provider, a deleted PHP file or a file that failed to parse sends every route. Changes to `config/`, `composer.lock` or `semantic-sec.yaml` do not; run without `--since` after those. Routes left out are counted as `unaffected` in the summary. A PR that touches no route sends nothing and exits 0. A ref that isn't a commit, or a project that isn't in a git repository, exits 2. `--since` with `--dry-run` writes only the affected payloads; it can't be combined with `--generate-baseline`.
+It runs `git diff --name-only <ref>...HEAD`, so only committed changes since the merge base count. Your git config cannot change the listed paths (`diff.relative` and similar settings are overridden).
 
-The project may live in a subdirectory of the repository. The checkout needs the full history so git can find the merge base:
+A route is sent when the change touches its route file, any method on its execution path, a middleware, policy, FormRequest or model it uses, or a file its unresolved calls may reach. That last case covers a subclass that may override a called method, and any class declaring a method the path calls on an untyped receiver or past the depth limit. A change to `app/Http/Kernel.php`, `bootstrap/app.php`, `config/auth.php`, any service provider, a deleted PHP file or a file that failed to parse sends every route.
+
+Some changes are not followed:
+
+- changes to the rest of `config/`, `composer.lock` or `semantic-sec.yaml`; run without `--since` after those
+- a callee reached only through a call with no method name at all (`new $class(…)`, `$fn(…)`, `$obj->{$name}(…)`)
+
+Routes left out are counted as `unaffected` in the summary. A PR that touches no route sends nothing and exits 0. A ref that isn't a commit, or a project that isn't in a git repository, exits 2; in a shallow clone the message says to fetch full history. `--since` with `--dry-run` writes only the affected payloads. It can't be combined with `--generate-baseline`.
+
+**GitHub Actions.** The workflow below is for **pull requests from branches of the same repository only**: fork PRs get no secrets, so the job skips them. **Never switch it to `pull_request_target`.** That trigger gives the job your secrets while it checks out and runs the PR's code (`composer install`, `vendor/bin`), so any fork could steal the API key.
+
+Even on same-repo PRs, the PR controls `semantic-sec.yaml`, `semantic-sec-baseline.json` and `.semantic-sec/`, so the job reads the config and baseline from the base branch and skips the cache. `fetch-depth: 0` gives git the merge base. If the project lives in a subdirectory, prefix the `git show` paths and pass `--project-root`.
 
 ```yaml
 on: pull_request
+permissions:
+  contents: read
 jobs:
   semantic-sec:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    env:
+      BASE: origin/${{ github.base_ref }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,12 +94,20 @@ jobs:
         with:
           php-version: '8.2'
       - run: composer install --no-interaction --no-progress
-      - run: vendor/bin/semantic-sec analyze --since=origin/${{ github.base_ref }} --no-cache --format=sarif --output=semantic-sec.sarif
+      - name: Config and baseline from the base branch
+        run: |
+          git show "$BASE:semantic-sec.yaml" > "$RUNNER_TEMP/semantic-sec.yaml" 2>/dev/null || : > "$RUNNER_TEMP/semantic-sec.yaml"
+          if git show "$BASE:semantic-sec-baseline.json" > "$RUNNER_TEMP/baseline.json" 2>/dev/null; then
+            echo "BASELINE=--baseline=$RUNNER_TEMP/baseline.json" >> "$GITHUB_ENV"
+          else
+            echo "BASELINE=--no-baseline" >> "$GITHUB_ENV"
+          fi
+      - run: vendor/bin/semantic-sec analyze --since="$BASE" --config="$RUNNER_TEMP/semantic-sec.yaml" "$BASELINE" --no-cache --format=sarif --output=semantic-sec.sarif
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-The PR's own `semantic-sec-baseline.json` is read by default, and the PR can edit it; see the trust boundary above before running this on pull requests you don't trust.
+An empty config file means the defaults. `--no-baseline` reads no baseline at all, not even the default file. `@semantic-sec-ignore` comments in the PR's own code still apply, so review new suppression comments in the PR.
 
 ## Dry run
 

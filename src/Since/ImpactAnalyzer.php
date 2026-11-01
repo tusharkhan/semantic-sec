@@ -14,6 +14,7 @@ use TusharKhan\SemanticSec\Framework\Laravel\Ancestry;
 use TusharKhan\SemanticSec\Framework\Laravel\ConstantEvaluator;
 use TusharKhan\SemanticSec\Framework\Laravel\MiddlewareRegistry;
 use TusharKhan\SemanticSec\Framework\Laravel\PolicyRegistry;
+use TusharKhan\SemanticSec\Parsing\CallGraph\PathNode;
 use TusharKhan\SemanticSec\Parsing\FileFinder;
 use TusharKhan\SemanticSec\Parsing\ParseResult;
 use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTable;
@@ -21,7 +22,7 @@ use TusharKhan\SemanticSec\Parsing\Symbols\SymbolTable;
 /** Which candidates a set of changed files can affect (SPEC §12); when in doubt a candidate is affected. */
 final class ImpactAnalyzer
 {
-    public const GLOBAL_FILES = ['app/Http/Kernel.php', 'bootstrap/app.php'];
+    public const GLOBAL_FILES = ['app/Http/Kernel.php', 'bootstrap/app.php', 'config/auth.php'];
 
     public const GLOBAL_SUFFIXES = ['AuthServiceProvider.php', 'RouteServiceProvider.php'];
 
@@ -33,6 +34,17 @@ final class ImpactAnalyzer
     private readonly PolicyRegistry $policies;
 
     private readonly NodeFinder $finder;
+
+    // Unresolved kinds whose record names the classes the call may land in.
+    private const NAMED = ['may-be-overridden', 'ambiguous', 'not-found'];
+
+    // Unresolved kinds matched by method name against every project class.
+    private const NAME_MATCHED = ['unknown-type', 'dynamic', 'not-found'];
+
+    private const RECORD = '~^(.*?):(\d+): \[([a-z-]+)\] (.*)$~s';
+
+    /** @var array<string, array<string, true>>|null lower-cased method name => files declaring it */
+    private ?array $methods = null;
 
     public function __construct(private readonly ParseResult $parsed, private readonly SymbolTable $symbols, private readonly Config $config)
     {
@@ -110,6 +122,7 @@ final class ImpactAnalyzer
                 }
             }
         }
+        $this->unresolvedFiles($candidate, $files, $classes);
         $seen = [];
         foreach ($classes as $class) {
             $this->classFiles(ltrim($class, '\\'), $files, $seen);
@@ -122,6 +135,88 @@ final class ImpactAnalyzer
         }
 
         return $files;
+    }
+
+    /**
+     * Calls the call graph could not resolve: the classes their records name, and every project file declaring the called method name.
+     *
+     * @param  array<string, true>  $files
+     * @param  list<string>  $classes
+     */
+    private function unresolvedFiles(Candidate $candidate, array &$files, array &$classes): void
+    {
+        foreach ($candidate->path->unresolved as $record) {
+            if (preg_match(self::RECORD, $record, $m) !== 1) {
+                continue;
+            }
+            [, , $line, $kind, $rest] = $m;
+            [$text, $detail] = array_pad(explode(' → ', $rest, 2), 2, '');
+            if (in_array($kind, self::NAMED, true)) {
+                preg_match_all('~[A-Za-z_\\\\][\\w\\\\]*~', $detail.' '.(str_starts_with($text, 'action ') ? substr($text, 7) : ''), $tokens);
+                foreach ($tokens[0] as $token) {
+                    $file = $this->symbols->getClass(ltrim($token, '\\'))?->file;
+                    if ($file !== null) {
+                        $files[$file] = true;
+                    }
+                }
+            }
+            $names = [];
+            if (in_array($kind, self::NAME_MATCHED, true)) {
+                preg_match_all('~(?:->|::)\s*(\w+)\s*\(~', $text, $called);
+                $names = $called[1];
+                foreach ($candidate->path->nodes as $node) {
+                    if ($node->file === $m[1] && $node->startLine <= (int) $line && (int) $line <= $node->endLine) {
+                        array_push($names, ...$this->calledNames($node, (int) $line));
+                    }
+                }
+            } elseif ($kind === 'depth-limit') {
+                // The node's own calls were not followed: look one level deeper.
+                foreach ($candidate->path->nodes as $node) {
+                    if ($node->id === $text) {
+                        array_push($names, ...$this->calledNames($node, null));
+                    }
+                }
+            }
+            foreach ($names as $name) {
+                $files += $this->methodIndex()[strtolower($name)] ?? [];
+            }
+        }
+    }
+
+    /** @return list<string> method names called in the node's body, only on $line when given */
+    private function calledNames(PathNode $node, ?int $line): array
+    {
+        $fn = $node->method->node ?? $node->closure;
+        if ($fn === null) {
+            return [];
+        }
+        $names = [];
+        foreach ($this->finder->find($fn, static fn (Node $n): bool => $n instanceof Expr\MethodCall || $n instanceof Expr\NullsafeMethodCall || $n instanceof Expr\StaticCall) as $call) {
+            /** @var Expr\MethodCall|Expr\NullsafeMethodCall|Expr\StaticCall $call */
+            if ($call->name instanceof Node\Identifier && ($line === null || $call->getStartLine() === $line)) {
+                $names[] = $call->name->toString();
+            }
+        }
+
+        return $names;
+    }
+
+    /** @return array<string, array<string, true>> */
+    private function methodIndex(): array
+    {
+        if ($this->methods === null) {
+            $this->methods = [];
+            foreach ($this->symbols->all() as $class) {
+                if (str_starts_with($class->file, 'vendor/')) {
+                    continue;
+                }
+                foreach (array_keys($class->methods) as $name) {
+                    $this->methods[strtolower((string) $name)][$class->file] = true;
+                }
+            }
+        }
+
+        return $this->methods;
     }
 
     private function widensToAll(string $path): bool

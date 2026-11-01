@@ -91,6 +91,13 @@ final class ChangedFilesTest extends TestCase
 
     public function testProjectRootAsSubdirectory(): void
     {
+        $this->subdirHistory();
+
+        self::assertSame(['app/A.php', 'routes/api.php'], ChangedFiles::between($this->dir.'/api', 'HEAD~1'));
+    }
+
+    private function subdirHistory(): void
+    {
         GitRepo::init($this->dir);
         GitRepo::write($this->dir, 'api/app/A.php', "<?php\n");
         GitRepo::write($this->dir, 'web/x.php', "<?php\n");
@@ -100,8 +107,63 @@ final class ChangedFilesTest extends TestCase
         GitRepo::write($this->dir, 'web/x.php', "<?php\n// changed\n");
         GitRepo::write($this->dir, 'api-other/y.php', "<?php\n");
         GitRepo::commitAll($this->dir, 'two');
+    }
+
+    public function testDiffRelativeConfigIgnored(): void
+    {
+        $this->subdirHistory();
+        GitRepo::git($this->dir, 'config', 'diff.relative', 'true');
+        GitRepo::git($this->dir, 'config', 'diff.noprefix', 'true');
+        GitRepo::git($this->dir, 'config', 'core.quotePath', 'true');
 
         self::assertSame(['app/A.php', 'routes/api.php'], ChangedFiles::between($this->dir.'/api', 'HEAD~1'));
+    }
+
+    public function testEnvironmentConfigIgnored(): void
+    {
+        $this->subdirHistory();
+        $env = ['GIT_CONFIG_COUNT' => '1', 'GIT_CONFIG_KEY_0' => 'diff.relative', 'GIT_CONFIG_VALUE_0' => 'true', 'GIT_CONFIG_PARAMETERS' => "'diff.relative'='true'", 'GIT_DIR' => $this->dir.'/nowhere', 'GIT_WORK_TREE' => '/'];
+        // Process children inherit $_SERVER and $_ENV, so set all three.
+        foreach ($env as $k => $v) {
+            putenv("{$k}={$v}");
+            $_SERVER[$k] = $_ENV[$k] = $v;
+        }
+        try {
+            self::assertSame(['app/A.php', 'routes/api.php'], ChangedFiles::between($this->dir.'/api', 'HEAD~1'));
+        } finally {
+            foreach (array_keys($env) as $k) {
+                putenv($k);
+                unset($_SERVER[$k], $_ENV[$k]);
+            }
+        }
+    }
+
+    public function testShallowCloneMissingRefHints(): void
+    {
+        GitRepo::init($this->dir.'/origin');
+        GitRepo::write($this->dir.'/origin', 'a.php', "<?php\n");
+        GitRepo::commitAll($this->dir.'/origin', 'one');
+        GitRepo::write($this->dir.'/origin', 'b.php', "<?php\n");
+        GitRepo::commitAll($this->dir.'/origin', 'two');
+        GitRepo::git($this->dir, 'clone', '-q', '--depth', '1', 'file://'.$this->dir.'/origin', $this->dir.'/shallow');
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('unknown git ref: HEAD~1 (in CI, fetch full history, e.g. actions/checkout with fetch-depth: 0)');
+
+        ChangedFiles::between($this->dir.'/shallow', 'HEAD~1');
+    }
+
+    public function testUnknownRefInFullCloneHasNoHint(): void
+    {
+        GitRepo::init($this->dir);
+        GitRepo::commitAll($this->dir, 'one');
+
+        try {
+            ChangedFiles::between($this->dir, 'nope');
+            self::fail('expected a RuntimeException');
+        } catch (\RuntimeException $e) {
+            self::assertSame('unknown git ref: nope', $e->getMessage());
+        }
     }
 
     public function testPathsWithSpacesAndUnicode(): void

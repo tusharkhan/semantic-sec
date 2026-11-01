@@ -156,8 +156,21 @@ final class AnalyzeSinceTest extends TestCase
         self::assertCount(4, $files, 'the system prompt and three payloads');
         self::assertSame(AnalyzeCommand::SYSTEM_FILE, $files[0]);
         self::assertCount(1, array_filter($files, static fn (string $f): bool => str_ends_with($f, self::VULN.'.txt')));
-        $summary = json_decode($t->getDisplay(), true, 512, JSON_THROW_ON_ERROR)['summary'];
-        self::assertSame([3, 3, 11], [$summary['candidates'], $summary['payloads'], $summary['unaffected']]);
+        $doc = json_decode($t->getDisplay(), true, 512, JSON_THROW_ON_ERROR);
+        // Counted like the engine summary: every candidate and payload, the left-out ones as unaffected.
+        self::assertSame([14, 14, 11], [$doc['summary']['candidates'], $doc['summary']['payloads'], $doc['summary']['unaffected']]);
+        self::assertCount(3, $doc['candidates'], 'only the affected candidates are listed');
+    }
+
+    public function testDryRunConsoleNamesUnaffected(): void
+    {
+        $this->history(fn () => file_put_contents($this->root.'/'.self::CONTROLLER, "\n// touched\n", FILE_APPEND));
+
+        $t = new CommandTester(new AnalyzeCommand());
+        $code = $t->execute(['--project-root' => $this->root, '--dry-run' => true, '--since' => 'HEAD~1'], ['capture_stderr_separately' => true]);
+
+        self::assertSame(0, $code, $t->getErrorOutput());
+        self::assertStringContainsString('3 of 14 candidates affected since HEAD~1; 11 unaffected payloads not written', $t->getDisplay());
     }
 
     // Commits the app, applies $change, commits again.

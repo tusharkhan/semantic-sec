@@ -212,6 +212,7 @@ final class ImpactAnalyzerTest extends TestCase
             PHP,
         'app/Services/Unrelated.php' => '<?php namespace App\Services; class Unrelated { public function run(): int { return 1; } }',
         'config/app.php' => "<?php\n\nreturn ['name' => 'demo'];\n",
+        'config/auth.php' => "<?php\n\nreturn ['defaults' => ['guard' => 'web']];\n",
     ];
 
     public function testFixtureHasEveryCandidate(): void
@@ -291,20 +292,163 @@ final class ImpactAnalyzerTest extends TestCase
         self::assertSame([], $this->affected([]));
     }
 
+    public function testConfigAuthWidensToAll(): void
+    {
+        self::assertSame([self::ADMIN, self::TAGS, self::POSTS], $this->affected(['config/auth.php']));
+    }
+
+    public function testUntypedServiceCallReachesTheService(): void
+    {
+        self::assertSame(['GET /notes/{id}'], $this->unresolved(['app/Services/NoteService.php']));
+    }
+
+    public function testOverridingSubclassIsReachable(): void
+    {
+        self::assertSame(['GET /reports/{id}'], $this->unresolved(['app/Repos/ChildRepo.php']));
+    }
+
+    public function testDepthLimitLooksOneLevelDeeper(): void
+    {
+        self::assertSame(['GET /deep/{id}'], $this->unresolved(['app/Deep/S4.php']));
+    }
+
+    public function testUnresolvedFixtureLeavesUnrelatedOut(): void
+    {
+        self::assertSame([], $this->unresolved(['app/Services/Unrelated.php']));
+    }
+
     public function testDotSlashPathsNormalised(): void
     {
         self::assertSame([self::TAGS], $this->affected(['./app/Models/Tag.php']));
     }
 
+    private const UNRESOLVED = [
+        'routes/web.php' => <<<'PHP'
+            <?php
+
+            use App\Http\Controllers\NoteController;
+            use App\Http\Controllers\ReportController;
+            use App\Http\Controllers\DeepController;
+            use Illuminate\Support\Facades\Route;
+
+            Route::get('notes/{id}', [NoteController::class, 'show']);
+            Route::get('reports/{id}', [ReportController::class, 'show']);
+            Route::get('deep/{id}', [DeepController::class, 'show']);
+            PHP,
+        'app/Models/Note.php' => '<?php namespace App\Models; class Note extends \Illuminate\Database\Eloquent\Model { }',
+        'app/Http/Controllers/NoteController.php' => <<<'PHP'
+            <?php
+            namespace App\Http\Controllers;
+
+            class NoteController
+            {
+                private $service;
+
+                public function show(int $id)
+                {
+                    return $this->service->find($id);
+                }
+            }
+            PHP,
+        'app/Services/NoteService.php' => <<<'PHP'
+            <?php
+            namespace App\Services;
+
+            class NoteService
+            {
+                public function find(int $id)
+                {
+                    return \App\Models\Note::query()->whereKey($id)->first();
+                }
+            }
+            PHP,
+        'app/Http/Controllers/ReportController.php' => <<<'PHP'
+            <?php
+            namespace App\Http\Controllers;
+
+            use App\Repos\BaseRepo;
+
+            class ReportController
+            {
+                public function __construct(private BaseRepo $repo)
+                {
+                }
+
+                public function show(int $id)
+                {
+                    return $this->repo->load($id);
+                }
+            }
+            PHP,
+        'app/Repos/BaseRepo.php' => <<<'PHP'
+            <?php
+            namespace App\Repos;
+
+            class BaseRepo
+            {
+                public function load(int $id)
+                {
+                    return \App\Models\Note::query()->findOrFail($id);
+                }
+            }
+            PHP,
+        'app/Repos/ChildRepo.php' => <<<'PHP'
+            <?php
+            namespace App\Repos;
+
+            class ChildRepo extends BaseRepo
+            {
+                public function load(int $id)
+                {
+                    return \App\Models\Note::query()->find($id);
+                }
+            }
+            PHP,
+        'app/Http/Controllers/DeepController.php' => <<<'PHP'
+            <?php
+            namespace App\Http\Controllers;
+
+            use App\Deep\S1;
+
+            class DeepController
+            {
+                public function __construct(private S1 $s1)
+                {
+                }
+
+                public function show(int $id)
+                {
+                    return $this->s1->one($id);
+                }
+            }
+            PHP,
+        'app/Deep/S1.php' => '<?php namespace App\Deep; class S1 { public function __construct(private S2 $s2) { } public function one(int $id) { return $this->s2->two($id); } }',
+        'app/Deep/S2.php' => '<?php namespace App\Deep; class S2 { public function __construct(private S3 $s3) { } public function two(int $id) { return $this->s3->three($id); } }',
+        'app/Deep/S3.php' => '<?php namespace App\Deep; class S3 { public function __construct(private S4 $s4) { } public function three(int $id) { return $this->s4->fourDeep($id); } }',
+        'app/Deep/S4.php' => '<?php namespace App\Deep; class S4 { public function fourDeep(int $id) { return \App\Models\Note::query()->find($id); } }',
+        'app/Services/Unrelated.php' => '<?php namespace App\Services; class Unrelated { public function run(): int { return 1; } }',
+    ];
+
+    /**
+     * @param  list<string>  $changed
+     * @return list<string> affected route keys over the unresolved-call fixture, sorted
+     */
+    private function unresolved(array $changed): array
+    {
+        return $this->affected($changed, [], self::UNRESOLVED, ['GET /deep/{id}', 'GET /notes/{id}', 'GET /reports/{id}']);
+    }
+
     /**
      * @param  list<string>  $changed
      * @param  list<ParseFailure>  $failures
+     * @param  array<string, string>|null  $fixture  path => code; null is FILES
+     * @param  list<string>|null  $expected  the fixture's sorted candidate keys
      * @return list<string> the affected candidates' route keys, sorted
      */
-    private function affected(array $changed, array $failures = []): array
+    private function affected(array $changed, array $failures = [], ?array $fixture = null, ?array $expected = null): array
     {
         $files = [];
-        foreach (self::FILES as $path => $code) {
+        foreach ($fixture ?? self::FILES as $path => $code) {
             $files[] = (new AstGenerator())->parse(new SourceFile($path, '/nonexistent/'.$path, $code));
         }
         $parsed = new ParseResult($files, $failures);
@@ -316,7 +460,7 @@ final class ImpactAnalyzerTest extends TestCase
         [$candidates] = $context->candidateSelector($parsed, $symbols, $config, $framework)->select($map, true);
         $keys = array_map(static fn (Candidate $c): string => $c->route->key(), $candidates);
         sort($keys);
-        self::assertSame([self::ADMIN, self::TAGS, self::POSTS], $keys, 'fixture candidates');
+        self::assertSame($expected ?? [self::ADMIN, self::TAGS, self::POSTS], $keys, 'fixture candidates');
 
         $affected = array_map(static fn (Candidate $c): string => $c->route->key(), (new ImpactAnalyzer($parsed, $symbols, $config))->affected($candidates, $changed));
         sort($affected);

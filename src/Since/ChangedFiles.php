@@ -14,6 +14,14 @@ final class ChangedFiles
 
     private const TIMEOUT = 60.0;
 
+    public const SHALLOW_HINT = ' (in CI, fetch full history, e.g. actions/checkout with fetch-depth: 0)';
+
+    // Environment that would redirect git or inject config; `false` unsets it for the child.
+    private const UNSET_ENV = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_NAMESPACE', 'GIT_EXTERNAL_DIFF', 'GIT_DIFF_OPTS', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT'];
+
+    // Config that could change the diff's paths, pinned on the command line.
+    private const PINNED = ['-c', 'diff.relative=false', '-c', 'diff.noprefix=false', '-c', 'core.quotePath=false', '-c', 'diff.renames=false', '-c', 'diff.external='];
+
     // Rejects anything git could read as an option, and whitespace or control characters.
     public static function validate(string $ref): void
     {
@@ -31,8 +39,8 @@ final class ChangedFiles
         self::validate($ref);
         $prefix = self::run($git, $root, ['rev-parse', '--show-prefix'], fn (): string => sprintf('%s is not a git repository, or git refused it (see safe.directory)', $root));
         $prefix = rtrim($prefix, "\n");
-        self::run($git, $root, ['rev-parse', '--verify', '--quiet', $ref.'^{commit}'], fn (): string => 'unknown git ref: '.$ref);
-        $out = self::run($git, $root, ['diff', '--name-only', '--no-renames', '--no-ext-diff', '--no-textconv', '-z', $ref.'...HEAD', '--'], fn (): string => sprintf('git diff %s...HEAD failed; a shallow clone needs the full history (fetch-depth: 0)', $ref));
+        self::run($git, $root, ['rev-parse', '--verify', '--quiet', $ref.'^{commit}'], fn (): string => 'unknown git ref: '.$ref.(self::shallow($git, $root) ? self::SHALLOW_HINT : ''));
+        $out = self::run($git, $root, ['diff', '--name-only', '--no-relative', '--no-renames', '--no-ext-diff', '--no-textconv', '-z', $ref.'...HEAD', '--'], fn (): string => sprintf('git diff %s...HEAD failed; a shallow clone needs the full history (fetch-depth: 0)', $ref));
 
         $paths = [];
         foreach (explode("\0", $out) as $path) {
@@ -53,7 +61,16 @@ final class ChangedFiles
      */
     private static function run(string $git, string $root, array $args, \Closure $error): string
     {
-        $process = new Process([$git, '-C', $root, ...$args], null, ['GIT_TERMINAL_PROMPT' => '0', 'GIT_OPTIONAL_LOCKS' => '0', 'LC_ALL' => 'C'], null, self::TIMEOUT);
+        $env = ['GIT_TERMINAL_PROMPT' => '0', 'GIT_OPTIONAL_LOCKS' => '0', 'LC_ALL' => 'C'];
+        foreach (self::UNSET_ENV as $name) {
+            $env[$name] = false;
+        }
+        foreach (array_keys([...$_SERVER, ...$_ENV]) as $name) {
+            if (is_string($name) && preg_match('~^GIT_CONFIG_(KEY|VALUE)_\d+$~', $name) === 1) {
+                $env[$name] = false;
+            }
+        }
+        $process = new Process([$git, ...self::PINNED, '-C', $root, ...$args], null, $env, null, self::TIMEOUT);
         try {
             $process->run();
         } catch (ExceptionInterface $e) {
@@ -67,6 +84,15 @@ final class ChangedFiles
         }
 
         return $process->getOutput();
+    }
+
+    private static function shallow(string $git, string $root): bool
+    {
+        try {
+            return trim(self::run($git, $root, ['rev-parse', '--is-shallow-repository'], fn (): string => '')) === 'true';
+        } catch (\RuntimeException) {
+            return false;
+        }
     }
 
     private static function short(string $message): string
