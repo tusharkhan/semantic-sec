@@ -24,7 +24,7 @@ use TusharKhan\SemanticSec\Llm\LlmResponse;
 use TusharKhan\SemanticSec\Llm\Provider\AnthropicClient;
 use TusharKhan\SemanticSec\Llm\Provider\JsonOutput;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkCorpus;
-use TusharKhan\SemanticSec\Tests\Support\LiveBenchmark;
+use TusharKhan\SemanticSec\Tests\Support\BenchmarkReplay;
 use TusharKhan\SemanticSec\Tests\Support\NetworkTrap;
 
 final class BaselineCommandTest extends TestCase
@@ -228,8 +228,7 @@ final class BaselineCommandTest extends TestCase
      */
     private function replay(array $args): array
     {
-        $cassette = LiveBenchmark::recordedCassette() ?? throw new \LogicException('the live benchmark cassette is not committed');
-        $handler = new CassetteHandler(Cassette::load($cassette), 'replay', match: 'body');
+        $handler = new CassetteHandler(Cassette::load(BenchmarkReplay::CASSETTE), 'replay', match: 'body');
         $client = new AnthropicClient(HttpClientFactory::create($handler, [RetryMiddleware::create()]), 'replay-key');
         $result = $this->command($args, $client);
         $handler->assertExhausted();

@@ -22,7 +22,6 @@ use TusharKhan\SemanticSec\Llm\Provider\JsonOutput;
 use TusharKhan\SemanticSec\Payload\Payload;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkCorpus;
 use TusharKhan\SemanticSec\Tests\Support\BenchmarkReplay;
-use TusharKhan\SemanticSec\Tests\Support\LiveBenchmark;
 use TusharKhan\SemanticSec\Tests\Support\NetworkTrap;
 
 final class BenchmarkEngineTest extends TestCase
@@ -97,9 +96,7 @@ final class BenchmarkEngineTest extends TestCase
 
     public function testRecordedBenchmarkCassetteReplays(): void
     {
-        $cassette = LiveBenchmark::recordedCassette();
-        self::assertNotNull($cassette, 'the live benchmark cassette is committed');
-        self::assertStringEndsWith('anthropic/live-benchmark-laravel11.json', $cassette);
+        self::assertFileExists(BenchmarkReplay::CASSETTE, 'bin/benchmark --live recorded the laravel11-app cassette');
 
         $result = BenchmarkReplay::run($this->root);
 
@@ -113,7 +110,7 @@ final class BenchmarkEngineTest extends TestCase
             ['mass_assignment', $vuln.'AccountController.php', 14, 'App\Http\Controllers\Vuln\AccountController::update'],
             ['insecure_deserialization', $vuln.'CartController.php', 13, 'App\Http\Controllers\Vuln\CartController::restore'],
             ['workflow_bypass', $vuln.'OrderController.php', 18, 'App\Http\Controllers\Vuln\OrderController::refund'],
-            ['idor', $vuln.'CommentController.php', 18, 'App\Http\Controllers\Vuln\CommentController::destroy'],
+            ['idor', 'app/Policies/CommentPolicy.php', 12, 'App\Policies\CommentPolicy::delete'],
             ['idor', $vuln.'DocumentController.php', 22, 'App\Http\Controllers\Vuln\DocumentController::show'],
             ['workflow_bypass', $vuln.'InvoiceController.php', 26, 'App\Http\Controllers\Vuln\InvoiceController::update'],
             ['mass_assignment', $vuln.'TeamController.php', 14, 'App\Http\Controllers\Vuln\TeamController::store'],
@@ -126,6 +123,7 @@ final class BenchmarkEngineTest extends TestCase
         foreach ($result->findings as $f) {
             self::assertTrue($f['failing'], $f['vulnerability']->symbol);
             self::assertStringNotContainsString('/Safe/', $f['vulnerability']->file);
+            self::assertStringNotContainsString('<redacted>', $f['vulnerability']->patch, $f['vulnerability']->symbol);
         }
         $low = array_values(array_filter($result->findings, static fn (array $f): bool => $f['vulnerability']->category === Category::WorkflowBypass && $f['vulnerability']->line === 26));
         self::assertSame('low', $low[0]['vulnerability']->confidence->value);
@@ -154,12 +152,10 @@ final class BenchmarkEngineTest extends TestCase
 
                 continue;
             }
-            // The service-layer case is reported at the lookup its controller delegates to.
-            [$symbol, $file] = $case['id'] === 'idor-service-layer'
-                ? ['App\Services\DownloadService::find', 'app/Services/DownloadService.php']
-                : [$symbol, substr(BenchmarkCorpus::fileForSymbol('laravel11-app', $symbol), strlen($app))];
-            $hits = array_filter($reported, static fn (array $r): bool => $r[0] === $case['category'] && $r[1] === $file && $r[2] === $symbol);
-            self::assertNotEmpty($hits, "{$case['id']}: no {$case['category']} finding at {$symbol}");
+            // A case may be reported at a symbol its accept list names, e.g. the policy or service it delegates to.
+            $targets = array_map(static fn (string $s): array => [$s, substr(BenchmarkCorpus::fileForSymbol('laravel11-app', $s), strlen($app))], [$symbol, ...($vulnerable['accept'] ?? [])]);
+            $hits = array_filter($reported, static fn (array $r): bool => $r[0] === $case['category'] && in_array([$r[2], $r[1]], $targets, true));
+            self::assertNotEmpty($hits, "{$case['id']}: no {$case['category']} finding at {$symbol} or its accepts");
 
             $safe = $case['safe']['symbol'];
             self::assertSame([], array_filter($reported, static fn (array $r): bool => $r[2] === $safe), "{$case['id']}: safe {$safe} has a finding");
