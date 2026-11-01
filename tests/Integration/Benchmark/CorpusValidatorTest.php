@@ -67,6 +67,16 @@ PHP;
         $this->assertSingleError('sample-case.safe: unknown key "lines"', $case);
     }
 
+    public function testMapNoteExplainsAMapByDecision(): void
+    {
+        $case = $this->validCase();
+        $case['safe']['map_note'] = 'scopeBindings counted as query_scope by maintainer decision 2026-11-01';
+        self::assertSame([], CorpusValidator::caseErrors($case, BenchmarkCorpus::root()));
+
+        $case['safe']['map_note'] = '';
+        $this->assertSingleError('sample-case.safe: map_note must be a non-empty string', $case);
+    }
+
     public function testAppMustBeAnExistingAppDirectory(): void
     {
         $case = $this->validCase();

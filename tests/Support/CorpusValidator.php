@@ -20,7 +20,7 @@ final class CorpusValidator
 
     private const CASE_KEYS = ['id', 'app', 'set', 'category', 'description', 'vulnerable', 'safe'];
 
-    private const VARIANT_KEYS = ['route', 'symbol', 'line', 'map', 'suppressed', 'candidate', 'accept', 'posthoc'];
+    private const VARIANT_KEYS = ['route', 'symbol', 'line', 'map', 'map_note', 'suppressed', 'candidate', 'accept', 'posthoc'];
 
     private const PUBLIC_ROUTE_KEYS = ['app', 'set', 'route', 'symbol'];
 
@@ -203,6 +203,11 @@ final class CorpusValidator
             if (array_key_exists($key, $data) && (! is_string($data[$key]) || $data[$key] === '')) {
                 $errors[] = "$label: $key must be a non-empty string";
             }
+        }
+
+        // Why a map entry follows a maintainer decision rather than the scanner's own reading.
+        if (array_key_exists('map_note', $data) && (! is_string($data['map_note']) || $data['map_note'] === '')) {
+            $errors[] = "$label: map_note must be a non-empty string";
         }
 
         if (is_string($data['symbol'] ?? null) && preg_match(self::SYMBOL_PATTERN, $data['symbol']) !== 1) {

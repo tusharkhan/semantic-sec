@@ -258,7 +258,8 @@ cases:
     safe:
       route: GET /safe/teams/{team}/projects/{project}
       symbol: App\Http\Controllers\Safe\TeamProjectController::show
-      map: [authentication, controller_ability]
+      map: [authentication, controller_ability, query_scope]
+      map_note: "scopeBindings counted as query_scope by maintainer decision 2026-11-01"
       candidate: false
   - id: idor-tenant-list-unscoped
     app: laravel12-app
