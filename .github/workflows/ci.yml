@@ -50,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        app: [laravel11-app, laravel10-app]
+        app: [laravel12-app, laravel11-app, laravel10-app]
     name: Benchmark verify (${{ matrix.app }})
     steps:
       - uses: actions/checkout@v4

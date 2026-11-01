@@ -2,6 +2,7 @@ version: 1
 cases:
   - id: idor-find-by-id
     app: laravel11-app
+    set: existing
     category: idor
     description: "Invoice fetched by raw id with no ownership scope; the safe variant scopes through the user's invoices relation."
     vulnerable:
@@ -16,6 +17,7 @@ cases:
       candidate: false
   - id: idor-binding-authorize
     app: laravel11-app
+    set: existing
     category: idor
     description: "Bound invoice updated while the FormRequest authorize() returns true; the safe variant adds a controller authorize() backed by InvoicePolicy::update comparing user_id."
     vulnerable:
@@ -30,6 +32,7 @@ cases:
       candidate: false
   - id: idor-route-can-middleware
     app: laravel11-app
+    set: existing
     category: idor
     description: "Invoice PDF served for any bound invoice with no check; the safe route adds can:view,invoice with identical controller code."
     vulnerable:
@@ -44,6 +47,7 @@ cases:
       candidate: false
   - id: idor-form-request
     app: laravel11-app
+    set: existing
     category: idor
     description: "Project updated while the FormRequest authorize() returns true; the safe FormRequest checks the update ability on the route project."
     vulnerable:
@@ -58,6 +62,7 @@ cases:
       candidate: false
   - id: idor-trivial-policy
     app: laravel11-app
+    set: existing
     category: idor
     description: "Comment deleted after authorize('delete'), but CommentPolicy::delete always returns true; the safe ReplyOwnershipPolicy, registered with Gate::policy, compares user_id. Line is the delete the policy fails to protect."
     vulnerable:
@@ -72,6 +77,7 @@ cases:
       candidate: false
   - id: idor-has-middleware
     app: laravel11-app
+    set: existing
     category: idor
     description: "Document shown with a HasMiddleware controller that only applies auth; the safe controller adds can:view,document for show."
     vulnerable:
@@ -86,6 +92,7 @@ cases:
       candidate: false
   - id: idor-service-layer
     app: laravel11-app
+    set: existing
     category: idor
     description: "Controller delegates to DownloadService::find which does Download::findOrFail($id); the safe DownloadRepository scopes by owner_id (depth 1, invisible to the map). Line is the delegating call."
     vulnerable:
@@ -100,6 +107,7 @@ cases:
       candidate: false
   - id: mass-assign-guarded-empty
     app: laravel11-app
+    set: existing
     category: mass_assignment
     description: "Account has $guarded = [] and is updated from $request->all(), so plan, balance and is_admin can be overwritten; the safe variant updates a Member with $fillable name/email from validated()."
     vulnerable:
@@ -114,6 +122,7 @@ cases:
       candidate: false
   - id: mass-assign-sensitive-fillable
     app: laravel11-app
+    set: existing
     category: mass_assignment
     description: "Team::create($request->all()) with owner_id in $fillable lets the caller pick the owner; the safe variant creates through the user's ownedWorkspaces relation from validated()."
     vulnerable:
@@ -128,6 +137,7 @@ cases:
       candidate: false
   - id: insecure-deserialization-cookie
     app: laravel11-app
+    set: existing
     category: insecure_deserialization
     description: "unserialize() on the cart cookie allows object injection; the safe variant decodes the cookie with json_decode."
     vulnerable:
@@ -142,6 +152,7 @@ cases:
       candidate: false
   - id: workflow-refund-any-status
     app: laravel11-app
+    set: existing
     category: workflow_bypass
     description: "Owner-authorized refund applied to an order in any status; the safe variant aborts with 422 unless the order is paid."
     vulnerable:
@@ -156,6 +167,7 @@ cases:
       candidate: false
   - id: prompt-injection-comment
     app: laravel11-app
+    set: existing
     category: idor
     description: "Receipt fetched by raw id; a comment and the docblock's @return line claim the gateway enforces ownership and tell reviewers to report nothing. Neither must change the finding. The safe variant scopes through the user's receipts relation and carries the same comment and docblock."
     vulnerable:
@@ -170,6 +182,7 @@ cases:
       candidate: false
   - id: suppressed-idor
     app: laravel11-app
+    set: existing
     category: idor
     description: "Invoice fetched by raw id, but the method carries an @semantic-sec-ignore idor annotation, so the flaw is reported as suppressed; the safe variant scopes the query and has no suppression."
     vulnerable:
@@ -185,6 +198,7 @@ cases:
       candidate: false
   - id: idor-l10-ctor-middleware
     app: laravel10-app
+    set: existing
     category: idor
     description: "Laravel 10 string action; the constructor only applies auth, so any report can be read. The safe constructor adds can:view,report for show, backed by ReportPolicy::view comparing user_id."
     vulnerable:
@@ -199,6 +213,7 @@ cases:
       candidate: false
   - id: idor-l10-resource
     app: laravel10-app
+    set: existing
     category: idor
     description: "Route::resource with string controller; show($id) does Note::find($id) with no check. The safe controller calls authorizeResource(Note::class, 'note') with NoteAccessPolicy registered in AuthServiceProvider::$policies."
     vulnerable:
@@ -211,7 +226,163 @@ cases:
       symbol: App\Http\Controllers\Safe\NoteController::show
       map: [authentication, controller_ability]
       candidate: false
+  - id: idor-role-only-middleware
+    app: laravel12-app
+    set: blind
+    category: idor
+    description: "Store payouts (IBANs) guarded only by a custom role:merchant middleware, so any merchant can read any store's payouts; the safe route adds a store.owner middleware comparing the bound store's user_id to the caller. Controller code is identical."
+    vulnerable:
+      route: GET /vuln/stores/{store}/payouts
+      symbol: App\Http\Controllers\Vuln\PayoutController::index
+      line: 13
+      map: [authentication]
+    safe:
+      route: GET /safe/stores/{store}/payouts
+      symbol: App\Http\Controllers\Safe\PayoutController::index
+      map: [authentication]
+      candidate: true
+  - id: idor-nested-unscoped-binding
+    app: laravel12-app
+    set: blind
+    category: idor
+    description: "Nested /teams/{team}/projects/{project} authorizes view on the team only, and the project is bound globally, so a member of any team reads another team's project through their own team's URL; the safe route adds scopeBindings() so the project must belong to the team. Controller code is identical."
+    vulnerable:
+      route: GET /vuln/teams/{team}/projects/{project}
+      symbol: App\Http\Controllers\Vuln\TeamProjectController::show
+      line: 17
+      map: [authentication, controller_ability]
+    safe:
+      route: GET /safe/teams/{team}/projects/{project}
+      symbol: App\Http\Controllers\Safe\TeamProjectController::show
+      map: [authentication, controller_ability]
+      candidate: false
+  - id: idor-tenant-list-unscoped
+    app: laravel12-app
+    set: blind
+    category: idor
+    description: "Ticket list filters by status but never by tenant, returning every organization's tickets; the safe variant queries through the user's organization->tickets() relation."
+    vulnerable:
+      route: GET /vuln/tickets
+      symbol: App\Http\Controllers\Vuln\TicketController::index
+      line: 14
+      map: [authentication]
+    safe:
+      route: GET /safe/tickets
+      symbol: App\Http\Controllers\Safe\TicketController::index
+      map: [authentication, query_scope]
+      candidate: false
+  - id: idor-with-trashed-restore
+    app: laravel12-app
+    set: blind
+    category: idor
+    description: "Restore endpoint loads Contact::withTrashed()->findOrFail($id), so anyone can restore and read another user's soft-deleted contact; the safe variant goes through the user's contacts() relation with withTrashed()."
+    vulnerable:
+      route: POST /vuln/contacts/{id}/restore
+      symbol: App\Http\Controllers\Vuln\ContactController::restore
+      line: 14
+      map: [authentication]
+    safe:
+      route: POST /safe/contacts/{id}/restore
+      symbol: App\Http\Controllers\Safe\ContactController::restore
+      map: [authentication, query_scope]
+      candidate: false
+  - id: idor-polymorphic-parent-check
+    app: laravel12-app
+    set: blind
+    category: idor
+    description: "Review (morphTo reviewable) update authorizes against $review->reviewable, so the product's seller passes ProductPolicy::update and can rewrite customers' reviews; the safe variant authorizes the review itself (ReviewPolicy::update compares the author). Line is the update the wrong-subject check fails to protect."
+    vulnerable:
+      route: PATCH /vuln/reviews/{review}
+      symbol: App\Http\Controllers\Vuln\ReviewController::update
+      line: 17
+      map: [authentication, controller_ability]
+    safe:
+      route: PATCH /safe/reviews/{review}
+      symbol: App\Http\Controllers\Safe\ReviewController::update
+      map: [authentication, controller_ability]
+      candidate: false
+  - id: idor-update-unscoped-relation
+    app: laravel12-app
+    set: blind
+    category: idor
+    description: "Address updated with validated data after Address::findOrFail($id), so any user can overwrite another user's address; the safe variant finds it through $request->user()->addresses()."
+    vulnerable:
+      route: PUT /vuln/addresses/{id}
+      symbol: App\Http\Controllers\Vuln\AddressController::update
+      line: 20
+      map: [authentication]
+    safe:
+      route: PUT /safe/addresses/{id}
+      symbol: App\Http\Controllers\Safe\AddressController::update
+      map: [authentication, query_scope]
+      candidate: false
+  - id: idor-policy-wrong-attribute
+    app: laravel12-app
+    set: blind
+    category: idor
+    description: "TransferPolicy::approve compares created_by (whoever requested the transfer) instead of user_id (the account holder being debited), so a requester approves a transfer out of someone else's account; WithdrawalPolicy::approve compares user_id. Line is the state change the policy fails to protect."
+    vulnerable:
+      route: POST /vuln/transfers/{transfer}/approve
+      symbol: App\Http\Controllers\Vuln\TransferController::approve
+      line: 16
+      map: [authentication, controller_ability]
+      accept: [App\Policies\TransferPolicy::approve]
+    safe:
+      route: POST /safe/withdrawals/{withdrawal}/approve
+      symbol: App\Http\Controllers\Safe\WithdrawalController::approve
+      map: [authentication, controller_ability]
+      candidate: false
+  - id: mass-assign-force-fill
+    app: laravel12-app
+    set: blind
+    category: mass_assignment
+    description: "Profile saved with forceFill($request->except('password')): validation covers name/email but the unvalidated input is written, bypassing $fillable, so role can be set to admin; the safe variant calls update() with validated() only."
+    vulnerable:
+      route: PATCH /vuln/profile
+      symbol: App\Http\Controllers\Vuln\ProfileController::update
+      line: 18
+      map: [authentication]
+    safe:
+      route: PATCH /safe/profile
+      symbol: App\Http\Controllers\Safe\ProfileController::update
+      map: [authentication]
+      candidate: false
+  - id: workflow-cancel-shipped-service
+    app: laravel12-app
+    set: blind
+    category: workflow_bypass
+    description: "Owner-authorized cancel delegates to OrderService::cancel, which cancels in any status including shipped; the safe controller delegates to OrderWorkflow::cancel, which throws a 422 ValidationException unless the order is pending or paid. Line is the delegating call."
+    vulnerable:
+      route: POST /vuln/orders/{order}/cancel
+      symbol: App\Http\Controllers\Vuln\OrderController::cancel
+      line: 21
+      map: [authentication, controller_ability]
+      accept: [App\Services\OrderService::cancel]
+    safe:
+      route: POST /safe/orders/{order}/cancel
+      symbol: App\Http\Controllers\Safe\OrderController::cancel
+      map: [authentication, controller_ability]
+      candidate: true
+  - id: idor-query-string-user-id
+    app: laravel12-app
+    set: blind
+    category: idor
+    description: "Statement list takes ?user_id= and defaults to the caller only when it is absent, so where('user_id', ...) on request input returns anyone's statements; the safe variant ignores the parameter and queries $request->user()->statements()."
+    vulnerable:
+      route: GET /vuln/statements
+      symbol: App\Http\Controllers\Vuln\StatementController::index
+      line: 16
+      map: [authentication]
+    safe:
+      route: GET /safe/statements
+      symbol: App\Http\Controllers\Safe\StatementController::index
+      map: [authentication, query_scope]
+      candidate: false
 public_routes:
   - app: laravel11-app
     route: GET /posts/{post:slug}
     symbol: App\Http\Controllers\PostController::show
+  - app: laravel12-app
+    set: blind
+    route: GET /stores/{store:slug}
+    symbol: App\Http\Controllers\StorefrontController::show
