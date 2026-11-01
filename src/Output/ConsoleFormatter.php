@@ -76,6 +76,7 @@ final class ConsoleFormatter implements Formatter
             'candidates' => $s['candidates'],
             'payloads' => $s['payloads'],
             'skipped' => $s['skipped'].' (no source code)',
+            'unaffected' => $s['unaffected'].' (--since)',
             'unsent' => $s['unsent'].' (token budget)',
             'cache hits' => $s['cacheHits'],
             'sent' => $s['sent'],

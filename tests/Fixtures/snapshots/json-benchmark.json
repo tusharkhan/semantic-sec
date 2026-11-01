@@ -8,6 +8,7 @@
         "candidates": 14,
         "payloads": 14,
         "skipped": 0,
+        "unaffected": 0,
         "unsent": 0,
         "sent": 14,
         "cacheHits": 0,

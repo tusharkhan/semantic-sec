@@ -53,6 +53,38 @@ Generating runs the full analysis and writes the fingerprint of every finding, i
 
 The baseline is trusted input, like suppression comments: anyone who can edit it can hide a finding.
 
+## Changed code only (`--since`)
+
+On a pull request, send only the routes the PR's commits can affect:
+
+```
+vendor/bin/semantic-sec analyze --since=origin/main
+```
+
+It runs `git diff --name-only <ref>...HEAD`, so only committed changes since the merge base count. A route is sent when the change touches its route file, any method on its execution path, or a middleware, policy, FormRequest or model it uses. A change to `app/Http/Kernel.php`, `bootstrap/app.php`, any service provider, a deleted PHP file or a file that failed to parse sends every route. Changes to `config/`, `composer.lock` or `semantic-sec.yaml` do not; run without `--since` after those. Routes left out are counted as `unaffected` in the summary. A PR that touches no route sends nothing and exits 0. A ref that isn't a commit, or a project that isn't in a git repository, exits 2. `--since` with `--dry-run` writes only the affected payloads; it can't be combined with `--generate-baseline`.
+
+The project may live in a subdirectory of the repository. The checkout needs the full history so git can find the merge base:
+
+```yaml
+on: pull_request
+jobs:
+  semantic-sec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+      - run: composer install --no-interaction --no-progress
+      - run: vendor/bin/semantic-sec analyze --since=origin/${{ github.base_ref }} --no-cache --format=sarif --output=semantic-sec.sarif
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+The PR's own `semantic-sec-baseline.json` is read by default, and the PR can edit it; see the trust boundary above before running this on pull requests you don't trust.
+
 ## Dry run
 
 Pick candidate routes and write the payloads an LLM would get, without sending anything (no API key, no network):

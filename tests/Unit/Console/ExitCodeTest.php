@@ -112,7 +112,7 @@ final class ExitCodeTest extends TestCase
      */
     private static function analysis(array $failing, array $stats): AnalysisResult
     {
-        $base = ['candidates' => 0, 'payloads' => 0, 'skipped' => 0, 'unsent' => 0, 'sent' => 0, 'cacheHits' => 0, 'ok' => 0, 'refused' => 0, 'truncated' => 0, 'invalid' => 0, 'failed' => 0, 'dropped' => 0, 'filtered' => 0, 'tokens' => 0, 'budgetExceeded' => false];
+        $base = ['candidates' => 0, 'payloads' => 0, 'skipped' => 0, 'unaffected' => 0, 'unsent' => 0, 'sent' => 0, 'cacheHits' => 0, 'ok' => 0, 'refused' => 0, 'truncated' => 0, 'invalid' => 0, 'failed' => 0, 'dropped' => 0, 'filtered' => 0, 'tokens' => 0, 'budgetExceeded' => false];
         $findings = array_map(static fn (bool $f): array => ['vulnerability' => self::vulnerability(), 'failing' => $f], $failing);
 
         /** @phpstan-ignore argument.type (the spread keeps every Stats key) */

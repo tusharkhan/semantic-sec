@@ -53,6 +53,16 @@ final class FileFinder
         return $paths;
     }
 
+    /**
+     * Whether find() would return this root-relative path, existing or not.
+     *
+     * @param  list<string>  $excludeGlobs
+     */
+    public function includes(string $relative, array $excludeGlobs = []): bool
+    {
+        return str_ends_with($relative, '.php') && ! $this->isGenerated(basename($relative)) && ! $this->isAlwaysExcluded($relative) && ! $this->matchesGlob($relative, $excludeGlobs);
+    }
+
     private function isGenerated(string $name): bool
     {
         return $name === '.phpstorm.meta.php'

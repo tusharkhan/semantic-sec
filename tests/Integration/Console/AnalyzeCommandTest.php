@@ -181,18 +181,6 @@ final class AnalyzeCommandTest extends TestCase
         self::assertSame("Error: SEMSEC_TEST_KEY is not set\n", $t->getErrorOutput());
     }
 
-    public function testM7OptionsRejected(): void
-    {
-        foreach ([
-            [['--since' => 'main'], '--since is available in a later release'],
-        ] as [$args, $message]) {
-            [$code, , $err] = $this->analyze($args, $this->answers(self::finding()));
-            self::assertSame(2, $code, $message);
-            self::assertSame("Error: {$message}\n", $err);
-        }
-        self::assertSame([], $this->requests);
-    }
-
     public function testJsonStdoutIsOnlyTheDocument(): void
     {
         [$code, $out, $err] = $this->analyze(['--format' => 'json'], $this->answers(self::finding()));

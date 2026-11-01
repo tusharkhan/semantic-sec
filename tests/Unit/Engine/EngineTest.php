@@ -421,6 +421,24 @@ final class EngineTest extends TestCase
         self::assertCount(1, $result->findings, 'the cache hit and the ok answer dedupe');
     }
 
+    public function testStatsIdentityWithUnaffected(): void
+    {
+        $payloads = [
+            new Payload('p0', self::candidate(), 'ctx', '<untrusted_code></untrusted_code>', 1, 1, false),
+            $this->payload('hit', self::POST, self::SHOW, 7, 10),
+            $this->payload('sent', self::POST, self::SHOW, 7, 9),
+        ];
+        $this->cache()->put($payloads[1], self::ok('hit', []));
+        $client = new FakeClient(['sent' => self::ok('sent', [])]);
+
+        $s = $this->engine($client)->run($payloads, 4, 3)->stats;
+
+        self::assertSame(6, $s['payloads'], 'unaffected payloads still count');
+        self::assertSame([1, 3, 0, 1, 1], [$s['skipped'], $s['unaffected'], $s['unsent'], $s['cacheHits'], $s['sent']]);
+        self::assertSame($s['payloads'], $s['skipped'] + $s['unaffected'] + $s['unsent'] + $s['cacheHits'] + $s['sent']);
+        self::assertSame(0, $this->engine($client)->run([], 0)->stats['unaffected']);
+    }
+
     public function testBudgetStopCountsUnsent(): void
     {
         $payload = $this->payload('p1', self::POST, self::SHOW, 7, 10);

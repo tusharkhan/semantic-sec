@@ -249,6 +249,7 @@ Summary
   candidates  14
   payloads    14
   skipped     0 (no source code)
+  unaffected  0 (--since)
   unsent      0 (token budget)
   cache hits  0
   sent        14

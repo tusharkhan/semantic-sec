@@ -22,6 +22,7 @@ use TusharKhan\SemanticSec\Console\AnalysisPipeline;
 use TusharKhan\SemanticSec\Console\Application;
 use TusharKhan\SemanticSec\Console\ExitCode;
 use TusharKhan\SemanticSec\Console\OutputDir;
+use TusharKhan\SemanticSec\Console\PipelineResult;
 use TusharKhan\SemanticSec\Console\Terminal;
 use TusharKhan\SemanticSec\Engine\AnalysisResult;
 use TusharKhan\SemanticSec\Engine\Baseline;
@@ -40,14 +41,13 @@ use TusharKhan\SemanticSec\Output\SafeWriter;
 use TusharKhan\SemanticSec\Output\SarifFormatter;
 use TusharKhan\SemanticSec\Payload\Payload;
 use TusharKhan\SemanticSec\Payload\Redactor;
+use TusharKhan\SemanticSec\Since\ChangedFiles;
+use TusharKhan\SemanticSec\Since\ImpactAnalyzer;
 
 #[AsCommand(name: 'analyze', description: 'Find authorization flaws: map, select candidates, build payloads, then ask the LLM')]
 class AnalyzeCommand extends Command
 {
     use ProjectOptions;
-
-    // Rejected until a later M7 task.
-    private const LATER = ['since'];
 
     // CLI option => Config::with() key.
     private const OVERRIDES = ['level' => 'level', 'min-confidence' => 'min_confidence', 'provider' => 'provider', 'model' => 'model', 'concurrency' => 'concurrency', 'budget' => 'budget_tokens'];
@@ -59,7 +59,7 @@ class AnalyzeCommand extends Command
 
     /**
      * @param  (\Closure(Config): ClientInterface)|null  $providerClient  test seam: replaces the provider client under ValidatingClient
-     * @param  (\Closure(Engine, list<Payload>, int): AnalysisResult)|null  $runEngine  test seam: replaces Engine::run
+     * @param  (\Closure(Engine, list<Payload>, int, int): AnalysisResult)|null  $runEngine  test seam: replaces Engine::run
      */
     public function __construct(
         private readonly ?\Closure $providerClient = null,
@@ -90,7 +90,7 @@ class AnalyzeCommand extends Command
             ->addOption('output', null, InputOption::VALUE_REQUIRED, 'Write the report to this file (never through a symlink); the summary and warnings go to stderr')
             ->addOption('baseline', null, InputOption::VALUE_REQUIRED, 'Baseline file: findings whose fingerprint is in it are baselined, not reported (default: semantic-sec-baseline.json in the project root, if present)')
             ->addOption('generate-baseline', null, InputOption::VALUE_NONE, 'Write every current finding\'s fingerprint to the baseline file and exit 0')
-            ->addOption('since', null, InputOption::VALUE_REQUIRED, 'Only files changed since a git ref (available in a later release)')
+            ->addOption('since', null, InputOption::VALUE_REQUIRED, 'Send only candidates that committed changes since this git ref (<ref>...HEAD) can affect')
             ->setHelp(<<<'HELP'
                 Maps the project, selects candidate routes, builds their payloads and sends each one to the LLM.
                 Findings are grounded in the payload, fingerprinted, then filtered by suppressions, --level and --min-confidence.
@@ -105,6 +105,9 @@ class AnalyzeCommand extends Command
 
                 --dry-run writes the system prompt and every payload to .semantic-sec/dry-run and needs no API key.
 
+                --since=<ref> sends only the candidates that files committed since <ref> (git diff <ref>...HEAD) can affect;
+                uncommitted changes are ignored. It cannot be combined with --generate-baseline.
+
                 --baseline reads fingerprints to accept (default semantic-sec-baseline.json in the project root, if present).
                 --generate-baseline writes every reported, non-failing and below-level finding's fingerprint there instead
                 and exits 0 unless every request failed (or --strict trips); `semantic-sec baseline` is the same.
@@ -115,15 +118,20 @@ class AnalyzeCommand extends Command
     {
         $dryRun = $input->getOption('dry-run') === true;
         $format = (string) $input->getOption('format');
-        foreach (self::LATER as $name) {
-            $value = $input->getOption($name);
-            if ($value !== null && $value !== false) {
-                return $this->fail($output, "--{$name} is available in a later release");
-            }
-        }
         $generate = $this->generatesBaseline($input);
         if ($dryRun && $generate) {
             return $this->fail($output, '--generate-baseline cannot be used with --dry-run');
+        }
+        $since = $input->getOption('since');
+        if ($since !== null) {
+            if ($generate) {
+                return $this->fail($output, '--since cannot be combined with --generate-baseline; a baseline must cover every finding');
+            }
+            try {
+                ChangedFiles::validate((string) $since);
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, $e->getMessage());
+            }
         }
         if ($dryRun && $input->getOption('output') !== null) {
             return $this->fail($output, '--output cannot be used with --dry-run');
@@ -205,6 +213,14 @@ class AnalyzeCommand extends Command
             return $this->fail($output, $e->getMessage());
         }
         [$results, $warnings, $system] = [$run->results, $run->warnings, $run->system];
+        $unaffected = 0;
+        if ($since !== null) {
+            try {
+                [$results, $unaffected] = $this->since($root, (string) $since, $run);
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, Terminal::clean($redactor->redact($e->getMessage())));
+            }
+        }
 
         try {
             $this->write($root, $results, $system);
@@ -221,6 +237,7 @@ class AnalyzeCommand extends Command
                     'candidates' => count($rows),
                     'payloads' => array_sum(array_map(static fn (array $r): int => count($r['payloads']), $rows)),
                     'tokens' => array_sum(array_column($rows, 'tokens')),
+                    'unaffected' => $unaffected,
                     'directory' => $dir,
                     'system' => self::SYSTEM_FILE,
                 ],
@@ -228,7 +245,7 @@ class AnalyzeCommand extends Command
                 'warnings' => $warnings,
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR));
         } else {
-            $this->renderConsole($output, $rows, $warnings, $dir);
+            $this->renderConsole($output, $rows, $warnings, $dir, $since === null ? null : $unaffected);
         }
 
         return ExitCode::OK;
@@ -271,10 +288,25 @@ class AnalyzeCommand extends Command
             return $this->fail($output, $redactor->redact($e->getMessage()));
         }
 
+        $results = $run->results;
+        $unaffected = 0;
+        $since = $input->getOption('since');
+        if ($since !== null) {
+            try {
+                [$results, $unaffected] = $this->since($root, (string) $since, $run);
+            } catch (\RuntimeException $e) {
+                return $this->fail($output, Terminal::clean($redactor->redact($e->getMessage())));
+            }
+        }
+        $payloads = [];
+        foreach ($results as $r) {
+            array_push($payloads, ...$r['payloads']);
+        }
+
         $project = $run->project;
         $engine = new Engine($client, $cache, new Fingerprinter($project->parsed, $project->symbols), new GroundingChecker($project->symbols), $project->parsed, $config, $baseline);
         try {
-            $result = $this->runEngine === null ? $engine->run($run->payloads(), count($run->results)) : ($this->runEngine)($engine, $run->payloads(), count($run->results));
+            $result = $this->runEngine === null ? $engine->run($payloads, count($run->results), $unaffected) : ($this->runEngine)($engine, $payloads, count($run->results), $unaffected);
         } catch (\Throwable $e) {
             return $this->fail($output, 'analysis failed: '.Terminal::clean($redactor->redact($e->getMessage())));
         }
@@ -336,6 +368,29 @@ class AnalyzeCommand extends Command
         $this->baselineLine($err, $generate, $wrote);
 
         return $exit;
+    }
+
+    /**
+     * Keeps the candidates the files committed since $ref can affect; git runs after parsing, before any request.
+     *
+     * @return array{list<array{candidate: Candidate, payloads: list<Payload>}>, int} the kept results and how many payloads were left out
+     */
+    private function since(string $root, string $ref, PipelineResult $run): array
+    {
+        $changed = ChangedFiles::between($root, $ref);
+        $project = $run->project;
+        $affected = (new ImpactAnalyzer($project->parsed, $project->symbols, $project->config))->affected(array_column($run->results, 'candidate'), $changed);
+        $kept = [];
+        $unaffected = 0;
+        foreach ($run->results as $result) {
+            if (in_array($result['candidate'], $affected, true)) {
+                $kept[] = $result;
+            } else {
+                $unaffected += count($result['payloads']);
+            }
+        }
+
+        return [$kept, $unaffected];
     }
 
     // `semantic-sec baseline` overrides this; analyze generates only with --generate-baseline.
@@ -470,7 +525,7 @@ class AnalyzeCommand extends Command
      * @param  list<array{number: int, route: string, categories: list<string>, tokens: int, payloads: list<array<string, mixed>>}>  $rows
      * @param  list<string>  $warnings
      */
-    private function renderConsole(OutputInterface $output, array $rows, array $warnings, string $dir): void
+    private function renderConsole(OutputInterface $output, array $rows, array $warnings, string $dir, ?int $unaffected): void
     {
         $table = new Table($output);
         $table->setHeaders(['#', 'Route', 'Categories', 'Parts', 'Tokens']);
@@ -483,6 +538,9 @@ class AnalyzeCommand extends Command
         $table->render();
 
         $output->writeln(sprintf('%d candidates, %d payloads, ~%d tokens; written to %s', count($rows), $payloads, $tokens, Terminal::safe($dir)));
+        if ($unaffected !== null) {
+            $output->writeln(sprintf('%d payloads not written: unaffected since the --since ref', $unaffected));
+        }
 
         if ($warnings !== []) {
             $output->writeln('');

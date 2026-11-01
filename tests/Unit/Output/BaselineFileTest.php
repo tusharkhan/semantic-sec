@@ -189,10 +189,10 @@ final class BaselineFileTest extends TestCase
         return str_repeat($c, 64);
     }
 
-    /** @return array{candidates:int, payloads:int, skipped:int, unsent:int, sent:int, cacheHits:int, ok:int, refused:int, truncated:int, invalid:int, failed:int, dropped:int, filtered:int, tokens:int, budgetExceeded:bool} */
+    /** @return array{candidates:int, payloads:int, skipped:int, unaffected:int, unsent:int, sent:int, cacheHits:int, ok:int, refused:int, truncated:int, invalid:int, failed:int, dropped:int, filtered:int, tokens:int, budgetExceeded:bool} */
     private static function stats(): array
     {
-        return ['candidates' => 1, 'payloads' => 1, 'skipped' => 0, 'unsent' => 0, 'sent' => 1, 'cacheHits' => 0, 'ok' => 1, 'refused' => 0, 'truncated' => 0, 'invalid' => 0, 'failed' => 0, 'dropped' => 0, 'filtered' => 0, 'tokens' => 110, 'budgetExceeded' => false];
+        return ['candidates' => 1, 'payloads' => 1, 'skipped' => 0, 'unaffected' => 0, 'unsent' => 0, 'sent' => 1, 'cacheHits' => 0, 'ok' => 1, 'refused' => 0, 'truncated' => 0, 'invalid' => 0, 'failed' => 0, 'dropped' => 0, 'filtered' => 0, 'tokens' => 110, 'budgetExceeded' => false];
     }
 
     /** @param array<string, string> $o */

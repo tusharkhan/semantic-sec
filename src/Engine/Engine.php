@@ -40,12 +40,15 @@ final class Engine
     ) {
     }
 
-    /** @param list<Payload> $payloads */
-    public function run(array $payloads, int $candidates): AnalysisResult
+    /**
+     * @param  list<Payload>  $payloads  the payloads to send
+     * @param  int  $unaffected  payloads --since left out; counted, never sent
+     */
+    public function run(array $payloads, int $candidates, int $unaffected = 0): AnalysisResult
     {
         /** @var Stats $stats */
         $stats = [
-            'candidates' => $candidates, 'payloads' => count($payloads), 'skipped' => 0, 'unsent' => 0, 'sent' => 0, 'cacheHits' => 0,
+            'candidates' => $candidates, 'payloads' => count($payloads) + $unaffected, 'skipped' => 0, 'unaffected' => $unaffected, 'unsent' => 0, 'sent' => 0, 'cacheHits' => 0,
             'ok' => 0, 'refused' => 0, 'truncated' => 0, 'invalid' => 0, 'failed' => 0, 'dropped' => 0, 'filtered' => 0, 'tokens' => 0, 'budgetExceeded' => false,
         ];
         $seen = [];
