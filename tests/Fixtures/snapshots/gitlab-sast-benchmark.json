@@ -37,15 +37,15 @@
             },
             "identifiers": [
                 {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec 424feaf29d19",
+                    "value": "424feaf29d1985fc1d829b702abcec8f1a8d0e532ccd61baeedeef1fce489ae4"
+                },
+                {
                     "type": "cwe",
                     "name": "CWE-915",
                     "value": "915",
                     "url": "https://cwe.mitre.org/data/definitions/915.html"
-                },
-                {
-                    "type": "semantic_sec_fingerprint",
-                    "name": "semantic-sec fingerprint",
-                    "value": "424feaf29d1985fc1d829b702abcec8f1a8d0e532ccd61baeedeef1fce489ae4"
                 }
             ]
         },
@@ -61,15 +61,15 @@
             },
             "identifiers": [
                 {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec 60f3cc319d63",
+                    "value": "60f3cc319d630289b1b7f83a9819cb96308cbea7b540249184735d809dbce5d8"
+                },
+                {
                     "type": "cwe",
                     "name": "CWE-502",
                     "value": "502",
                     "url": "https://cwe.mitre.org/data/definitions/502.html"
-                },
-                {
-                    "type": "semantic_sec_fingerprint",
-                    "name": "semantic-sec fingerprint",
-                    "value": "60f3cc319d630289b1b7f83a9819cb96308cbea7b540249184735d809dbce5d8"
                 }
             ]
         },
@@ -85,15 +85,15 @@
             },
             "identifiers": [
                 {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec a39e9d88295c",
+                    "value": "a39e9d88295c6f741d7414034cde31e1426d864683508026cf071a05afec715d"
+                },
+                {
                     "type": "cwe",
                     "name": "CWE-639",
                     "value": "639",
                     "url": "https://cwe.mitre.org/data/definitions/639.html"
-                },
-                {
-                    "type": "semantic_sec_fingerprint",
-                    "name": "semantic-sec fingerprint",
-                    "value": "a39e9d88295c6f741d7414034cde31e1426d864683508026cf071a05afec715d"
                 }
             ]
         },
@@ -109,15 +109,15 @@
             },
             "identifiers": [
                 {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec c119f50b1953",
+                    "value": "c119f50b1953c7cf011f105de8fbf3bfcd26af7e367f01d3f8fe756ef5e8dd0f"
+                },
+                {
                     "type": "cwe",
                     "name": "CWE-639",
                     "value": "639",
                     "url": "https://cwe.mitre.org/data/definitions/639.html"
-                },
-                {
-                    "type": "semantic_sec_fingerprint",
-                    "name": "semantic-sec fingerprint",
-                    "value": "c119f50b1953c7cf011f105de8fbf3bfcd26af7e367f01d3f8fe756ef5e8dd0f"
                 }
             ]
         },
@@ -133,15 +133,15 @@
             },
             "identifiers": [
                 {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec 1ee5daa414e4",
+                    "value": "1ee5daa414e457c0b996f503a1a0a116cf4773f62a5ad7f6fb14bc8b08a683d2"
+                },
+                {
                     "type": "cwe",
                     "name": "CWE-639",
                     "value": "639",
                     "url": "https://cwe.mitre.org/data/definitions/639.html"
-                },
-                {
-                    "type": "semantic_sec_fingerprint",
-                    "name": "semantic-sec fingerprint",
-                    "value": "1ee5daa414e457c0b996f503a1a0a116cf4773f62a5ad7f6fb14bc8b08a683d2"
                 }
             ]
         },
@@ -157,15 +157,15 @@
             },
             "identifiers": [
                 {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec b98613e76afd",
+                    "value": "b98613e76afd053142cd0c3c4e42a9e6c0ae430ae6f466d42dab2433f2a16823"
+                },
+                {
                     "type": "cwe",
                     "name": "CWE-841",
                     "value": "841",
                     "url": "https://cwe.mitre.org/data/definitions/841.html"
-                },
-                {
-                    "type": "semantic_sec_fingerprint",
-                    "name": "semantic-sec fingerprint",
-                    "value": "b98613e76afd053142cd0c3c4e42a9e6c0ae430ae6f466d42dab2433f2a16823"
                 }
             ]
         },
@@ -181,15 +181,15 @@
             },
             "identifiers": [
                 {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec 25441fa4060d",
+                    "value": "25441fa4060d37d39d589d5aa8830a176f5fb5ce4f2921b73c416174318ef087"
+                },
+                {
                     "type": "cwe",
                     "name": "CWE-639",
                     "value": "639",
                     "url": "https://cwe.mitre.org/data/definitions/639.html"
-                },
-                {
-                    "type": "semantic_sec_fingerprint",
-                    "name": "semantic-sec fingerprint",
-                    "value": "25441fa4060d37d39d589d5aa8830a176f5fb5ce4f2921b73c416174318ef087"
                 }
             ]
         },
@@ -205,15 +205,15 @@
             },
             "identifiers": [
                 {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec 717a2d084406",
+                    "value": "717a2d084406596a4766de60fc5b390fa13fba8ed1d6e97ff38502001bd00e82"
+                },
+                {
                     "type": "cwe",
                     "name": "CWE-841",
                     "value": "841",
                     "url": "https://cwe.mitre.org/data/definitions/841.html"
-                },
-                {
-                    "type": "semantic_sec_fingerprint",
-                    "name": "semantic-sec fingerprint",
-                    "value": "717a2d084406596a4766de60fc5b390fa13fba8ed1d6e97ff38502001bd00e82"
                 }
             ]
         },
@@ -229,15 +229,15 @@
             },
             "identifiers": [
                 {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec bb223b7f124b",
+                    "value": "bb223b7f124bd77e3feb3409aea66f66b84e02a8c405ed3d2ce460cce86fc333"
+                },
+                {
                     "type": "cwe",
                     "name": "CWE-639",
                     "value": "639",
                     "url": "https://cwe.mitre.org/data/definitions/639.html"
-                },
-                {
-                    "type": "semantic_sec_fingerprint",
-                    "name": "semantic-sec fingerprint",
-                    "value": "bb223b7f124bd77e3feb3409aea66f66b84e02a8c405ed3d2ce460cce86fc333"
                 }
             ]
         },
@@ -253,15 +253,15 @@
             },
             "identifiers": [
                 {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec 282d65848a1b",
+                    "value": "282d65848a1b0db8c798ec160f26f464fd30cb018f5e8e0b123d64305cf06c88"
+                },
+                {
                     "type": "cwe",
                     "name": "CWE-639",
                     "value": "639",
                     "url": "https://cwe.mitre.org/data/definitions/639.html"
-                },
-                {
-                    "type": "semantic_sec_fingerprint",
-                    "name": "semantic-sec fingerprint",
-                    "value": "282d65848a1b0db8c798ec160f26f464fd30cb018f5e8e0b123d64305cf06c88"
                 }
             ]
         },
@@ -277,15 +277,15 @@
             },
             "identifiers": [
                 {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec bab6d3ae9344",
+                    "value": "bab6d3ae934448ecaca36f0e786b2e5a8112d7636ecd0abb587e81d03dda07bb"
+                },
+                {
                     "type": "cwe",
                     "name": "CWE-915",
                     "value": "915",
                     "url": "https://cwe.mitre.org/data/definitions/915.html"
-                },
-                {
-                    "type": "semantic_sec_fingerprint",
-                    "name": "semantic-sec fingerprint",
-                    "value": "bab6d3ae934448ecaca36f0e786b2e5a8112d7636ecd0abb587e81d03dda07bb"
                 }
             ]
         },
@@ -301,15 +301,15 @@
             },
             "identifiers": [
                 {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec 59418e3ea2f1",
+                    "value": "59418e3ea2f14d59e7f3806a5bd4329ac9ab1b4b79abc6b45d9c3d97b8f6c694"
+                },
+                {
                     "type": "cwe",
                     "name": "CWE-639",
                     "value": "639",
                     "url": "https://cwe.mitre.org/data/definitions/639.html"
-                },
-                {
-                    "type": "semantic_sec_fingerprint",
-                    "name": "semantic-sec fingerprint",
-                    "value": "59418e3ea2f14d59e7f3806a5bd4329ac9ab1b4b79abc6b45d9c3d97b8f6c694"
                 }
             ]
         },
@@ -325,15 +325,15 @@
             },
             "identifiers": [
                 {
+                    "type": "semantic_sec_fingerprint",
+                    "name": "semantic-sec 16ea84cdfb66",
+                    "value": "16ea84cdfb66ca08a05c82742eb85b3cc8b901c56715e354d8f9af37c42591b6"
+                },
+                {
                     "type": "cwe",
                     "name": "CWE-639",
                     "value": "639",
                     "url": "https://cwe.mitre.org/data/definitions/639.html"
-                },
-                {
-                    "type": "semantic_sec_fingerprint",
-                    "name": "semantic-sec fingerprint",
-                    "value": "16ea84cdfb66ca08a05c82742eb85b3cc8b901c56715e354d8f9af37c42591b6"
                 }
             ]
         }

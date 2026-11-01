@@ -92,9 +92,10 @@ final class GitlabSastFormatter implements Formatter
             $out['solution'] = self::cap($fix, self::SOLUTION_CAP);
         }
         $out['location'] = $location;
+        // The first identifier is GitLab's primary one, which it tracks by; the fingerprint survives line moves.
         $out['identifiers'] = [
+            ['type' => 'semantic_sec_fingerprint', 'name' => 'semantic-sec '.self::nonEmpty(mb_substr(Terminal::clean($v->fingerprint), 0, 12, 'UTF-8')), 'value' => self::nonEmpty($v->fingerprint)],
             ['type' => 'cwe', 'name' => $cwe, 'value' => $n, 'url' => 'https://cwe.mitre.org/data/definitions/'.$n.'.html'],
-            ['type' => 'semantic_sec_fingerprint', 'name' => 'semantic-sec fingerprint', 'value' => self::nonEmpty($v->fingerprint)],
         ];
 
         return $out;

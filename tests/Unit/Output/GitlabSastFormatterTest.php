@@ -127,8 +127,8 @@ final class GitlabSastFormatterTest extends TestCase
             'solution' => "Use validated().\nOnly.",
             'location' => ['file' => 'app/A.php', 'start_line' => 12],
             'identifiers' => [
+                ['type' => 'semantic_sec_fingerprint', 'name' => 'semantic-sec aaaaaaaaaaaa', 'value' => str_repeat('a', 64)],
                 ['type' => 'cwe', 'name' => 'CWE-915', 'value' => '915', 'url' => 'https://cwe.mitre.org/data/definitions/915.html'],
-                ['type' => 'semantic_sec_fingerprint', 'name' => 'semantic-sec fingerprint', 'value' => str_repeat('a', 64)],
             ],
         ], $out);
 
@@ -171,18 +171,33 @@ final class GitlabSastFormatterTest extends TestCase
         self::assertSame($ids, array_values(array_unique($ids)));
         foreach ($doc['vulnerabilities'] as $v) {
             self::assertMatchesRegularExpression('~^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$~', $v['id']);
-            self::assertSame(GitlabSastFormatter::uuid($v['identifiers'][1]['value']), $v['id']);
+            self::assertSame(GitlabSastFormatter::uuid($v['identifiers'][0]['value']), $v['id']);
         }
         $expected = array_map(static fn (array $x): string => $x['vulnerability']->fingerprint, $result->findings);
-        $actual = array_map(static fn (array $v): string => $v['identifiers'][1]['value'], $doc['vulnerabilities']);
+        $actual = array_map(static fn (array $v): string => $v['identifiers'][0]['value'], $doc['vulnerabilities']);
         sort($expected);
         sort($actual);
         self::assertSame($expected, $actual);
 
         $fp = 'sk-ant-api03-'.str_repeat('a', 51);
         $v = self::decode($f->format(self::analysis([[self::vuln(['fingerprint' => $fp, 'file' => 'app/AKIAIOSFODNN7EXAMPLE.php']), true]]), self::META))['vulnerabilities'][0];
-        self::assertSame($fp, $v['identifiers'][1]['value'], 'never redacted');
+        self::assertSame($fp, $v['identifiers'][0]['value'], 'never redacted');
         self::assertSame('app/AKIAIOSFODNN7EXAMPLE.php', $v['location']['file']);
+    }
+
+    public function testFingerprintIsThePrimaryIdentifier(): void
+    {
+        $two = self::analysis([[self::vuln(['line' => 3]), true], [self::vuln(['line' => 9, 'fingerprint' => str_repeat('b', 64)]), true]]);
+        $vulns = self::decode((new GitlabSastFormatter())->format($two, self::META))['vulnerabilities'];
+
+        foreach ($vulns as $v) {
+            self::assertSame(['semantic_sec_fingerprint', 'cwe'], array_column($v['identifiers'], 'type'), 'GitLab tracks by the first identifier');
+        }
+        self::assertSame([str_repeat('a', 64), str_repeat('b', 64)], array_map(static fn (array $v): string => $v['identifiers'][0]['value'], $vulns), 'same CWE and file, still told apart');
+        self::assertSame('semantic-sec bbbbbbbbbbbb', $vulns[1]['identifiers'][0]['name']);
+        foreach (self::decode((new GitlabSastFormatter())->format(self::replay(), self::META))['vulnerabilities'] as $v) {
+            self::assertSame('semantic_sec_fingerprint', $v['identifiers'][0]['type']);
+        }
     }
 
     public function testFilePathsRootRelative(): void
