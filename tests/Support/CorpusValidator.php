@@ -20,7 +20,7 @@ final class CorpusValidator
 
     private const CASE_KEYS = ['id', 'app', 'set', 'category', 'description', 'vulnerable', 'safe'];
 
-    private const VARIANT_KEYS = ['route', 'symbol', 'line', 'map', 'suppressed', 'candidate', 'accept'];
+    private const VARIANT_KEYS = ['route', 'symbol', 'line', 'map', 'suppressed', 'candidate', 'accept', 'posthoc'];
 
     private const PUBLIC_ROUTE_KEYS = ['app', 'set', 'route', 'symbol'];
 
@@ -209,7 +209,7 @@ final class CorpusValidator
             $errors[] = "$label: symbol must look like App\\Class::method";
         }
 
-        foreach (['suppressed', 'candidate'] as $key) {
+        foreach (['suppressed', 'candidate', 'posthoc'] as $key) {
             if (array_key_exists($key, $data) && ! is_bool($data[$key])) {
                 $errors[] = "$label: $key must be a bool";
             }
@@ -225,6 +225,10 @@ final class CorpusValidator
 
         if (array_key_exists('accept', $data)) {
             $errors = [...$errors, ...self::acceptErrors($label, $data['accept'], $data['symbol'] ?? null)];
+        }
+
+        if (array_key_exists('posthoc', $data) && ! array_key_exists('accept', $data)) {
+            $errors[] = "$label: posthoc needs an accept list";
         }
 
         if (array_key_exists('map', $data)) {

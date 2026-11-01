@@ -108,6 +108,21 @@ PHP;
         self::assertSame([], CorpusValidator::caseErrors($case, BenchmarkCorpus::root()));
     }
 
+    public function testPosthocMarksAnAcceptList(): void
+    {
+        $case = $this->validCase();
+        $case['vulnerable']['accept'] = ['App\Policies\SamplePolicy::view'];
+        $case['vulnerable']['posthoc'] = true;
+        self::assertSame([], CorpusValidator::caseErrors($case, BenchmarkCorpus::root()));
+
+        $case['vulnerable']['posthoc'] = 'yes';
+        $this->assertSingleError('sample-case.vulnerable: posthoc must be a bool', $case);
+
+        $case = $this->validCase();
+        $case['vulnerable']['posthoc'] = true;
+        $this->assertSingleError('sample-case.vulnerable: posthoc needs an accept list', $case);
+    }
+
     public function testPublicRouteSetIsOptionalButChecked(): void
     {
         $route = ['app' => 'laravel11-app', 'route' => 'GET /posts/{post}', 'symbol' => 'App\Http\Controllers\PostController::show'];

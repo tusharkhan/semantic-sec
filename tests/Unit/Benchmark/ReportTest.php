@@ -63,6 +63,18 @@ final class ReportTest extends TestCase
         self::assertStringContainsString('| **Gate** | | **n/a** | **n/a** |', Report::markdown($score, self::meta()));
     }
 
+    public function testStrictFoundLineOnlyWithPosthocAccepts(): void
+    {
+        $yaml = str_replace("      accept: [App\\Policies\\TransferPolicy::approve]\n", "      accept: [App\\Policies\\TransferPolicy::approve]\n      posthoc: true\n", ScorerTest::YAML);
+        $analyze = ScorerTest::analyze();
+        $analyze['app-a']['findings'] = [ScorerTest::finding('App\Http\Controllers\Vuln\ItemController::show'), ScorerTest::finding('App\Policies\TransferPolicy::approve')];
+        $markdown = Report::markdown(Scorer::score(ExpectedCases::load($yaml), $analyze, ScorerTest::perfectMaps()), self::meta());
+
+        self::assertStringContainsString('| Found, strict (no post-hoc accepts) | ≥ 70% | 50.0% (1/2) | 0.0% (0/1) | 33.3% (1/3) |', $markdown);
+        self::assertStringContainsString('found (post-hoc accept)', $markdown);
+        self::assertStringNotContainsString('strict (no post-hoc accepts)', Report::markdown(self::score(), self::meta()));
+    }
+
     public function testCost(): void
     {
         self::assertEqualsWithDelta(6.45, Report::cost(['input' => 1_000_000, 'output' => 100_000, 'cacheRead' => 1_000_000, 'cacheWrite' => 50_000]), 1e-9);

@@ -23,7 +23,7 @@ Fake Laravel apps (source files only, no `vendor/`) that the scanner is scored a
 ## Adding a case
 
 1. Write the vulnerable and safe variants and register their routes.
-2. Add an entry to `expected.yaml` (`id`, `app`, `set`, `category`, `description`, `vulnerable` with `route`/`symbol`/`line`/`map`, `safe` with `route`/`symbol`/`map`). Optional: `suppressed`, `candidate`, and `accept` on `vulnerable` (other symbols where the flaw may legitimately be reported, e.g. a called service or policy method).
+2. Add an entry to `expected.yaml` (`id`, `app`, `set`, `category`, `description`, `vulnerable` with `route`/`symbol`/`line`/`map`, `safe` with `route`/`symbol`/`map`). Optional: `suppressed`, `candidate`, and `accept` on `vulnerable` (other symbols where the flaw may legitimately be reported, e.g. a called service or policy method). Add `posthoc: true` next to an `accept` list written after a live run saw the finding; the report then also prints a strict found line that ignores it.
 3. Run `vendor/bin/phpunit tests/Integration/Benchmark`.
 
 `set` is `existing` for the original laravel10/11 cases and `blind` for laravel12-app, so accuracy can be reported per set.

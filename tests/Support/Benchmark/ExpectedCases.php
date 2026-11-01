@@ -100,6 +100,7 @@ final class ExpectedCases
             ($data['suppressed'] ?? false) === true,
             $accept,
             is_bool($data['candidate'] ?? null) ? $data['candidate'] : null,
+            ($data['posthoc'] ?? false) === true,
         );
     }
 

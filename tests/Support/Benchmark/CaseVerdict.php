@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace TusharKhan\SemanticSec\Tests\Support\Benchmark;
 
 /**
- * How one case scored; each *By is the finding that decided it, null when none did.
+ * How one case scored; each *By is the finding that decided it, null when none did; *Strict ignores post-hoc accepts.
  *
  * @phpstan-type Finding array{list: string, category: string, confidence: string, file: string, line: int, symbol: string, title: string}
  * @phpstan-type MapCheck array{expected: list<string>, actual: list<string>|null, ok: bool}
@@ -34,6 +34,8 @@ final class CaseVerdict
         public readonly ?array $vulnerableCategories,
         public readonly ?bool $selectedSafe,
         public readonly ?array $safeCategories,
+        public readonly bool $foundStrict = false,
+        public readonly bool $foundStrictFailing = false,
     ) {
     }
 }

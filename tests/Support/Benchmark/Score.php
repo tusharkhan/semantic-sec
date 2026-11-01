@@ -56,6 +56,7 @@ final class Score
             mapVariants: 2 * count($cases),
             mapMismatches: $mismatches,
             unattributed: count($unattributed),
+            foundStrict: count(array_filter($cases, static fn (CaseVerdict $v): bool => $failingOnly ? $v->foundStrictFailing : $v->foundStrict)),
         );
     }
 
@@ -74,6 +75,18 @@ final class Score
         $present = [...array_map(static fn (CaseVerdict $v): string => $v->case->set, $this->cases), ...array_map(static fn (PublicVerdict $p): string => $p->route->set, $this->publics)];
 
         return array_values(array_filter(self::SETS, static fn (string $s): bool => in_array($s, $present, true)));
+    }
+
+    // True when any case credits a post-hoc accept, so strict and accepted found counts can differ.
+    public function hasPosthoc(): bool
+    {
+        foreach ($this->cases as $v) {
+            if ($v->case->vulnerable->posthoc) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // True when the dry-run selection was measured for at least one case.

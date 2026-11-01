@@ -70,6 +70,8 @@ cases:
       symbol: App\Http\Controllers\Vuln\CommentController::destroy
       line: 18
       map: [authentication]
+      accept: [App\Policies\CommentPolicy::delete]
+      posthoc: true
     safe:
       route: DELETE /safe/replies/{reply}
       symbol: App\Http\Controllers\Safe\ReplyController::destroy
@@ -100,6 +102,8 @@ cases:
       symbol: App\Http\Controllers\Vuln\DownloadController::show
       line: 17
       map: [authentication]
+      accept: [App\Services\DownloadService::find]
+      posthoc: true
     safe:
       route: GET /safe/downloads/{id}
       symbol: App\Http\Controllers\Safe\DownloadController::show

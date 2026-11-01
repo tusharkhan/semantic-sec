@@ -37,12 +37,15 @@ final class Scorer
             $analyze = $analyzeJsonByApp[$case->app] ?? throw new \InvalidArgumentException("no analyze output for {$case->app}");
             $reported = self::findings($analyze, self::REPORTED);
             $vulnerablePool = $case->vulnerable->suppressed ? [...self::findings($analyze, ['suppressed']), ...$reported] : $reported;
-            $targets = [self::key($case->vulnerable->file, $case->vulnerable->symbol)];
+            $strictTargets = [self::key($case->vulnerable->file, $case->vulnerable->symbol)];
+            $targets = $strictTargets;
             foreach ($case->vulnerable->accept as $symbol) {
                 $targets[] = self::key(ExpectedCases::fileOf($symbol), $symbol);
             }
+            $strictTargets = $case->vulnerable->posthoc ? $strictTargets : $targets;
             $safeSymbols = self::safeSymbols($case);
             $found = self::first($vulnerablePool, static fn (array $f): bool => $f['category'] === $case->category && in_array(self::key($f['file'], $f['symbol']), $targets, true));
+            $strict = self::first($vulnerablePool, static fn (array $f): bool => $f['category'] === $case->category && in_array(self::key($f['file'], $f['symbol']), $strictTargets, true));
             $flagged = self::first(self::findings($analyze, self::PRECISION), static fn (array $f): bool => in_array(ExpectedCases::canonical($f['symbol']), $safeSymbols, true));
             $map = $mapJsonByApp[$case->app] ?? [];
             $dryRun = $dryRunJsonByApp[$case->app] ?? null;
@@ -66,6 +69,8 @@ final class Scorer
                 $vulnerableCategories,
                 $safeCategories === null ? null : $safeCategories !== [],
                 $safeCategories,
+                $strict[0] !== null,
+                $strict[1] !== null,
             );
         }
 

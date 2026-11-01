@@ -103,6 +103,15 @@ final class Report
             $first = $byColumn['all'][$i];
             $cells = array_map(static fn (string $set): string => self::criterion($byColumn[$set][$i]), $columns);
             $rows[] = "| {$first['label']} | {$first['threshold']} | ".implode(' | ', $cells).' |';
+            if ($first['criterion'] === 'found' && $s->hasPosthoc()) {
+                $strict = array_map(static function (string $set) use ($s, $failingOnly): string {
+                    $c = $s->counts($set === 'all' ? null : $set, failingOnly: $failingOnly);
+                    $rate = $c->foundStrictRate();
+
+                    return $rate === null ? 'n/a' : sprintf('%s (%d/%d)', self::percent($rate), $c->foundStrict, $c->cases);
+                }, $columns);
+                $rows[] = '| Found, strict (no post-hoc accepts) | ≥ 70% | '.implode(' | ', $strict).' |';
+            }
         }
         $rows[] = '| **Gate** | | '.implode(' | ', array_map(static fn (string $set): string => '**'.self::verdict(Gate::verdict($byColumn[$set])).'**', $columns)).' |';
         $rows[] = '';
@@ -159,6 +168,7 @@ final class Report
             $vulnerable = match (true) {
                 $v->found && ! $v->foundFailing => 'found (low confidence)',
                 $v->found && $v->foundBy !== null && $v->foundBy['list'] === 'suppressed' => 'found (suppressed)',
+                $v->found && ! $v->foundStrict => 'found (post-hoc accept)',
                 $v->found => 'found',
                 $v->selectedVulnerable === false => 'missed: never sent to the LLM',
                 $v->selectedVulnerable === true => 'missed: LLM missed it',

@@ -145,14 +145,16 @@ final class BenchmarkCommand extends Command
         foreach ([...$score->sets(), 'all'] as $column) {
             $criteria = Gate::evaluate($score->counts($column === 'all' ? null : $column));
             $verdicts[] = Gate::verdict($criteria);
-            $output->writeln(sprintf('%-8s %s  %s', $column, Report::verdict(Gate::verdict($criteria)), implode('  ', array_map(
+            $counts = $score->counts($column === 'all' ? null : $column);
+            $strict = $score->hasPosthoc() ? sprintf('  (found strict %d/%d)', $counts->foundStrict, $counts->cases) : '';
+            $output->writeln(sprintf('%-8s %s  %s%s', $column, Report::verdict(Gate::verdict($criteria)), implode('  ', array_map(
                 static fn (array $c): string => $c['criterion'].' '.$c['numerator'].'/'.$c['denominator'].' '.match ($c['pass']) {
                     true => 'ok',
                     false => 'FAIL',
                     null => 'n/a',
                 },
                 $criteria,
-            ))));
+            )), $strict));
         }
         $output->writeln(sprintf('%d requests, $%.2f estimated; report written to %s', $requests, Report::cost($usage), $out));
 

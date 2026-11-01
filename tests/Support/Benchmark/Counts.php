@@ -16,12 +16,18 @@ final class Counts
         public readonly int $mapVariants = 0,
         public readonly int $mapMismatches = 0,
         public readonly int $unattributed = 0,
+        public readonly int $foundStrict = 0,
     ) {
     }
 
     public function foundRate(): ?float
     {
         return $this->cases === 0 ? null : $this->found / $this->cases;
+    }
+
+    public function foundStrictRate(): ?float
+    {
+        return $this->cases === 0 ? null : $this->foundStrict / $this->cases;
     }
 
     public function flaggedRate(): ?float

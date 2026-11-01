@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace TusharKhan\SemanticSec\Tests\Support\Benchmark;
 
-/** One side of a benchmark case; $file is the symbol's file relative to the app root. */
+/** One side of a benchmark case; $file is the symbol's file relative to the app root; $posthoc marks $accept as added after a live run. */
 final class Variant
 {
     /**
@@ -20,6 +20,7 @@ final class Variant
         public readonly bool $suppressed = false,
         public readonly array $accept = [],
         public readonly ?bool $candidate = null,
+        public readonly bool $posthoc = false,
     ) {
     }
 }

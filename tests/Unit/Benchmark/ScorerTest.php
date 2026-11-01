@@ -141,6 +141,35 @@ YAML;
         self::assertFalse($this->score(['app-a' => [self::finding('App\Policies\TransferPolicy::view')]])->verdict('policy-accept')->found);
     }
 
+    public function testPosthocAcceptCountsOnlyWithAccepts(): void
+    {
+        $yaml = str_replace("      accept: [App\\Policies\\TransferPolicy::approve]\n", "      accept: [App\\Policies\\TransferPolicy::approve]\n      posthoc: true\n", self::YAML);
+        $analyze = self::analyze();
+        $analyze['app-a']['findings'] = [self::finding('App\Policies\TransferPolicy::approve')];
+        $score = Scorer::score(ExpectedCases::load($yaml), $analyze, self::perfectMaps());
+        $verdict = $score->verdict('policy-accept');
+
+        self::assertTrue(ExpectedCases::load($yaml)[1]->vulnerable->posthoc);
+        self::assertTrue($verdict->found);
+        self::assertFalse($verdict->foundStrict);
+        self::assertSame(1, $score->counts('blind')->found);
+        self::assertSame(0, $score->counts('blind')->foundStrict);
+        self::assertSame(0, $score->counts('blind', failingOnly: true)->foundStrict);
+
+        $analyze['app-a']['findings'] = [self::finding('App\Http\Controllers\Vuln\TransferController::approve')];
+        $atSymbol = Scorer::score(ExpectedCases::load($yaml), $analyze, self::perfectMaps());
+        self::assertTrue($atSymbol->verdict('policy-accept')->foundStrict);
+        self::assertSame(1, $atSymbol->counts('blind')->foundStrict);
+    }
+
+    public function testNonPosthocAcceptCountsAsStrict(): void
+    {
+        $score = $this->score(['app-a' => [self::finding('App\Policies\TransferPolicy::approve')]]);
+
+        self::assertTrue($score->verdict('policy-accept')->foundStrict);
+        self::assertSame(1, $score->counts('blind')->foundStrict);
+    }
+
     public function testSafeFlaggedByAnyCategory(): void
     {
         $score = $this->score(['app-a' => [self::finding('App\Http\Controllers\Safe\ItemController::show', 'workflow_bypass', 'low')]]);
