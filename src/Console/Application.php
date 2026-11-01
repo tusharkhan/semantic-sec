@@ -12,7 +12,7 @@ use TusharKhan\SemanticSec\Console\Commands\MapCommand;
 final class Application extends BaseApplication
 {
     public const NAME = 'semantic-sec';
-    public const VERSION = '0.1.0-dev';
+    public const VERSION = '0.1.0';
 
     public function __construct()
     {

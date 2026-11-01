@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [0.1.0]
+## [0.1.0] - 2026-11-01
 
 First public release. semantic-sec finds authorization flaws in Laravel 8–13 applications with an LLM of your choice. It is pre-1.0, so options, output and fingerprints may still change.
 
